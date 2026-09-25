@@ -29,7 +29,7 @@
     onSuccess="takes.refetch()"
     errorNotificationMessage="{$error.message}" />
 
-  <!-- Audio test bench: serve_media.py runs voicetest.py, which records 10s
+  <!-- Audio recording test: serve_media.py runs voicetest.py, which records 10s
        with the chosen mic and recorder and adds a voice_tests row. -->
   <DataSource id="devices" url="http://127.0.0.1:8765/devices" />
   <DataSource id="voiceTests" url="/query" method="POST" dataType="sql"
@@ -182,7 +182,7 @@
       </Table>
     </Page>
     <Page url="/bench">
-      <H2>Audio test bench</H2>
+      <H2>Audio recording test</H2>
       <HStack verticalAlignment="center">
         <Select id="mic" data="{devices}" valueField="name" labelField="name"
           initialValue="MacBook Air Microphone" width="260px" />
