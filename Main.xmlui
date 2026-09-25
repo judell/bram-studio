@@ -215,6 +215,32 @@
           </HStack>
         </Column>
       </Table>
+
+      <!-- Audio playback test: MediaPlayer's kind="audio" (xmlui-org/xmlui#3913)
+           on any take or source. An audio element plays an MP4's audio track,
+           so no separate audio files are needed. -->
+      <VStack var.audioLog="{[]}" var.audioDuration="">
+        <H2>Audio playback test</H2>
+        <HStack verticalAlignment="center">
+          <Select id="audioChoice" placeholder="Play from…" width="480px"
+            data="{[
+              ...(takes.value || []).map(t => ({ label: 'Take: ' + t.name.slice(0, 60), value: t.url })),
+              ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
+            ]}"
+            onDidChange="audioLog = []; audioDuration = ''" />
+          <Button label="Clear log" variant="outlined" onClick="audioLog = []" />
+        </HStack>
+        <MediaPlayer kind="audio" when="{audioChoice.value}" src="{audioChoice.value}"
+          onLoadedMetadata="(e) => audioDuration = e.duration.toFixed(2) + ' s'"
+          onPlay="(e) => audioLog = [...audioLog, 'play at ' + e.currentTime.toFixed(2) + ' s']"
+          onPause="(e) => audioLog = [...audioLog, 'pause at ' + e.currentTime.toFixed(2) + ' s']"
+          onSeeked="(e) => audioLog = [...audioLog, 'seeked at ' + e.currentTime.toFixed(2) + ' s']"
+          onEnded="(e) => audioLog = [...audioLog, 'ended at ' + e.currentTime.toFixed(2) + ' s']" />
+        <Text when="{audioChoice.value}" value="Duration: {audioDuration || '(loading)'}" />
+        <Items data="{audioLog}">
+          <Text value="{$item}" />
+        </Items>
+      </VStack>
     </Page>
   </Pages>
 </App>
