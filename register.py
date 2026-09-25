@@ -68,9 +68,17 @@ columns = [c[1] for c in db.execute("PRAGMA table_info(takes)")]
 for col in ("source", "warning"):
     if col not in columns:
         db.execute(f"ALTER TABLE takes ADD COLUMN {col} TEXT")
-db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, warning) "
-           "VALUES (?,?,?,?,?,?,?,?,?,?)",
+if "position" not in columns:
+    # Display order (the takes list is drag-reorderable); existing takes keep
+    # their newest-first order.
+    db.execute("ALTER TABLE takes ADD COLUMN position INTEGER")
+    for pos, (tid,) in enumerate(db.execute("SELECT id FROM takes ORDER BY created_at DESC").fetchall()):
+        db.execute("UPDATE takes SET position = ? WHERE id = ?", (pos, tid))
+# A new take goes to the top of the list.
+position = (db.execute("SELECT min(position) FROM takes").fetchone()[0] or 0) - 1
+db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, warning, "
+           "position) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
            (name, datetime.now().strftime("%Y-%m-%d %H:%M"), round(dur, 1), src_start, src_end, fname,
-            f"http://127.0.0.1:8765/{fname}", notes, source, warning))
+            f"http://127.0.0.1:8765/{fname}", notes, source, warning, position))
 db.commit()
 print(f"registered {name}: {fname} ({dur:.1f}s)")

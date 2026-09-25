@@ -6,7 +6,7 @@
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source, warning FROM takes ORDER BY created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
        log, record.sh renders from it, and the take appears when it
@@ -37,6 +37,9 @@
        the 5s poll, and clicking one gave "no take with id N"). invalidates="{[]}"
        stops the default refresh of every DataSource (including /devices, which
        runs ffmpeg) after each delete; only the takes table needs refetching. -->
+  <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
+    body="{$param}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
     body="{{ id: $param }}"
     invalidates="{[]}"
@@ -199,64 +202,45 @@
         </HStack>
         <MediaPlayer id="takePlayer" src="{playing}" autoPlay="true" />
       </VStack>
-      <Table data="{takes}">
-        <!-- Never show "No data available" (it flashes while data loads). -->
-        <property name="noDataTemplate">
-          <Fragment/>
-        </property>
-        <!-- The narration and source share the flexible width; the timestamp,
-             seconds and actions columns stay tight. The row in the player is
-             tinted, and so is a take that arrives after Stop (id above
-             newAfterId): each cell wraps its content in a full-width HStack, the
-             pattern Bram's Worklist uses for overlap rows (Table has no
-             per-row style). -->
-        <Column header="Take" bindTo="name" width="3*">
-          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
-            <!-- Empty take (no player events): record.sh's warning, with what the
-                 player reported at Stop. -->
-            <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
-            <Text value="{$item.name}" overflowMode="flow" />
-          </HStack>
-        </Column>
-        <Column header="Recorded" bindTo="recorded" width="120px">
-          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
-            <Text value="{$item.recorded}" />
-          </HStack>
-        </Column>
-        <Column header="Seconds" bindTo="duration_s" width="80px">
-          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
-            <Text value="{$item.duration_s}" />
-          </HStack>
-        </Column>
-        <Column header="Source" bindTo="source" width="2*">
-          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
-            <Text value="{$item.source}" />
-          </HStack>
-        </Column>
-        <Column header="" width="50px">
-          <VStack horizontalAlignment="center" width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
-            <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
-            <Button variant="ghost" enabled="{!capturing}"
-              icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
-              tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
-              aria-label="Play or pause take"
-              onClick="
-                if (playing === $item.url) {
-                  takePlayer.paused ? takePlayer.play() : takePlayer.pause();
-                } else {
-                  playing = $item.url;
-                }
-              " />
-            <Button icon="trash" variant="ghost" themeColor="attention"
-              aria-label="Delete take" tooltip="Delete this take (moves the MP4 to media/.trash)"
-              onClick="
-                if (playing === $item.url) playing = '';
-                deleteTake.execute($item.id);
-                takes.refetch();
-              " />
-          </VStack>
-        </Column>
-      </Table>
+      <!-- Takes as a drag-reorderable list (DndItems, the xmlui-dnd-list extension
+           Bram's queue uses): only the grip drags, so the row's buttons stay live.
+           The order is saved to takes.position via POST /reorder. The playing or
+           just-recorded take is tinted across the whole row. -->
+      <DndItems data="{takes}" dragHandle="true"
+        onReorder="(newOrder) => {
+          reorderTakes.execute({ ids: newOrder.map(t => t.id) });
+          takes.refetch();
+        }">
+        <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2"
+          backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
+          <!-- Empty take (no player events): record.sh's warning, with what the
+               player reported at Stop. -->
+          <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
+          <Text value="{$item.name}" overflowMode="flow" width="*" />
+          <Text value="{$item.recorded}" width="110px" />
+          <Text value="{$item.duration_s + 's'}" width="70px" />
+          <Text value="{$item.source}" width="160px" />
+          <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
+          <Button variant="ghost" enabled="{!capturing}"
+            icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
+            tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
+            aria-label="Play or pause take"
+            onClick="
+              if (playing === $item.url) {
+                takePlayer.paused ? takePlayer.play() : takePlayer.pause();
+              } else {
+                playing = $item.url;
+              }
+            " />
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete take" tooltip="Delete this take (moves the MP4 to media/.trash)"
+            onClick="
+              if (playing === $item.url) playing = '';
+              deleteTake.execute($item.id);
+              takes.refetch();
+            " />
+        </HStack>
+      </DndItems>
     </Page>
     <Page url="/bench">
       <H2>Audio recording test</H2>

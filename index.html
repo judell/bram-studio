@@ -6,6 +6,9 @@
     <title>Bram Studio</title>
     <!-- Experimental XMLUI build with MediaPlayer (xmlui-org/xmlui#3913); revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
+    <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after
+         the engine, which it registers itself with. -->
+    <script src="/vendor/xmlui-dnd-list.js"></script>
   </head>
   <body></body>
 </html>

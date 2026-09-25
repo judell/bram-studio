@@ -14,7 +14,8 @@ POST /record/stop {events} ends it with the player's event log, and
 POST /record/cancel / /record/restart {source} discard it (and start anew);
 record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
-POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row.
+POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row;
+POST /reorder {ids} saves the takes list's drag order.
 """
 import http.server
 import json
@@ -161,7 +162,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.run_voicetest()
         if self.path == "/delete":
             return self.delete_take()
+        if self.path == "/reorder":
+            return self.reorder_takes()
         self.send_json(404, {"error": "not found"})
+
+    def reorder_takes(self):
+        # The takes list's drag order: each id's index becomes its position.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        ids = [i for i in body.get("ids", []) if isinstance(i, int)]
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db.executemany("UPDATE takes SET position = ? WHERE id = ?", [(pos, tid) for pos, tid in enumerate(ids)])
+        db.commit()
+        self.send_json(200, {"reordered": len(ids)})
 
     def delete_take(self):
         # Move the take's MP4 to media/.trash/ first; drop the row only if that worked.

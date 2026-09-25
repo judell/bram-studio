@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS takes (
   url TEXT NOT NULL,
   notes TEXT,
   source TEXT,  -- the source movie's file name (sources/)
-  warning TEXT  -- e.g. "no player events; duration=…" (record.sh)
+  warning TEXT,  -- e.g. "no player events; duration=…" (record.sh)
+  position INTEGER  -- display order in the takes list (drag to reorder)
 );
 
 -- One row per 10s voice test from the audio test bench (voicetest.py).
