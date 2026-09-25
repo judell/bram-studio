@@ -37,6 +37,10 @@
        the 5s poll, and clicking one gave "no take with id N"). invalidates="{[]}"
        stops the default refresh of every DataSource (including /devices, which
        runs ffmpeg) after each delete; only the takes table needs refetching. -->
+  <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
+  <APICall id="exportTakes" method="post" url="http://127.0.0.1:8765/export"
+    invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -150,6 +154,18 @@
             recEvents = [];
           " />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
+        <Button label="Export" variant="outlined" size="sm"
+          tooltip="Join all takes, in list order, into one video"
+          enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
+          onClick="exportTakes.execute()" />
+      </HStack>
+      <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
+        <Spinner />
+        <Text value="Exporting takes…" />
+      </HStack>
+      <HStack verticalAlignment="center" when="{!exportTakes.inProgress &amp;&amp; exportTakes.lastResult}">
+        <Text value="Exported {exportTakes.lastResult.takes} takes, {exportTakes.lastResult.seconds}s:" />
+        <Link to="{exportTakes.lastResult.url}" target="_blank" label="{exportTakes.lastResult.file}" />
       </HStack>
       <!-- A take this page didn't start (it was reloaded mid-take, or another
            tab started it): it has no event log to render, so offer Discard. -->

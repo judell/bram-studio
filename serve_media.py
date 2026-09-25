@@ -15,7 +15,8 @@ POST /record/cancel / /record/restart {source} discard it (and start anew);
 record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row;
-POST /reorder {ids} saves the takes list's drag order.
+POST /reorder {ids} saves the takes list's drag order; POST /export joins
+all takes in that order into media/exports/<stamp>-takes.mp4.
 """
 import http.server
 import json
@@ -43,6 +44,20 @@ PHASES = {"starting": "Starting the recorder…",
           "recording": "Recording: click Stop to finish",
           "rendering": "Rendering the take…",
           "naming": "Naming the take from its narration…"}
+
+
+exporting = threading.Lock()  # one export at a time
+
+
+def probe(path, entries, stream=None):
+    args = ["ffprobe", "-v", "error", *(["-select_streams", stream] if stream else []),
+            "-show_entries", entries, "-of", "csv=p=0", path]
+    return subprocess.run(args, capture_output=True, text=True).stdout.strip()
+
+
+def stream_signature(path):
+    # What must match for a stream-copy join: codecs, size, rates, channels.
+    return probe(path, "stream=codec_name,width,height,r_frame_rate,sample_rate,channels")
 
 
 def cancel_recording(timeout=5):
@@ -164,7 +179,53 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_take()
         if self.path == "/reorder":
             return self.reorder_takes()
+        if self.path == "/export":
+            return self.export_takes()
         self.send_json(404, {"error": "not found"})
+
+    def export_takes(self):
+        # All takes, in list order, as one MP4 in media/exports/. Identical
+        # streams (the usual case: one render.py, one source) join by stream
+        # copy; otherwise re-encode, fitting each take to the first one's size.
+        if not exporting.acquire(blocking=False):
+            return self.send_json(409, {"error": "an export is already running"})
+        try:
+            db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+            names = [f for (f,) in db.execute("SELECT file FROM takes ORDER BY position, created_at DESC")]
+            files = [os.path.join(ROOT, f) for f in names if os.path.isfile(os.path.join(ROOT, f))]
+            if not files:
+                return self.send_json(400, {"error": "no takes to export"})
+            outdir = os.path.join(ROOT, "exports")
+            os.makedirs(outdir, exist_ok=True)
+            name = time.strftime("%Y%m%d-%H%M%S") + "-takes.mp4"
+            out = os.path.join(outdir, name)
+            copied = len({stream_signature(f) for f in files}) == 1
+            if copied:
+                lst = out + ".txt"
+                with open(lst, "w") as fh:
+                    fh.writelines(f"file '{f}'\n" for f in files)
+                cmd = ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out]
+            else:
+                W, H = probe(files[0], "stream=width,height", "v:0").split(",")
+                chains = "".join(
+                    f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,"
+                    f"setsar=1,fps=25[v{i}];[{i}:a]aresample=48000,aformat=channel_layouts=mono[a{i}];"
+                    for i in range(len(files)))
+                joined = "".join(f"[v{i}][a{i}]" for i in range(len(files)))
+                cmd = ["ffmpeg", "-v", "error", "-y", *[a for f in files for a in ("-i", f)], "-filter_complex",
+                       f"{chains}{joined}concat=n={len(files)}:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage",
+                       "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", out]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if copied:
+                os.remove(lst)
+            if r.returncode:
+                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["export failed"])[-1]})
+            seconds = float(probe(out, "format=duration") or 0)
+            self.send_json(200, {"url": f"http://127.0.0.1:{PORT}/exports/{name}", "file": f"exports/{name}",
+                                 "takes": len(files), "seconds": round(seconds, 1), "copied": copied})
+        finally:
+            exporting.release()
 
     def reorder_takes(self):
         # The takes list's drag order: each id's index becomes its position.
