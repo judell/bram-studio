@@ -10,6 +10,8 @@
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; the take appears when it registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" />
+  <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
+    pollIntervalInSeconds="2" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     body="{$param}"
     onSuccess="toast.success('Recording: close the QuickTime window to finish')"
@@ -53,6 +55,10 @@
         <Button label="Record" onClick="startRecording.execute({ source: sourceChoice.value })"
           enabled="{!startRecording.inProgress}" />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
+      </HStack>
+      <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
+        <Spinner />
+        <Text value="{recStatus.value.label}" />
       </HStack>
       <Table data="{takes}">
         <Column header="Take" bindTo="name" type="long-text" width="*" />

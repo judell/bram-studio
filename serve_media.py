@@ -7,7 +7,8 @@ Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
 it (and couldn't seek). This fills that gap until Bram does it itself.
 
-GET /sources lists the movies in sources/; POST /record {source} starts
+GET /sources lists the movies in sources/, GET /record/status reports a running
+take's phase; POST /record {source} starts
 record.sh (one take of that movie) for the app's Record button;
 its output goes to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
@@ -32,6 +33,23 @@ ROOT = os.path.join(HERE, "media")
 recorder = None  # the running record.sh, if any
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = os.path.join(HERE, "sources")  # source movies, usually symlinks
+
+
+PHASES = {"starting": "Starting the recorder…",
+          "recording": "Recording: close the QuickTime window to finish",
+          "rendering": "Rendering the take…",
+          "naming": "Naming the take from its narration…"}
+
+
+def record_status(running):
+    # record.sh writes its phase to media/.record-state and removes it on exit.
+    if not running:
+        return {"phase": None, "label": None}
+    try:
+        phase = open(os.path.join(ROOT, ".record-state")).read().strip()
+    except OSError:
+        phase = "starting"
+    return {"phase": phase, "label": PHASES.get(phase, phase)}
 
 
 def sources():
@@ -100,6 +118,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
+        if self.path == "/record/status":
+            return self.send_json(200, record_status(self.recording()))
         if self.path == "/sources":
             return self.send_json(200, [{"name": n} for n in sources()])
         super().do_GET()

@@ -15,6 +15,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VT="$HOME/Desktop/video-test"
 MIC="${MIC:-MacBook Air Microphone}"
 NATIVE="$HOME/.cache/bram-studio/record_native"
+# The phase serve_media.py reports at /record/status, for the app's spinner.
+STATE="$HERE/media/.record-state"
+phase() { echo "$1" > "$STATE"; }
+trap 'rm -f "$STATE"' EXIT
+phase starting
 if [ -n "$1" ]; then
   SRC="$1"
 else
@@ -55,8 +60,10 @@ open -a "QuickTime Player" "$SRC"
 opened=$(python3 -c 'import time; print(f"{time.time():.3f}")')
 echo "$opened" > "$dir/opened"
 echo "recording in $VT/$dir; close the QuickTime window to finish"
+phase recording
 
 closed=$(./closewatch.sh | awk '/^CLOSED/ {print $2}')
+phase rendering
 kill "$logger" 2>/dev/null || true
 kill -TERM "$rec" 2>/dev/null || true
 wait "$rec" || true
@@ -73,5 +80,6 @@ take=$(jq -r .take "$json")
 ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
   -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
 # "-": register.py names the take from its first spoken words.
+phase naming
 python3 "$HERE/register.py" "narrated/$take-raw.mp4" - \
   "$(jq -r .src_start "$json")" "$(jq -r .src_end "$json")" "$(basename "$SRC")"
