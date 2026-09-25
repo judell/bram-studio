@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -60,26 +60,65 @@
         <Spinner />
         <Text value="{recStatus.value.label}" />
       </HStack>
+      <!-- The take loaded in the player (its URL); MediaPlayer is the
+           experimental component from xmlui-org/xmlui#3913 (vendor/). -->
+      <VStack when="{playing}">
+        <HStack horizontalAlignment="end">
+          <Button icon="close" variant="ghost" aria-label="Close player"
+            tooltip="Close the player" onClick="playing = ''" />
+        </HStack>
+        <MediaPlayer id="takePlayer" src="{playing}" autoPlay="true" />
+      </VStack>
       <Table data="{takes}">
         <!-- Never show "No data available" (it flashes while data loads). -->
         <property name="noDataTemplate">
           <Fragment/>
         </property>
         <!-- The narration and source share the flexible width; the timestamp,
-             seconds and actions columns stay tight. -->
-        <Column header="Take" bindTo="name" type="long-text" width="3*" />
-        <Column header="Recorded" bindTo="recorded" width="120px" />
-        <Column header="Seconds" bindTo="duration_s" width="80px" />
-        <Column header="Source" bindTo="source" width="2*" />
+             seconds and actions columns stay tight. The row in the player is
+             tinted: each cell wraps its content in a full-width HStack, the
+             pattern Bram's Worklist uses for overlap rows (Table has no
+             per-row style). -->
+        <Column header="Take" bindTo="name" width="3*">
+          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+            <Text value="{$item.name}" overflowMode="flow" />
+          </HStack>
+        </Column>
+        <Column header="Recorded" bindTo="recorded" width="120px">
+          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+            <Text value="{$item.recorded}" />
+          </HStack>
+        </Column>
+        <Column header="Seconds" bindTo="duration_s" width="80px">
+          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+            <Text value="{$item.duration_s}" />
+          </HStack>
+        </Column>
+        <Column header="Source" bindTo="source" width="2*">
+          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+            <Text value="{$item.source}" />
+          </HStack>
+        </Column>
         <Column header="" width="50px">
-          <VStack horizontalAlignment="center">
-            <!-- Becomes a play/pause toggle (one slot, icon and tooltip name the
-                 next action) once takes play in the app (xmlui-org/xmlui#3913). -->
-            <Link to="{$item.url}" target="_blank" icon="play" aria-label="Play take"
-              tooltip="Play" />
+          <VStack horizontalAlignment="center" width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+            <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
+            <Button variant="ghost"
+              icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
+              tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
+              aria-label="Play or pause take"
+              onClick="
+                if (playing === $item.url) {
+                  takePlayer.paused ? takePlayer.play() : takePlayer.pause();
+                } else {
+                  playing = $item.url;
+                }
+              " />
             <Button icon="trash" variant="ghost" themeColor="attention"
               aria-label="Delete take" tooltip="Delete this take (moves the MP4 to media/.trash)"
-              onClick="deleteTake.execute($item.id)" />
+              onClick="
+                if (playing === $item.url) playing = '';
+                deleteTake.execute($item.id);
+              " />
           </VStack>
         </Column>
       </Table>
