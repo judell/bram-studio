@@ -10,15 +10,19 @@ it (and couldn't seek). This fills that gap until Bram does it itself.
 POST /record starts record.sh (one take) for the app's Record button;
 its output goes to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
+POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row.
 """
 import http.server
 import json
 import mimetypes
 import os
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
+import time
 
 import voicetest
 
@@ -95,7 +99,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.start_recording()
         if self.path == "/voicetest":
             return self.run_voicetest()
+        if self.path == "/delete":
+            return self.delete_take()
         self.send_json(404, {"error": "not found"})
+
+    def delete_take(self):
+        # Move the take's MP4 to media/.trash/ first; drop the row only if that worked.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        row = db.execute("SELECT file FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        src, trashed = os.path.join(ROOT, row[0]), None
+        if os.path.exists(src):
+            trash = os.path.join(ROOT, ".trash")
+            os.makedirs(trash, exist_ok=True)
+            name = row[0]
+            if os.path.exists(os.path.join(trash, name)):
+                stem, ext = os.path.splitext(name)
+                name = f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}"
+            try:
+                shutil.move(src, os.path.join(trash, name))
+            except OSError as e:
+                return self.send_json(500, {"error": f"couldn't move {row[0]} to .trash: {e}"})
+            trashed = f".trash/{name}"
+        db.execute("DELETE FROM takes WHERE id = ?", (body["id"],))
+        db.commit()
+        self.send_json(200, {"deleted": body["id"], "trashed": trashed})
 
     def recording(self):
         return recorder is not None and recorder.poll() is None

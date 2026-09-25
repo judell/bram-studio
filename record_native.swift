@@ -3,6 +3,8 @@
 //
 //   record_native <device name> <out.wav> <seconds>
 //
+// seconds = 0 records until SIGTERM or SIGINT (record.sh's session mode).
+//
 // Prints "started <epoch>" when samples begin flowing and "stopped <epoch>"
 // when the file is closed.
 import AVFoundation
@@ -25,7 +27,9 @@ class Delegate: NSObject, AVCaptureFileOutputRecordingDelegate {
     init(seconds: Double) { self.seconds = seconds }
     func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo url: URL, from connections: [AVCaptureConnection]) {
         print("started \(Date().timeIntervalSince1970)"); fflush(stdout)
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { output.stopRecording() }
+        if seconds > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { output.stopRecording() }
+        }
     }
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo url: URL, from connections: [AVCaptureConnection], error: Error?) {
         print("stopped \(Date().timeIntervalSince1970)"); fflush(stdout)
@@ -45,4 +49,13 @@ let delegate = Delegate(seconds: seconds)
 let url = URL(fileURLWithPath: args[2])
 try? FileManager.default.removeItem(at: url)
 output.startRecording(to: url, outputFileType: .wav, recordingDelegate: delegate)
+// On SIGTERM/SIGINT, stop through the writer so the WAV header is finalized.
+var stoppers: [DispatchSourceSignal] = []
+for sig in [SIGTERM, SIGINT] {
+    signal(sig, SIG_IGN)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    src.setEventHandler { output.stopRecording() }
+    src.resume()
+    stoppers.append(src)
+}
 RunLoop.main.run()

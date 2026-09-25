@@ -9,6 +9,11 @@
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     onSuccess="toast.success('Recording: close the QuickTime window to finish')"
     errorNotificationMessage="{$error.message}" />
+  <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
+  <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
+    body="{{ id: $param }}"
+    onSuccess="takes.refetch()"
+    errorNotificationMessage="{$error.message}" />
 
   <!-- Audio test bench: serve_media.py runs voicetest.py, which records 10s
        with the chosen mic and recorder and adds a voice_tests row. -->
@@ -34,6 +39,10 @@
         </Column>
         <Column header="Recorded" bindTo="created_at" width="220px" />
         <Column header="Seconds" bindTo="duration_s" width="120px" />
+        <Column header="" width="60px">
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete take" onClick="deleteTake.execute($item.id)" />
+        </Column>
       </Table>
     </VStack>
     <VStack height="100%" overflowY="auto">
