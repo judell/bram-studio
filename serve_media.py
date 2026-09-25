@@ -7,7 +7,8 @@ Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
 it (and couldn't seek). This fills that gap until Bram does it itself.
 
-POST /record starts record.sh (one take) for the app's Record button;
+GET /sources lists the movies in sources/; POST /record {source} starts
+record.sh (one take of that movie) for the app's Record button;
 its output goes to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row.
@@ -30,6 +31,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "media")
 recorder = None  # the running record.sh, if any
 testing = threading.Lock()  # held while voicetest.py has the mic
+SOURCES = os.path.join(HERE, "sources")  # source movies, usually symlinks
+
+
+def sources():
+    names = os.listdir(SOURCES) if os.path.isdir(SOURCES) else []
+    return sorted(n for n in names if n.lower().endswith((".mp4", ".mov", ".m4v"))
+                  and os.path.isfile(os.path.join(SOURCES, n)))
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("audio/mp4", ".m4a")
@@ -92,6 +100,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
+        if self.path == "/sources":
+            return self.send_json(200, [{"name": n} for n in sources()])
         super().do_GET()
 
     def do_POST(self):
@@ -133,10 +143,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def start_recording(self):
         # record.sh runs one take: QuickTime session -> close -> render -> register.
         global recorder
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        source = body.get("source")
+        if not source and len(sources()) == 1:
+            source = sources()[0]  # nothing picked, and there's only one to pick
+        if source not in sources():
+            return self.send_json(400, {"error": f"no source movie named {source!r} in sources/"})
         if self.recording() or testing.locked():
             return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
         log = open(os.path.join(HERE, "record.log"), "a")
-        recorder = subprocess.Popen([os.path.join(HERE, "record.sh")], cwd=HERE, stdin=subprocess.DEVNULL,
+        recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), os.path.join(SOURCES, source)],
+                                    cwd=HERE, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         self.send_json(202, {"started": True})
 

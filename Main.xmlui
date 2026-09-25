@@ -6,10 +6,12 @@
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, duration_s, url FROM takes ORDER BY created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, duration_s, url, source FROM takes ORDER BY created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; the take appears when it registers. -->
+  <DataSource id="sources" url="http://127.0.0.1:8765/sources" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
+    body="{$param}"
     onSuccess="toast.success('Recording: close the QuickTime window to finish')"
     errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
@@ -45,7 +47,10 @@
     <Page url="/">
       <HStack verticalAlignment="center">
         <H2>Takes</H2>
-        <Button label="Record" onClick="startRecording.execute()"
+        <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
+          placeholder="Source (default: the only one)"
+          width="260px" />
+        <Button label="Record" onClick="startRecording.execute({ source: sourceChoice.value })"
           enabled="{!startRecording.inProgress}" />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
@@ -56,6 +61,7 @@
         </Column>
         <Column header="Recorded" bindTo="created_at" width="220px" />
         <Column header="Seconds" bindTo="duration_s" width="120px" />
+        <Column header="Source" bindTo="source" width="180px" />
         <Column header="" width="60px">
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete take" onClick="deleteTake.execute($item.id)" />
