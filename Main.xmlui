@@ -3,7 +3,7 @@
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, duration_s, src_start, src_end, url FROM takes ORDER BY created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, duration_s, url FROM takes ORDER BY created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; the take appears when it registers. -->
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
@@ -16,12 +16,10 @@
     <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
   </HStack>
   <Table data="{takes}">
-    <Column header="Take" bindTo="name">
+    <Column header="Take" bindTo="name" width="*">
       <Link to="{$item.url}" target="_blank" label="{$item.name}" />
     </Column>
-    <Column header="Recorded" bindTo="created_at" />
-    <Column header="Seconds" bindTo="duration_s" />
-    <Column header="Source from" bindTo="src_start" />
-    <Column header="Source to" bindTo="src_end" />
+    <Column header="Recorded" bindTo="created_at" width="220px" />
+    <Column header="Seconds" bindTo="duration_s" width="120px" />
   </Table>
 </App>
