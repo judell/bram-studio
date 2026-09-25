@@ -80,7 +80,13 @@ json="takes/$take.json"
 # Swap render.py's leveled voice for the raw slice it saved.
 ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
   -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
+# A take with no player events renders as a still frame: flag it, with what the
+# player reported at Stop (diag.json), so the cause can be told apart later.
+warning=""
+if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended")] | length' "$dir/events.json")" = "0" ]; then
+  warning="no player events; $(jq -r '"duration=\(.duration // "none"), paused=\(.paused), currentTime=\(.currentTime)"' "$dir/diag.json" 2>/dev/null || echo "no diag")"
+fi
 # "-": register.py names the take from its first spoken words.
 phase naming
 python3 "$HERE/register.py" "narrated/$take-raw.mp4" - \
-  "$(jq -r .src_start "$json")" "$(jq -r .src_end "$json")" "$(basename "$SRC")"
+  "$(jq -r .src_start "$json")" "$(jq -r .src_end "$json")" "$(basename "$SRC")" "$warning"

@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS takes (
   file TEXT NOT NULL,
   url TEXT NOT NULL,
   notes TEXT,
-  source TEXT  -- the source movie's file name (sources/)
+  source TEXT,  -- the source movie's file name (sources/)
+  warning TEXT  -- e.g. "no player events; duration=…" (record.sh)
 );
 
 -- One row per 10s voice test from the audio test bench (voicetest.py).

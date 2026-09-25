@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add a rendered take to studio.db and media/.
 
-    python3 register.py <mp4> [name] [src_start] [src_end] [source]
+    python3 register.py <mp4> [name] [src_start] [src_end] [source] [warning]
 
 Copies the MP4 into media/ and inserts a row into takes; its URL points at
 serve_media.py (port 8765).
@@ -50,6 +50,7 @@ name = sys.argv[2] if len(sys.argv) > 2 else "-"
 src_start = sys.argv[3] if len(sys.argv) > 3 else None
 src_end = sys.argv[4] if len(sys.argv) > 4 else None
 source = sys.argv[5] if len(sys.argv) > 5 else None
+warning = (sys.argv[6] if len(sys.argv) > 6 else "") or None
 fname = os.path.basename(src)
 dest = os.path.join(HERE, "media", fname)
 if os.path.abspath(src) != dest:
@@ -62,12 +63,14 @@ if name == "-":
 dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", dest],
                            capture_output=True, text=True).stdout.strip() or 0)
 db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-# Databases made before takes had a source column get one.
-if "source" not in [c[1] for c in db.execute("PRAGMA table_info(takes)")]:
-    db.execute("ALTER TABLE takes ADD COLUMN source TEXT")
-db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source) "
-           "VALUES (?,?,?,?,?,?,?,?,?)",
+# Databases made before takes had these columns get them.
+columns = [c[1] for c in db.execute("PRAGMA table_info(takes)")]
+for col in ("source", "warning"):
+    if col not in columns:
+        db.execute(f"ALTER TABLE takes ADD COLUMN {col} TEXT")
+db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, warning) "
+           "VALUES (?,?,?,?,?,?,?,?,?,?)",
            (name, datetime.now().strftime("%Y-%m-%d %H:%M"), round(dur, 1), src_start, src_end, fname,
-            f"http://127.0.0.1:8765/{fname}", notes, source))
+            f"http://127.0.0.1:8765/{fname}", notes, source, warning))
 db.commit()
 print(f"registered {name}: {fname} ({dur:.1f}s)")

@@ -6,7 +6,7 @@
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source FROM takes ORDER BY created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source, warning FROM takes ORDER BY created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
        log, record.sh renders from it, and the take appears when it
@@ -97,7 +97,13 @@
           enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
           onClick="
             newAfterId = Math.max(0, ...(takes.value || []).map(t => t.id));
-            stopRecording.execute({ events: recEvents });
+            const playerEvents = recEvents.filter(e => ['play', 'pause', 'seeked', 'ended'].includes(e.event)).length;
+            const diag = { duration: sourcePlayer.duration, paused: sourcePlayer.paused,
+                           currentTime: sourcePlayer.getCurrentTime(), playerEvents };
+            if (playerEvents === 0) {
+              toast.error('No player events were captured in this take. The picture will be a still frame. Diagnostics saved.');
+            }
+            stopRecording.execute({ events: recEvents, diag });
           " />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
@@ -139,6 +145,9 @@
              per-row style). -->
         <Column header="Take" bindTo="name" width="3*">
           <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
+            <!-- Empty take (no player events): record.sh's warning, with what the
+                 player reported at Stop. -->
+            <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
             <Text value="{$item.name}" overflowMode="flow" />
           </HStack>
         </Column>

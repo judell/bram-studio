@@ -201,6 +201,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             return self.send_json(409, {"error": "the recorder hasn't started yet"})
         json.dump(body.get("events", []), open(os.path.join(session, "events.json"), "w"), indent=1)
+        # What the source player reported at Stop, so an empty take carries evidence.
+        json.dump(body.get("diag", {}), open(os.path.join(session, "diag.json"), "w"), indent=1)
         open(os.path.join(ROOT, ".record-stop"), "w").close()
         self.send_json(200, {"stopped": True, "events": len(body.get("events", []))})
 
