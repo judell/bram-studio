@@ -4,7 +4,7 @@
     python3 voicetest.py <mic> <recorder>
 
 recorder is one of:
-  ffmpeg-raw    what ~/Desktop/video-test/session.sh does (avfoundation -> s16le)
+  ffmpeg-raw    what the old ffmpeg session capture did (avfoundation -> s16le)
   ffmpeg-async  the same, with aresample=async=1 filling timestamp gaps
   native        record_native.swift (AVFoundation's own file writer, no ffmpeg)
 

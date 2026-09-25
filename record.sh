@@ -13,7 +13,8 @@
 # slice, since its leveling sounds worse.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-VT="$HOME/Desktop/video-test"
+# Sessions, voice slices and renders live in work/ (gitignored).
+WORK="$HERE/work"
 MIC="${MIC:-MacBook Air Microphone}"
 NATIVE="$HOME/.cache/bram-studio/record_native"
 # The phase serve_media.py reports at /record/status, for the app's spinner.
@@ -38,7 +39,8 @@ if [ ! -x "$NATIVE" ] || [ "$HERE/record_native.swift" -nt "$NATIVE" ]; then
   mkdir -p "$(dirname "$NATIVE")"
   swiftc -O -o "$NATIVE" "$HERE/record_native.swift"
 fi
-cd "$VT"
+mkdir -p "$WORK/sessions"
+cd "$WORK"
 
 # Session: native voice recording; the picture comes from the app's events.
 dir="sessions/$(date +%Y%m%d-%H%M%S)"
@@ -49,13 +51,13 @@ echo "$rec" > "$dir/pids"
 for _ in $(seq 100); do grep -q '^started' "$dir/recorder.out" && break; sleep 0.1; done
 t0=$(awk '/^started/ {print $2}' "$dir/recorder.out")
 if [ -z "$t0" ]; then
-  echo "recorder never started; see $VT/$dir/recorder.err"
+  echo "recorder never started; see $WORK/$dir/recorder.err"
   kill "$rec" 2>/dev/null || true
   exit 1
 fi
 echo "$t0" > "$dir/t0"
-echo "$VT/$dir" > "$SESSION_FILE"
-echo "recording in $VT/$dir; click Stop in the app to finish"
+echo "$WORK/$dir" > "$SESSION_FILE"
+echo "recording in $WORK/$dir; click Stop in the app to finish"
 phase recording
 
 while [ ! -f "$STOP" ]; do sleep 0.2; done
@@ -71,8 +73,9 @@ ffmpeg -v error -y -i "$dir/voice.wav" -ac 1 -ar 48000 -f s16le -acodec pcm_s16l
 go=-0.2
 stop=$(python3 -c "print($closed - $t0 + 0.2)")
 python3 "$HERE/render.py" "$dir" "$go" "$stop" "$SRC" --events "$dir/events.json"
-json=$(ls -t takes/perf-*.json | head -1)
-take=$(jq -r .take "$json")
+# render.py names the take after its session, so names never repeat.
+take="take-$(basename "$dir")"
+json="takes/$take.json"
 
 # Swap render.py's leveled voice for the raw slice it saved.
 ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \

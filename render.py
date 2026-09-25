@@ -4,17 +4,18 @@
     python3 render.py sessions/<stamp> <go_end_s> <stop_start_s> <source.mp4> \
         --events <events.json>
 
-Copied from ~/Desktop/video-test/take.py so the source movie is an argument
-(take.py hardcodes ~/Desktop/bram-sep-23.mp4). The playhead path comes from
-the studio's MediaPlayer events (start/play/pause/seeked/ended, each with
-currentTime and wallMs), not from QuickTime's polled playhead.log. It still
-works in ~/Desktop/video-test: session dirs, takes/ and narrated/ live there.
+Descended from an earlier take.py (QuickTime + a polled playhead log). The
+playhead path comes from the studio's MediaPlayer events (start/play/pause/
+seeked/ended, each with currentTime and wallMs). It works in the repo's work/
+folder: sessions/<stamp>/, takes/ and narrated/ live there, and the take is
+named take-<stamp> after its session, so names never repeat.
 
 The take runs from just after "go" to just before "stop" (GAP trimmed on
 each side), minus any stretch between a recpause and a recresume event (the
-app's Pause/Resume): those are cut from both picture and voice. It saves takes/perf-<n>.wav (the voice), takes/perf-<n>.json
+app's Pause/Resume): those are cut from both picture and voice. It saves
+takes/take-<stamp>.wav (the voice), takes/take-<stamp>.json
 (wall times, source start/stop timecodes, the playhead path), and renders
-narrated/perf-<n>.mp4 by replaying the path against the source:
+narrated/take-<stamp>.mp4 by replaying the path against the source:
   playing          -> that source range at 1x
   paused           -> the frame held
   jump or scrub    -> a cut (short holds at each scrub position)
@@ -22,15 +23,13 @@ Voice is leveled like mix.py (gentle compression, two-pass loudnorm to
 -16 LUFS, -1.5 dBTP).
 """
 import array
-import glob
 import json
 import os
-import re
 import subprocess
 import sys
 import wave
 
-HERE = os.path.expanduser("~/Desktop/video-test")
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
 RATE, GAP, FPS = 48000, 0.2, 25
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage",
        "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]
@@ -42,9 +41,7 @@ D = os.path.join(HERE, D)
 t0 = float(open(os.path.join(D, "t0")).read())
 a_s, b_s = go_end + GAP, stop_start - GAP
 w0, w1 = t0 + a_s, t0 + b_s
-n = 1 + max([int(re.search(r"perf-(\d+)\.json$", p).group(1))
-             for p in glob.glob(os.path.join(HERE, "takes", "perf-*.json"))] or [0])
-name = f"perf-{n}"
+name = "take-" + os.path.basename(os.path.normpath(D))
 os.makedirs(os.path.join(HERE, "takes"), exist_ok=True)
 os.makedirs(os.path.join(HERE, "narrated", "parts"), exist_ok=True)
 
