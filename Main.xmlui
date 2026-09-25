@@ -6,7 +6,7 @@
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, duration_s, url, source FROM takes ORDER BY created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source FROM takes ORDER BY created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
   <!-- serve_media.py runs record.sh; the take appears when it registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" />
@@ -65,16 +65,22 @@
         <property name="noDataTemplate">
           <Fragment/>
         </property>
-        <Column header="Take" bindTo="name" type="long-text" width="*" />
-        <Column header="" width="70px">
-          <Link to="{$item.url}" target="_blank" label="Play" />
-        </Column>
-        <Column header="Recorded" bindTo="created_at" width="220px" />
-        <Column header="Seconds" bindTo="duration_s" width="120px" />
-        <Column header="Source" bindTo="source" width="180px" />
-        <Column header="" width="60px">
-          <Button icon="trash" variant="ghost" themeColor="attention"
-            aria-label="Delete take" onClick="deleteTake.execute($item.id)" />
+        <!-- The narration and source share the flexible width; the timestamp,
+             seconds and actions columns stay tight. -->
+        <Column header="Take" bindTo="name" type="long-text" width="3*" />
+        <Column header="Recorded" bindTo="recorded" width="120px" />
+        <Column header="Seconds" bindTo="duration_s" width="80px" />
+        <Column header="Source" bindTo="source" width="2*" />
+        <Column header="" width="50px">
+          <VStack horizontalAlignment="center">
+            <!-- Becomes a play/pause toggle (one slot, icon and tooltip name the
+                 next action) once takes play in the app (xmlui-org/xmlui#3913). -->
+            <Link to="{$item.url}" target="_blank" icon="play" aria-label="Play take"
+              tooltip="Play" />
+            <Button icon="trash" variant="ghost" themeColor="attention"
+              aria-label="Delete take" tooltip="Delete this take (moves the MP4 to media/.trash)"
+              onClick="deleteTake.execute($item.id)" />
+          </VStack>
         </Column>
       </Table>
     </Page>
