@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -8,13 +8,20 @@
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, source FROM takes ORDER BY created_at DESC', params: [] }}"
     pollIntervalInSeconds="5" />
-  <!-- serve_media.py runs record.sh; the take appears when it registers. -->
+  <!-- serve_media.py runs record.sh; Stop posts the source player's event
+       log, record.sh renders from it, and the take appears when it
+       registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" />
   <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
     pollIntervalInSeconds="2" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     body="{$param}"
-    onSuccess="toast.success('Recording: close the QuickTime window to finish')"
+    onSuccess="toast.success('Recording: narrate over the movie, then click Stop')"
+    onError="capturing = false"
+    errorNotificationMessage="{$error.message}" />
+  <APICall id="stopRecording" method="post" url="http://127.0.0.1:8765/record/stop"
+    body="{$param}"
+    onSuccess="capturing = false; recEvents = []; sourceChoice.setValue('')"
     errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
@@ -48,21 +55,54 @@
   <Pages fallbackPath="/">
     <Page url="/">
       <HStack verticalAlignment="center">
-        <H2>Takes</H2>
+        <H2>Sources</H2>
         <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
           placeholder="Choose a source"
           width="260px" />
-        <Button label="Record" onClick="startRecording.execute({ source: sourceChoice.value })"
-          enabled="{!!sourceChoice.value &amp;&amp; !startRecording.inProgress}" />
+        <!-- Record logs a start row (the player's position and state at the
+             click), then every play/pause/seeked/ended until Stop. -->
+        <Button label="Record" when="{!capturing}"
+          enabled="{!!sourceChoice.value &amp;&amp; !playing &amp;&amp; !startRecording.inProgress &amp;&amp; !(recStatus.value &amp;&amp; recStatus.value.phase)}"
+          onClick="
+            playing = '';
+            newAfterId = null;
+            recEvents = [{ event: 'start', currentTime: sourcePlayer.getCurrentTime(), playing: !sourcePlayer.paused, wallMs: Date.now() }];
+            capturing = true;
+            startRecording.execute({ source: sourceChoice.value });
+          " />
+        <Button label="Stop" themeColor="attention" when="{capturing}"
+          enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
+          onClick="
+            newAfterId = Math.max(0, ...(takes.value || []).map(t => t.id));
+            stopRecording.execute({ events: recEvents });
+          " />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
       <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
         <Spinner />
         <Text value="{recStatus.value.label}" />
       </HStack>
-      <!-- The take loaded in the player (its URL); MediaPlayer is the
-           experimental component from xmlui-org/xmlui#3913 (vendor/). -->
-      <VStack when="{playing}">
+      <!-- The source movie you narrate over. MediaPlayer is the experimental
+           component from xmlui-org/xmlui#3913 (vendor/); its events are the
+           take's picture path (render.py's events input). -->
+      <!-- One player at a time: the source player while a source is chosen and
+           no take is loaded; its close box clears the source. -->
+      <VStack when="{sourceChoice.value &amp;&amp; !playing}">
+        <HStack horizontalAlignment="end">
+          <Button icon="close" variant="ghost" aria-label="Close source player"
+            tooltip="Close the source" when="{!capturing}"
+            onClick="sourceChoice.setValue('')" />
+        </HStack>
+        <MediaPlayer id="sourcePlayer"
+          src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
+          onPlay="(e) => { if (capturing) recEvents = [...recEvents, { event: 'play', currentTime: e.currentTime, wallMs: Date.now() }] }"
+          onPause="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pause', currentTime: e.currentTime, wallMs: Date.now() }] }"
+          onSeeked="(e) => { if (capturing) recEvents = [...recEvents, { event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }] }"
+          onEnded="(e) => { if (capturing) recEvents = [...recEvents, { event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }] }" />
+      </VStack>
+      <!-- The take loaded in the take player (its URL). It replaces the source
+           player; closing it brings the source player back. -->
+      <VStack when="{playing &amp;&amp; !capturing}">
         <HStack horizontalAlignment="end">
           <Button icon="close" variant="ghost" aria-label="Close player"
             tooltip="Close the player" onClick="playing = ''" />
@@ -76,33 +116,34 @@
         </property>
         <!-- The narration and source share the flexible width; the timestamp,
              seconds and actions columns stay tight. The row in the player is
-             tinted: each cell wraps its content in a full-width HStack, the
+             tinted, and so is a take that arrives after Stop (id above
+             newAfterId): each cell wraps its content in a full-width HStack, the
              pattern Bram's Worklist uses for overlap rows (Table has no
              per-row style). -->
         <Column header="Take" bindTo="name" width="3*">
-          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
             <Text value="{$item.name}" overflowMode="flow" />
           </HStack>
         </Column>
         <Column header="Recorded" bindTo="recorded" width="120px">
-          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
             <Text value="{$item.recorded}" />
           </HStack>
         </Column>
         <Column header="Seconds" bindTo="duration_s" width="80px">
-          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
             <Text value="{$item.duration_s}" />
           </HStack>
         </Column>
         <Column header="Source" bindTo="source" width="2*">
-          <HStack width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+          <HStack width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
             <Text value="{$item.source}" />
           </HStack>
         </Column>
         <Column header="" width="50px">
-          <VStack horizontalAlignment="center" width="100%" backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
+          <VStack horizontalAlignment="center" width="100%" backgroundColor="{playing === $item.url || (newAfterId !== null &amp;&amp; $item.id > newAfterId) ? '$color-primary-100' : 'transparent'}">
             <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
-            <Button variant="ghost"
+            <Button variant="ghost" enabled="{!capturing}"
               icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
               tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
               aria-label="Play or pause take"

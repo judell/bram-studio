@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Save and render one performance take.
 
-    python3 render.py sessions/<stamp> <go_end_s> <stop_start_s> <source.mp4>
+    python3 render.py sessions/<stamp> <go_end_s> <stop_start_s> <source.mp4> \
+        --events <events.json>
 
 Copied from ~/Desktop/video-test/take.py so the source movie is an argument
-(take.py hardcodes ~/Desktop/bram-sep-23.mp4), and so the playhead path uses
-only rows logged for that movie. It still works in ~/Desktop/video-test:
-session dirs, playhead.log, takes/ and narrated/ all live there.
+(take.py hardcodes ~/Desktop/bram-sep-23.mp4). The playhead path comes from
+the studio's MediaPlayer events (start/play/pause/seeked/ended, each with
+currentTime and wallMs), not from QuickTime's polled playhead.log. It still
+works in ~/Desktop/video-test: session dirs, takes/ and narrated/ live there.
 
 The take runs from just after "go" to just before "stop" (GAP trimmed on
 each side). It saves takes/perf-<n>.wav (the voice), takes/perf-<n>.json
@@ -27,13 +29,13 @@ import sys
 import wave
 
 HERE = os.path.expanduser("~/Desktop/video-test")
-LOG = os.path.join(HERE, "playhead.log")
 RATE, GAP, FPS = 48000, 0.2, 25
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage",
        "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]
 
 D, go_end, stop_start = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 SRC = os.path.realpath(sys.argv[4])
+EVENTS = sys.argv[sys.argv.index("--events") + 1]
 D = os.path.join(HERE, D)
 t0 = float(open(os.path.join(D, "t0")).read())
 a_s, b_s = go_end + GAP, stop_start - GAP
@@ -55,27 +57,40 @@ with wave.open(wav, "wb") as w:
     w.setframerate(RATE)
     w.writeframes(data)
 
-# Playhead path: the state at w0, then every change up to w1.
-rows = []
-for line in open(LOG):
-    f = line.rstrip("\n").split("\t")
-    # playhead.js logs QuickTime's document name 4th; keep only this movie's rows.
-    if len(f) >= 4 and f[1] != "error" and f[3] == os.path.basename(SRC):
-        rows.append((int(f[0]) / 1000.0, float(f[1]), f[2] == "true"))
+# Playhead path: (wall, position, playing) rows from the player's events,
+# with playing carried across events (seeked keeps it).
+rows, playing = [], False
+for e in json.load(open(EVENTS)):
+    if e["event"] == "start":
+        playing = bool(e.get("playing"))
+    elif e["event"] == "play":
+        playing = True
+    elif e["event"] in ("pause", "ended"):
+        playing = False
+    elif e["event"] != "seeked":
+        continue
+    rows.append((e["wallMs"] / 1000.0, float(e["currentTime"]), playing))
+# The state at w0 (the page logs "start" at the Record click, a moment before
+# the recorder's first sample; a playing row moves on by the elapsed time).
 before = [r for r in rows if r[0] <= w0]
-path = ([(w0, before[-1][1], before[-1][2])] if before else []) + [r for r in rows if w0 < r[0] < w1]
+path = [r for r in rows if w0 < r[0] < w1]
+if before:
+    wb, pb, plb = before[-1]
+    path.insert(0, (w0, pb + (w0 - wb if plb else 0), plb))
 if not path:
-    sys.exit("no playhead data for this take")
+    sys.exit("no player events for this take")
 path.append((w1, None, None))
 
-# Pieces: (kind, src_pos, duration). Contiguous play samples merge.
+# Pieces: (kind, src_pos, duration). A playing row plays from its position for
+# the wall-clock gap to the next row: a pause that ends a drag-while-playing
+# carries the drag's first target, not the last played position, so the
+# stretch's length comes from wall time. Jumps are their own seeked rows.
 pieces = []
 for (wa, pa, pla), (wb, pb, _) in zip(path, path[1:]):
     dt = wb - wa
     if dt <= 0:
         continue
-    contiguous = pb is not None and abs((pb - pa) - dt) < 0.35
-    if pla and (contiguous or pb is None):
+    if pla:
         if pieces and pieces[-1][0] == "play" and abs(pieces[-1][1] + pieces[-1][2] - pa) < 0.35:
             pieces[-1] = ("play", pieces[-1][1], pieces[-1][2] + dt)
         else:
@@ -115,6 +130,8 @@ m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", wav, "-af",
 ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
 level = (f"{pre},loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
          f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:linear=true")
+if "inf" in ln["input_i"]:
+    level = "anull"  # a silent take has no loudness to normalize (measured_I is -inf)
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", wav, "-filter_complex",
                 f"[1:a]{level},afade=t=in:d=0.1,aresample=48000[a]", "-map", "0:v", "-map", "[a]",

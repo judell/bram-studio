@@ -7,10 +7,11 @@ Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
 it (and couldn't seek). This fills that gap until Bram does it itself.
 
-GET /sources lists the movies in sources/, GET /record/status reports a running
-take's phase; POST /record {source} starts
-record.sh (one take of that movie) for the app's Record button;
-its output goes to record.log. GET /devices lists the audio inputs and
+GET /sources lists the movies in sources/ and /sources/<name> streams one;
+GET /record/status reports a running take's phase; POST /record {source}
+starts record.sh (one take of that movie) for the app's Record button, and
+POST /record/stop {events} ends it with the player's event log;
+record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row.
 """
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 import voicetest
 
@@ -36,7 +38,7 @@ SOURCES = os.path.join(HERE, "sources")  # source movies, usually symlinks
 
 
 PHASES = {"starting": "Starting the recorder…",
-          "recording": "Recording: close the QuickTime window to finish",
+          "recording": "Recording: click Stop to finish",
           "rendering": "Rendering the take…",
           "naming": "Naming the take from its narration…"}
 
@@ -65,6 +67,15 @@ mimetypes.add_type("audio/wav", ".wav")
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
+
+    def translate_path(self, path):
+        # /sources/<name> streams a source movie (via its symlink), but only a
+        # name GET /sources lists; everything else maps into media/.
+        name = urllib.parse.unquote(path.split("?", 1)[0])
+        if name.startswith("/sources/"):
+            name = name[len("/sources/"):]
+            return os.path.join(SOURCES, name) if name in sources() else os.path.join(ROOT, ".no-such-file")
+        return super().translate_path(path)
 
     def send_head(self):
         path = self.translate_path(self.path)
@@ -127,6 +138,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/record":
             return self.start_recording()
+        if self.path == "/record/stop":
+            return self.stop_recording()
         if self.path == "/voicetest":
             return self.run_voicetest()
         if self.path == "/delete":
@@ -176,6 +189,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                     cwd=HERE, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         self.send_json(202, {"started": True})
+
+    def stop_recording(self):
+        # The page's MediaPlayer event log becomes the session's events.json;
+        # then .record-stop tells record.sh the take is over.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if not self.recording():
+            return self.send_json(409, {"error": "nothing is recording"})
+        try:
+            session = open(os.path.join(ROOT, ".record-session")).read().strip()
+        except OSError:
+            return self.send_json(409, {"error": "the recorder hasn't started yet"})
+        json.dump(body.get("events", []), open(os.path.join(session, "events.json"), "w"), indent=1)
+        open(os.path.join(ROOT, ".record-stop"), "w").close()
+        self.send_json(200, {"stopped": True, "events": len(body.get("events", []))})
 
     def run_voicetest(self):
         # One 10s test at a time, never during a take; returns when it's measured.
