@@ -1,4 +1,4 @@
-<App name="Bram Studio">
+<App name="Bram Studio" scrollWholePage="false">
   <!-- Takes live in studio.db (see schema.sql); Bram serves it read-only via
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
@@ -9,17 +9,70 @@
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     onSuccess="toast.success('Recording: close the QuickTime window to finish')"
     errorNotificationMessage="{$error.message}" />
-  <HStack verticalAlignment="center">
-    <H2>Takes</H2>
-    <Button label="Record" onClick="startRecording.execute()"
-      enabled="{!startRecording.inProgress}" />
-    <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
-  </HStack>
-  <Table data="{takes}">
-    <Column header="Take" bindTo="name" width="*">
-      <Link to="{$item.url}" target="_blank" label="{$item.name}" />
-    </Column>
-    <Column header="Recorded" bindTo="created_at" width="220px" />
-    <Column header="Seconds" bindTo="duration_s" width="120px" />
-  </Table>
+
+  <!-- Audio test bench: serve_media.py runs voicetest.py, which records 10s
+       with the chosen mic and recorder and adds a voice_tests row. -->
+  <DataSource id="devices" url="http://127.0.0.1:8765/devices" />
+  <DataSource id="voiceTests" url="/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT * FROM voice_tests ORDER BY created_at DESC', params: [] }}" />
+  <APICall id="voiceTest" method="post" url="http://127.0.0.1:8765/voicetest"
+    body="{$param}"
+    onSuccess="voiceTests.refetch()"
+    errorNotificationMessage="{$error.message}" />
+
+  <VSplitter height="100%" initialPrimarySize="50%">
+    <VStack height="100%" overflowY="auto">
+      <HStack verticalAlignment="center">
+        <H2>Takes</H2>
+        <Button label="Record" onClick="startRecording.execute()"
+          enabled="{!startRecording.inProgress}" />
+        <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
+      </HStack>
+      <Table data="{takes}">
+        <Column header="Take" bindTo="name" width="*">
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" />
+        </Column>
+        <Column header="Recorded" bindTo="created_at" width="220px" />
+        <Column header="Seconds" bindTo="duration_s" width="120px" />
+      </Table>
+    </VStack>
+    <VStack height="100%" overflowY="auto">
+      <H2>Audio test bench</H2>
+      <HStack verticalAlignment="center">
+        <Select id="mic" data="{devices}" valueField="name" labelField="name"
+          initialValue="MacBook Air Microphone" width="260px" />
+        <Select id="recorderChoice" initialValue="ffmpeg-raw" width="300px">
+          <Option value="ffmpeg-raw" label="ffmpeg raw (today's session.sh)" />
+          <Option value="ffmpeg-async" label="ffmpeg + gap fill" />
+          <Option value="native" label="native macOS (no ffmpeg)" />
+        </Select>
+        <Button label="Test (10s)" enabled="{!voiceTest.inProgress}"
+          onClick="
+            toast('Recording 10s: read the sentence below now');
+            voiceTest.execute({ mic: mic.value, recorder: recorderChoice.value });
+          " />
+      </HStack>
+      <Text>
+        Read aloud: "She sells sea shells by the seashore, and the quick brown fox
+        jumps past six sharp scissors."
+      </Text>
+      <Table data="{voiceTests}">
+        <Column header="Tested" bindTo="created_at" width="190px" />
+        <Column header="Mic" bindTo="mic" />
+        <Column header="Recorder" bindTo="recorder" />
+        <Column header="Expected s" bindTo="expected_s" />
+        <Column header="Captured s" bindTo="captured_s" />
+        <Column header="Short %" bindTo="short_pct" />
+        <Column header="Clicks" bindTo="clicks" />
+        <Column header="Peak dB" bindTo="peak_db" />
+        <Column header="RMS dB" bindTo="rms_db" />
+        <Column header="Play">
+          <HStack>
+            <Link to="{$item.raw_url}" target="_blank" label="raw" />
+            <Link to="{$item.leveled_url}" target="_blank" label="leveled" />
+          </HStack>
+        </Column>
+      </Table>
+    </VStack>
+  </VSplitter>
 </App>
