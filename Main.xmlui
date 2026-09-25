@@ -24,9 +24,14 @@
     body="{$param}"
     errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
+  <!-- The table is refreshed in the trash button's click, after execute():
+       this APICall's onSuccess refetch didn't take effect (rows lingered until
+       the 5s poll, and clicking one gave "no take with id N"). invalidates="{[]}"
+       stops the default refresh of every DataSource (including /devices, which
+       runs ffmpeg) after each delete; only the takes table needs refetching. -->
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
     body="{{ id: $param }}"
-    onSuccess="takes.refetch()"
+    invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
 
   <!-- Audio recording test: serve_media.py runs voicetest.py, which records 10s
@@ -105,7 +110,7 @@
             const diag = { duration: sourcePlayer.duration, paused: sourcePlayer.paused,
                            currentTime: sourcePlayer.getCurrentTime(), playerEvents };
             if (playerEvents === 0) {
-              toast.error('No player events were captured in this take. The picture will be a still frame. Diagnostics saved.');
+              toast('No player activity in this take, so the picture is a still of 0:00.');
             }
             stopRecording.execute({ events: recEvents, diag });
             capturing = false;
@@ -192,6 +197,7 @@
               onClick="
                 if (playing === $item.url) playing = '';
                 deleteTake.execute($item.id);
+                takes.refetch();
               " />
           </VStack>
         </Column>
