@@ -50,10 +50,10 @@
       <HStack verticalAlignment="center">
         <H2>Takes</H2>
         <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
-          placeholder="Source (default: the only one)"
+          placeholder="Choose a source"
           width="260px" />
         <Button label="Record" onClick="startRecording.execute({ source: sourceChoice.value })"
-          enabled="{!startRecording.inProgress}" />
+          enabled="{!!sourceChoice.value &amp;&amp; !startRecording.inProgress}" />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
       <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
@@ -61,6 +61,10 @@
         <Text value="{recStatus.value.label}" />
       </HStack>
       <Table data="{takes}">
+        <!-- Never show "No data available" (it flashes while data loads). -->
+        <property name="noDataTemplate">
+          <Fragment/>
+        </property>
         <Column header="Take" bindTo="name" type="long-text" width="*" />
         <Column header="" width="70px">
           <Link to="{$item.url}" target="_blank" label="Play" />
@@ -95,6 +99,10 @@
         jumps past six sharp scissors."
       </Text>
       <Table data="{voiceTests}">
+        <!-- Never show "No data available" (it flashes while data loads). -->
+        <property name="noDataTemplate">
+          <Fragment/>
+        </property>
         <Column header="Tested" bindTo="created_at" width="190px" />
         <Column header="Mic" bindTo="mic" />
         <Column header="Recorder" bindTo="recorder" />
