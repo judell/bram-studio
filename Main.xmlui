@@ -20,6 +20,14 @@
   <!-- Page state is reset in the Record/Stop click handlers, after execute()
        returns: assignments in this APICall's success handler ran but didn't
        take effect (the page stayed stuck in recording mode). -->
+  <!-- Restart discards the running take (no render, no row) and starts a new
+       one; Discard only ends it, for a page that lost the take (a reload). -->
+  <APICall id="restartRecording" method="post" url="http://127.0.0.1:8765/record/restart"
+    body="{$param}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <APICall id="cancelRecording" method="post" url="http://127.0.0.1:8765/record/cancel"
+    invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <APICall id="stopRecording" method="post" url="http://127.0.0.1:8765/record/stop"
     body="{$param}"
     errorNotificationMessage="{$error.message}" />
@@ -102,6 +110,16 @@
               sourcePlayer.pause();
             }
           " />
+        <Button label="Restart" variant="outlined" when="{capturing}"
+          enabled="{!restartRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
+          tooltip="Discard this take and start again from 0:00"
+          onClick="
+            sourcePlayer.pause();
+            sourcePlayer.seek(0);
+            restartRecording.execute({ source: sourceChoice.value });
+            recPaused = false;
+            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }];
+          " />
         <Button label="Stop" themeColor="attention" when="{capturing}"
           enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
           onClick="
@@ -118,6 +136,14 @@
             recEvents = [];
           " />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
+      </HStack>
+      <!-- A take this page didn't start (it was reloaded mid-take, or another
+           tab started it): it has no event log to render, so offer Discard. -->
+      <HStack verticalAlignment="center"
+        when="{!capturing &amp;&amp; recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}">
+        <Text value="A recording is in progress from another page or before a reload." />
+        <Button label="Discard" variant="outlined" themeColor="attention"
+          enabled="{!cancelRecording.inProgress}" onClick="cancelRecording.execute()" />
       </HStack>
       <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
         <Spinner />

@@ -9,8 +9,9 @@ it (and couldn't seek). This fills that gap until Bram does it itself.
 
 GET /sources lists the movies in sources/ and /sources/<name> streams one;
 GET /record/status reports a running take's phase; POST /record {source}
-starts record.sh (one take of that movie) for the app's Record button, and
-POST /record/stop {events} ends it with the player's event log;
+starts record.sh (one take of that movie) for the app's Record button,
+POST /record/stop {events} ends it with the player's event log, and
+POST /record/cancel / /record/restart {source} discard it (and start anew);
 record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row.
@@ -41,6 +42,16 @@ PHASES = {"starting": "Starting the recorder…",
           "recording": "Recording: click Stop to finish",
           "rendering": "Rendering the take…",
           "naming": "Naming the take from its narration…"}
+
+
+def cancel_recording(timeout=5):
+    # Ask record.sh to end the take without rendering, and wait for it to exit.
+    open(os.path.join(ROOT, ".record-cancel"), "w").close()
+    try:
+        recorder.wait(timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def record_status(running):
@@ -138,6 +149,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/record":
             return self.start_recording()
+        if self.path == "/record/restart":
+            return self.start_recording(restart=True)
+        if self.path == "/record/cancel":
+            if not self.recording():
+                return self.send_json(409, {"error": "nothing is recording"})
+            return self.send_json(200, {"cancelled": cancel_recording()})
         if self.path == "/record/stop":
             return self.stop_recording()
         if self.path == "/voicetest":
@@ -173,8 +190,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def recording(self):
         return recorder is not None and recorder.poll() is None
 
-    def start_recording(self):
-        # record.sh runs one take: QuickTime session -> close -> render -> register.
+    def start_recording(self, restart=False):
+        # record.sh runs one take: voice until Stop -> render -> register.
+        # restart=True first discards the running take (no render, no row).
         global recorder
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         source = body.get("source")
@@ -182,6 +200,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             source = sources()[0]  # nothing picked, and there's only one to pick
         if source not in sources():
             return self.send_json(400, {"error": f"no source movie named {source!r} in sources/"})
+        if restart and self.recording() and not cancel_recording():
+            return self.send_json(409, {"error": "the running take didn't stop in time"})
         if self.recording() or testing.locked():
             return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
         log = open(os.path.join(HERE, "record.log"), "a")

@@ -22,8 +22,10 @@ STATE="$HERE/media/.record-state"
 phase() { echo "$1" > "$STATE"; }
 SESSION_FILE="$HERE/media/.record-session"
 STOP="$HERE/media/.record-stop"
-trap 'rm -f "$STATE" "$SESSION_FILE" "$STOP"' EXIT
-rm -f "$STOP"
+# Restart / Discard (POST /record/restart, /record/cancel): end without a take.
+CANCEL="$HERE/media/.record-cancel"
+trap 'rm -f "$STATE" "$SESSION_FILE" "$STOP" "$CANCEL"' EXIT
+rm -f "$STOP" "$CANCEL"
 phase starting
 if [ -n "$1" ]; then
   SRC="$1"
@@ -60,7 +62,15 @@ echo "$WORK/$dir" > "$SESSION_FILE"
 echo "recording in $WORK/$dir; click Stop in the app to finish"
 phase recording
 
-while [ ! -f "$STOP" ]; do sleep 0.2; done
+while [ ! -f "$STOP" ] && [ ! -f "$CANCEL" ]; do sleep 0.2; done
+if [ -f "$CANCEL" ]; then
+  kill -TERM "$rec" 2>/dev/null || true
+  wait "$rec" || true
+  # Kept, not deleted: the voice is still there if a discard was a mistake.
+  touch "$dir/cancelled"
+  echo "cancelled $WORK/$dir (no take)"
+  exit 0
+fi
 closed=$(python3 -c 'import os, sys; print(f"{os.path.getmtime(sys.argv[1]):.3f}")' "$STOP")
 phase rendering
 kill -TERM "$rec" 2>/dev/null || true
