@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -21,7 +21,7 @@
     errorNotificationMessage="{$error.message}" />
   <APICall id="stopRecording" method="post" url="http://127.0.0.1:8765/record/stop"
     body="{$param}"
-    onSuccess="capturing = false; recEvents = []; sourceChoice.setValue('')"
+    onSuccess="capturing = false; recPaused = false; recEvents = []"
     errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
@@ -59,16 +59,32 @@
         <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
           placeholder="Choose a source"
           width="260px" />
-        <!-- Record logs a start row (the player's position and state at the
-             click), then every play/pause/seeked/ended until Stop. -->
+        <!-- Record shows the source player (paused at 0:00, logged as the start
+             row), then logs every play/pause/seeked/ended until Stop. -->
         <Button label="Record" when="{!capturing}"
-          enabled="{!!sourceChoice.value &amp;&amp; !playing &amp;&amp; !startRecording.inProgress &amp;&amp; !(recStatus.value &amp;&amp; recStatus.value.phase)}"
+          enabled="{!!sourceChoice.value &amp;&amp; !startRecording.inProgress &amp;&amp; !(recStatus.value &amp;&amp; recStatus.value.phase)}"
           onClick="
             playing = '';
             newAfterId = null;
-            recEvents = [{ event: 'start', currentTime: sourcePlayer.getCurrentTime(), playing: !sourcePlayer.paused, wallMs: Date.now() }];
+            recPaused = false;
+            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }];
             capturing = true;
             startRecording.execute({ source: sourceChoice.value });
+          " />
+        <!-- Off the air: everything between Pause and Resume is cut from the
+             take's picture and voice (render.py); the player is yours to set
+             up the next spot meanwhile. -->
+        <Button label="{recPaused ? 'Resume' : 'Pause'}" variant="outlined" when="{capturing}"
+          enabled="{!!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
+          onClick="
+            if (recPaused) {
+              recEvents = [...recEvents, { event: 'recresume', wallMs: Date.now() }];
+              recPaused = false;
+            } else {
+              recEvents = [...recEvents, { event: 'recpause', wallMs: Date.now() }];
+              recPaused = true;
+              sourcePlayer.pause();
+            }
           " />
         <Button label="Stop" themeColor="attention" when="{capturing}"
           enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
@@ -80,19 +96,14 @@
       </HStack>
       <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
         <Spinner />
-        <Text value="{recStatus.value.label}" />
+        <Text value="{recPaused ? 'Recording paused: click Resume to continue' : recStatus.value.label}" />
       </HStack>
       <!-- The source movie you narrate over. MediaPlayer is the experimental
            component from xmlui-org/xmlui#3913 (vendor/); its events are the
            take's picture path (render.py's events input). -->
-      <!-- One player at a time: the source player while a source is chosen and
-           no take is loaded; its close box clears the source. -->
-      <VStack when="{sourceChoice.value &amp;&amp; !playing}">
-        <HStack horizontalAlignment="end">
-          <Button icon="close" variant="ghost" aria-label="Close source player"
-            tooltip="Close the source" when="{!capturing}"
-            onClick="sourceChoice.setValue('')" />
-        </HStack>
+      <!-- One player at a time: the source player exists only while recording
+           (Record clears any loaded take; Stop removes it). -->
+      <VStack when="{capturing}">
         <MediaPlayer id="sourcePlayer"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onPlay="(e) => { if (capturing) recEvents = [...recEvents, { event: 'play', currentTime: e.currentTime, wallMs: Date.now() }] }"
@@ -100,12 +111,11 @@
           onSeeked="(e) => { if (capturing) recEvents = [...recEvents, { event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onEnded="(e) => { if (capturing) recEvents = [...recEvents, { event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }] }" />
       </VStack>
-      <!-- The take loaded in the take player (its URL). It replaces the source
-           player; closing it brings the source player back. -->
+      <!-- The take loaded in the take player (its URL); hidden while recording. -->
       <VStack when="{playing &amp;&amp; !capturing}">
         <HStack horizontalAlignment="end">
           <Button icon="close" variant="ghost" aria-label="Close player"
-            tooltip="Close the player" onClick="playing = ''" />
+            tooltip="Close the player" onClick="playing = ''; newAfterId = null" />
         </HStack>
         <MediaPlayer id="takePlayer" src="{playing}" autoPlay="true" />
       </VStack>

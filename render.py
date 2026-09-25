@@ -11,7 +11,8 @@ currentTime and wallMs), not from QuickTime's polled playhead.log. It still
 works in ~/Desktop/video-test: session dirs, takes/ and narrated/ live there.
 
 The take runs from just after "go" to just before "stop" (GAP trimmed on
-each side). It saves takes/perf-<n>.wav (the voice), takes/perf-<n>.json
+each side), minus any stretch between a recpause and a recresume event (the
+app's Pause/Resume): those are cut from both picture and voice. It saves takes/perf-<n>.wav (the voice), takes/perf-<n>.json
 (wall times, source start/stop timecodes, the playhead path), and renders
 narrated/perf-<n>.mp4 by replaying the path against the source:
   playing          -> that source range at 1x
@@ -20,6 +21,7 @@ narrated/perf-<n>.mp4 by replaying the path against the source:
 Voice is leveled like mix.py (gentle compression, two-pass loudnorm to
 -16 LUFS, -1.5 dBTP).
 """
+import array
 import glob
 import json
 import os
@@ -46,21 +48,13 @@ name = f"perf-{n}"
 os.makedirs(os.path.join(HERE, "takes"), exist_ok=True)
 os.makedirs(os.path.join(HERE, "narrated", "parts"), exist_ok=True)
 
-# Voice.
-wav = os.path.join(HERE, "takes", f"{name}.wav")
-with open(os.path.join(D, "audio.pcm"), "rb") as fh:
-    fh.seek(int(a_s * RATE) * 2)
-    data = fh.read(int((b_s - a_s) * RATE) * 2)
-with wave.open(wav, "wb") as w:
-    w.setnchannels(1)
-    w.setsampwidth(2)
-    w.setframerate(RATE)
-    w.writeframes(data)
-
-# Playhead path: (wall, position, playing) rows from the player's events,
-# with playing carried across events (seeked keeps it).
-rows, playing = [], False
+# Events: (wall, position, playing) playhead rows, with playing carried across
+# events (seeked keeps it), plus the Pause/Resume recording marks.
+rows, marks, playing = [], [], False
 for e in json.load(open(EVENTS)):
+    if e["event"] in ("recpause", "recresume"):
+        marks.append((e["wallMs"] / 1000.0, e["event"]))
+        continue
     if e["event"] == "start":
         playing = bool(e.get("playing"))
     elif e["event"] == "play":
@@ -70,37 +64,93 @@ for e in json.load(open(EVENTS)):
     elif e["event"] != "seeked":
         continue
     rows.append((e["wallMs"] / 1000.0, float(e["currentTime"]), playing))
-# The state at w0 (the page logs "start" at the Record click, a moment before
-# the recorder's first sample; a playing row moves on by the elapsed time).
-before = [r for r in rows if r[0] <= w0]
-path = [r for r in rows if w0 < r[0] < w1]
-if before:
-    wb, pb, plb = before[-1]
-    path.insert(0, (w0, pb + (w0 - wb if plb else 0), plb))
-if not path:
-    sys.exit("no player events for this take")
-path.append((w1, None, None))
 
-# Pieces: (kind, src_pos, duration). A playing row plays from its position for
-# the wall-clock gap to the next row: a pause that ends a drag-while-playing
-# carries the drag's first target, not the last played position, so the
-# stretch's length comes from wall time. Jumps are their own seeked rows.
-pieces = []
-for (wa, pa, pla), (wb, pb, _) in zip(path, path[1:]):
-    dt = wb - wa
-    if dt <= 0:
-        continue
-    if pla:
-        if pieces and pieces[-1][0] == "play" and abs(pieces[-1][1] + pieces[-1][2] - pa) < 0.35:
-            pieces[-1] = ("play", pieces[-1][1], pieces[-1][2] + dt)
+# Kept intervals: the take window minus each Pause..Resume (an unmatched Pause
+# runs to the end). The cuts go from both picture and voice.
+kept, on_air = [], w0
+for w, mark in sorted(marks):
+    if mark == "recpause" and on_air is not None:
+        kept.append((on_air, w))
+        on_air = None
+    elif mark == "recresume" and on_air is None:
+        on_air = w
+if on_air is not None:
+    kept.append((on_air, w1))
+kept = [(max(a, w0), min(b, w1)) for a, b in kept]
+kept = [(a, b) for a, b in kept if b - a >= 1.0 / FPS]
+if not kept:
+    sys.exit("nothing on the air in this take")
+cuts = [(b, a2) for (_, b), (a2, _) in zip(kept, kept[1:])]
+if kept[-1][1] < w1:
+    cuts.append((kept[-1][1], w1))
+
+
+def path_for(a, b):
+    # The state at a (the page logs "start" at the Record click, a moment
+    # before the recorder's first sample; a playing row moves on by the
+    # elapsed time), then every row up to b.
+    before = [r for r in rows if r[0] <= a]
+    path = [r for r in rows if a < r[0] < b]
+    if before:
+        wb, pb, plb = before[-1]
+        path.insert(0, (a, pb + (a - wb if plb else 0), plb))
+    return path + [(b, None, None)]
+
+
+def pieces_for(path):
+    # (kind, src_pos, duration). A playing row plays from its position for the
+    # wall-clock gap to the next row: a pause that ends a drag-while-playing
+    # carries the drag's first target, not the last played position, so the
+    # stretch's length comes from wall time. Jumps are their own seeked rows.
+    pieces = []
+    for (wa, pa, pla), (wb, pb, _) in zip(path, path[1:]):
+        dt = wb - wa
+        if dt <= 0 or pa is None:
+            continue
+        if pla:
+            if pieces and pieces[-1][0] == "play" and abs(pieces[-1][1] + pieces[-1][2] - pa) < 0.35:
+                pieces[-1] = ("play", pieces[-1][1], pieces[-1][2] + dt)
+            else:
+                pieces.append(("play", pa, dt))
         else:
-            pieces.append(("play", pa, dt))
-    else:
-        if pieces and pieces[-1][0] == "hold" and abs(pieces[-1][1] - pa) < 0.05:
-            pieces[-1] = ("hold", pa, pieces[-1][2] + dt)
-        else:
-            pieces.append(("hold", pa, dt))
-pieces = [p for p in pieces if p[2] >= 1.0 / FPS]
+            if pieces and pieces[-1][0] == "hold" and abs(pieces[-1][1] - pa) < 0.05:
+                pieces[-1] = ("hold", pa, pieces[-1][2] + dt)
+            else:
+                pieces.append(("hold", pa, dt))
+    return [p for p in pieces if p[2] >= 1.0 / FPS]
+
+
+# Picture: each kept interval's pieces, in order (no merging across a cut).
+path, pieces = [], []
+for a, b in kept:
+    p = path_for(a, b)
+    if len(p) < 2 or p[0][1] is None:
+        sys.exit("no player events for this take")
+    path += p[:-1]
+    pieces += pieces_for(p)
+
+# Voice: the same intervals sliced from audio.pcm, with 10ms fades at each
+# join so a splice doesn't click.
+FADE = RATE // 100
+voice = array.array("h")
+with open(os.path.join(D, "audio.pcm"), "rb") as fh:
+    for i, (a, b) in enumerate(kept):
+        fh.seek(int((a - t0) * RATE) * 2)
+        chunk = array.array("h")
+        chunk.frombytes(fh.read(int((b - a) * RATE) * 2))
+        n_s = len(chunk)
+        for k in range(min(FADE, n_s)):
+            if i > 0:
+                chunk[k] = int(chunk[k] * k / FADE)
+            if i < len(kept) - 1:
+                chunk[n_s - 1 - k] = int(chunk[n_s - 1 - k] * k / FADE)
+        voice.extend(chunk)
+wav = os.path.join(HERE, "takes", f"{name}.wav")
+with wave.open(wav, "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(RATE)
+    w.writeframes(voice.tobytes())
 
 # Render each piece, then join, then lay the voice over.
 parts = []
@@ -142,13 +192,15 @@ def tc(s):
     return f"{int(s // 60)}:{s % 60:05.2f}"
 
 
-src_start, src_end = path[0][1], [p for p in path if p[1] is not None][-1][1]
+on_air_s = sum(b - a for a, b in kept)
+src_start, src_end = path[0][1], pieces[-1][1] + (pieces[-1][2] if pieces[-1][0] == "play" else 0)
 meta = {"take": name, "session": os.path.relpath(D, HERE), "source": os.path.basename(SRC),
-        "wall_start": w0, "wall_end": w1, "duration": round(w1 - w0, 2),
+        "wall_start": w0, "wall_end": w1, "duration": round(on_air_s, 2),
+        "cuts": [(round(a - w0, 2), round(b - w0, 2)) for a, b in cuts],
         "src_start": tc(src_start), "src_end": tc(src_end),
         "pieces": [{"kind": k, "src": tc(p), "dur": round(d, 2)} for k, p, d in pieces],
-        "path": [(round(w - w0, 2), p, pl) for w, p, pl in path[:-1]]}
+        "path": [(round(w - w0, 2), p, pl) for w, p, pl in path]}
 json.dump(meta, open(os.path.join(HERE, "takes", f"{name}.json"), "w"), indent=1)
 plays = sum(d for k, _, d in pieces if k == "play")
-print(f"{name}: {w1 - w0:.1f}s, source {tc(src_start)} -> {tc(src_end)}, {len(pieces)} pieces "
-      f"({plays:.1f}s playing, {w1 - w0 - plays:.1f}s held) -> {final}")
+print(f"{name}: {on_air_s:.1f}s on the air ({len(cuts)} cuts), source {tc(src_start)} -> {tc(src_end)}, "
+      f"{len(pieces)} pieces ({plays:.1f}s playing, {on_air_s - plays:.1f}s held) -> {final}")
