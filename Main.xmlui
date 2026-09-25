@@ -237,10 +237,7 @@
             onDidChange="audioLog = []; audioDuration = ''" />
           <Button label="Clear log" variant="outlined" onClick="audioLog = []" />
         </HStack>
-        <!-- Full width for easy scrubbing: kind="audio" has no width rule of its
-             own yet (video gets width: 100%), so it would sit at the native
-             ~300px. -->
-        <MediaPlayer kind="audio" width="100%" when="{audioChoice.value}" src="{audioChoice.value}"
+        <MediaPlayer kind="audio" when="{audioChoice.value}" src="{audioChoice.value}"
           onLoadedMetadata="(e) => audioDuration = e.duration.toFixed(2) + ' s'"
           onPlay="(e) => audioLog = [...audioLog, 'play at ' + e.currentTime.toFixed(2) + ' s']"
           onPause="(e) => audioLog = [...audioLog, 'pause at ' + e.currentTime.toFixed(2) + ' s']"
