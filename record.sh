@@ -94,7 +94,7 @@ ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:
 # still frame: flag it, with what the player reported at Stop (diag.json), so
 # the cause can be told apart later. Ink over a still frame is a legit take.
 warning=""
-if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended" or .event == "stroke" or .event == "pointer")] | length' "$dir/events.json")" = "0" ]; then
+if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended" or .event == "stroke" or .event == "shape" or .event == "pointer")] | length' "$dir/events.json")" = "0" ]; then
   warning="no player events; $(jq -r '"duration=\(.duration // "none"), paused=\(.paused), currentTime=\(.currentTime)"' "$dir/diag.json" 2>/dev/null || echo "no diag")"
 fi
 # "-": register.py names the take from its first spoken words.
