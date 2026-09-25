@@ -50,8 +50,9 @@
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
       <Table data="{takes}">
-        <Column header="Take" bindTo="name" width="*">
-          <Link to="{$item.url}" target="_blank" label="{$item.name}" />
+        <Column header="Take" bindTo="name" type="long-text" width="*" />
+        <Column header="" width="70px">
+          <Link to="{$item.url}" target="_blank" label="Play" />
         </Column>
         <Column header="Recorded" bindTo="created_at" width="220px" />
         <Column header="Seconds" bindTo="duration_s" width="120px" />

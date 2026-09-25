@@ -7,7 +7,7 @@ Copies the MP4 into media/ and inserts a row into takes; its URL points at
 serve_media.py (port 8765).
 
 With no name, or "-", the take is named from its narration: whisper.cpp
-transcribes up to the first 10 minutes, and the first 12 spoken words become
+transcribes up to the first 10 minutes, and the first 24 spoken words become
 the name (the first ~40 go into notes). A take with fewer than 3 words (whisper
 invents "you" from silence), or one whisper can't read, is "untitled <file
 stem>". WHISPER_MODEL overrides the model path.
@@ -23,7 +23,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("WHISPER_MODEL", os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
-NAME_WORDS, NOTE_WORDS, MIN_WORDS, LISTEN_S = 12, 40, 3, 600
+NAME_WORDS, NOTE_WORDS, MIN_WORDS, LISTEN_S = 24, 40, 3, 600
 
 
 def narration_words(mp4):
