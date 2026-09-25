@@ -40,7 +40,14 @@
     errorNotificationMessage="{$error.message}" />
 
   <AppHeader>
-    <H3>Bram Studio</H3>
+    <HStack verticalAlignment="center" width="100%">
+      <H3>Bram Studio</H3>
+      <SpaceFiller />
+      <!-- XMLUI trace viewer. The studio carries its own xs-diff.html and the
+           xmlui-parser.es.js it imports (vendor/), as it carries its own engine;
+           config.json's appGlobals.xsVerbose turns capture on. -->
+      <Inspector src="/vendor/xs-diff.html" tooltip="Inspector: XMLUI trace" />
+    </HStack>
   </AppHeader>
   <NavPanel>
     <property name="logoTemplate">

@@ -3,5 +3,9 @@
   "themes": [
     "themes/studio.json"
   ],
-  "defaultTheme": "studio"
+  "defaultTheme": "studio",
+  "appGlobals": {
+    "xsVerbose": true,
+    "xsVerboseLogMax": 200
+  }
 }
