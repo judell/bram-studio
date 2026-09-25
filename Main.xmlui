@@ -1,4 +1,7 @@
-<App name="Bram Studio" scrollWholePage="false">
+<App name="Bram Studio" layout="vertical-sticky">
+  <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
+       main area, nav always visible. themes/studio.json keeps the nav from
+       collapsing into a drawer on a narrow window, as Bram's theme does. -->
   <!-- Takes live in studio.db (see schema.sql); Bram serves it read-only via
        /query. Each take's MP4 is served by serve_media.py, which Bram's
        loopback can't do yet (no video content types, no byte ranges). -->
@@ -25,8 +28,21 @@
     onSuccess="voiceTests.refetch()"
     errorNotificationMessage="{$error.message}" />
 
-  <VSplitter height="100%" initialPrimarySize="50%">
-    <VStack height="100%" overflowY="auto">
+  <AppHeader>
+    <H3>Bram Studio</H3>
+  </AppHeader>
+  <NavPanel>
+    <property name="logoTemplate">
+      <Fragment/>
+    </property>
+    <property name="footerTemplate">
+      <Fragment/>
+    </property>
+    <NavLink label="Takes" to="/" />
+    <NavLink label="Audio" to="/bench" />
+  </NavPanel>
+  <Pages fallbackPath="/">
+    <Page url="/">
       <HStack verticalAlignment="center">
         <H2>Takes</H2>
         <Button label="Record" onClick="startRecording.execute()"
@@ -44,8 +60,8 @@
             aria-label="Delete take" onClick="deleteTake.execute($item.id)" />
         </Column>
       </Table>
-    </VStack>
-    <VStack height="100%" overflowY="auto">
+    </Page>
+    <Page url="/bench">
       <H2>Audio test bench</H2>
       <HStack verticalAlignment="center">
         <Select id="mic" data="{devices}" valueField="name" labelField="name"
@@ -82,6 +98,6 @@
           </HStack>
         </Column>
       </Table>
-    </VStack>
-  </VSplitter>
+    </Page>
+  </Pages>
 </App>

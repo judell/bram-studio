@@ -1,0 +1,7 @@
+{
+  "name": "Bram Studio",
+  "themes": [
+    "themes/studio.json"
+  ],
+  "defaultTheme": "studio"
+}

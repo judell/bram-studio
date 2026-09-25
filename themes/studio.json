@@ -1,0 +1,13 @@
+{
+  "id": "studio",
+  "name": "Bram Studio theme",
+  "extends": "xmlui",
+  "themeVars": {
+    "maxWidth-phone": "320px",
+    "maxWidth-landscape-phone": "360px",
+    "maxWidth-tablet": "400px",
+    "width-navPanel-App": "$space-32",
+    "maxWidth-content-App": "100%",
+    "maxWidth-App": "100%"
+  }
+}
