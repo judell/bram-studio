@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="freehand">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="freehand" var.onAirYet="{false}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -80,14 +80,17 @@
           placeholder="Choose a source"
           width="260px" />
         <!-- Record shows the source player (paused at 0:00, logged as the start
-             row), then logs every play/pause/seeked/ended until Stop. -->
+             row) and starts OFF the air (a recpause right after it), so the time
+             spent getting ready is cut and never rendered; Start recording goes on
+             the air. Every play/pause/seeked/ended is logged until Stop. -->
         <Button label="Record" when="{!capturing}"
           enabled="{!!sourceChoice.value &amp;&amp; !startRecording.inProgress &amp;&amp; !(recStatus.value &amp;&amp; recStatus.value.phase)}"
           onClick="
             playing = '';
             newAfterId = null;
-            recPaused = false;
-            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }];
+            recPaused = true;
+            onAirYet = false;
+            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
             capturing = true;
             try {
               startRecording.execute({ source: sourceChoice.value });
@@ -100,12 +103,14 @@
              up the next spot meanwhile. -->
         <!-- Pauses the recording, not the video (the player's own controls do
              that); "Pause" alone was mistaken for the video's pause. -->
-        <Button label="{recPaused ? 'Resume recording' : 'Pause recording'}" variant="outlined" when="{capturing}"
+        <Button label="{recPaused ? (onAirYet ? 'Resume recording' : 'Start recording') : 'Pause recording'}"
+          variant="{onAirYet ? 'outlined' : 'solid'}" when="{capturing}"
           enabled="{!!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
           onClick="
             if (recPaused) {
               recEvents = [...recEvents, { event: 'recresume', wallMs: Date.now() }];
               recPaused = false;
+              onAirYet = true;
             } else {
               recEvents = [...recEvents, { event: 'recpause', wallMs: Date.now() }];
               recPaused = true;
@@ -119,8 +124,9 @@
             sourcePlayer.pause();
             sourcePlayer.seek(0);
             restartRecording.execute({ source: sourceChoice.value });
-            recPaused = false;
-            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }];
+            recPaused = true;
+            onAirYet = false;
+            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
           " />
         <Button label="Stop" themeColor="attention" when="{capturing}"
           enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
@@ -130,7 +136,9 @@
             const inkEvents = recEvents.filter(e => e.event === 'stroke' || e.event === 'shape' || e.event === 'pointer').length;
             const diag = { duration: sourcePlayer.duration, paused: sourcePlayer.paused,
                            currentTime: sourcePlayer.getCurrentTime(), playerEvents, inkEvents };
-            if (playerEvents === 0 &amp;&amp; inkEvents === 0) {
+            if (!onAirYet) {
+              toast('Nothing was recorded: you never clicked Start recording.');
+            } else if (playerEvents === 0 &amp;&amp; inkEvents === 0) {
               toast('No player activity in this take, so the picture is a still of 0:00.');
             }
             stopRecording.execute({ events: recEvents, diag });
@@ -150,7 +158,7 @@
       </HStack>
       <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
         <Spinner />
-        <Text value="{recPaused ? 'Recording paused: nothing is recorded until you click Resume recording' : recStatus.value.label}" />
+        <Text value="{recPaused ? (onAirYet ? 'Recording paused: nothing is recorded until you click Resume recording' : 'Ready: set up the video, then click Start recording') : recStatus.value.label}" />
       </HStack>
       <!-- The source movie you narrate over. MediaPlayer is the experimental
            component from xmlui-org/xmlui#3913 (vendor/); its events are the
