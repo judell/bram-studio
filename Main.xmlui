@@ -1,0 +1,27 @@
+<App name="Bram Studio">
+  <!-- Takes live in studio.db (see schema.sql); Bram serves it read-only via
+       /query. Each take's MP4 is served by serve_media.py, which Bram's
+       loopback can't do yet (no video content types, no byte ranges). -->
+  <DataSource id="takes" url="/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT id, name, created_at, duration_s, src_start, src_end, url FROM takes ORDER BY created_at DESC', params: [] }}"
+    pollIntervalInSeconds="5" />
+  <!-- serve_media.py runs record.sh; the take appears when it registers. -->
+  <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
+    onSuccess="toast.success('Recording: close the QuickTime window to finish')"
+    errorNotificationMessage="{$error.message}" />
+  <HStack verticalAlignment="center">
+    <H2>Takes</H2>
+    <Button label="Record" onClick="startRecording.execute()"
+      enabled="{!startRecording.inProgress}" />
+    <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
+  </HStack>
+  <Table data="{takes}">
+    <Column header="Take" bindTo="name">
+      <Link to="{$item.url}" target="_blank" label="{$item.name}" />
+    </Column>
+    <Column header="Recorded" bindTo="created_at" />
+    <Column header="Seconds" bindTo="duration_s" />
+    <Column header="Source from" bindTo="src_start" />
+    <Column header="Source to" bindTo="src_end" />
+  </Table>
+</App>
