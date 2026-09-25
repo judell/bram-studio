@@ -16,12 +16,12 @@
     pollIntervalInSeconds="2" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     body="{$param}"
-    onSuccess="toast.success('Recording: narrate over the movie, then click Stop')"
-    onError="capturing = false"
     errorNotificationMessage="{$error.message}" />
+  <!-- Page state is reset in the Record/Stop click handlers, after execute()
+       returns: assignments in this APICall's success handler ran but didn't
+       take effect (the page stayed stuck in recording mode). -->
   <APICall id="stopRecording" method="post" url="http://127.0.0.1:8765/record/stop"
     body="{$param}"
-    onSuccess="capturing = false; recPaused = false; recEvents = []"
     errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
@@ -76,7 +76,11 @@
             recPaused = false;
             recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }];
             capturing = true;
-            startRecording.execute({ source: sourceChoice.value });
+            try {
+              startRecording.execute({ source: sourceChoice.value });
+            } catch (e) {
+              capturing = false;
+            }
           " />
         <!-- Off the air: everything between Pause and Resume is cut from the
              take's picture and voice (render.py); the player is yours to set
@@ -104,6 +108,9 @@
               toast.error('No player events were captured in this take. The picture will be a still frame. Diagnostics saved.');
             }
             stopRecording.execute({ events: recEvents, diag });
+            capturing = false;
+            recPaused = false;
+            recEvents = [];
           " />
         <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
       </HStack>
