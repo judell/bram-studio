@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}" var.sourceAspect="{undefined}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -125,9 +125,10 @@
           onClick="
             newAfterId = Math.max(0, ...(takes.value || []).map(t => t.id));
             const playerEvents = recEvents.filter(e => ['play', 'pause', 'seeked', 'ended'].includes(e.event)).length;
+            const inkEvents = recEvents.filter(e => e.event === 'stroke' || e.event === 'pointer').length;
             const diag = { duration: sourcePlayer.duration, paused: sourcePlayer.paused,
-                           currentTime: sourcePlayer.getCurrentTime(), playerEvents };
-            if (playerEvents === 0) {
+                           currentTime: sourcePlayer.getCurrentTime(), playerEvents, inkEvents };
+            if (playerEvents === 0 &amp;&amp; inkEvents === 0) {
               toast('No player activity in this take, so the picture is a still of 0:00.');
             }
             stopRecording.execute({ events: recEvents, diag });
@@ -155,12 +156,20 @@
       <!-- One player at a time: the source player exists only while recording
            (Record clears any loaded take; Stop removes it). -->
       <VStack when="{capturing}">
+        <!-- Ink over the source (xmlui-org/xmlui#3919): hold Command and drag to
+             draw; without it, clicks reach the player. Strokes and the pointer
+             path go into the take's event log, in 0-1 picture coordinates. -->
+        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}"
+          onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
+          onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
         <MediaPlayer id="sourcePlayer"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
+          onLoadedMetadata="(e) => sourceAspect = e.videoWidth / e.videoHeight"
           onPlay="(e) => { if (capturing) recEvents = [...recEvents, { event: 'play', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onPause="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pause', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onSeeked="(e) => { if (capturing) recEvents = [...recEvents, { event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onEnded="(e) => { if (capturing) recEvents = [...recEvents, { event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }] }" />
+        </PointerLayer>
       </VStack>
       <!-- The take loaded in the take player (its URL); hidden while recording. -->
       <VStack when="{playing &amp;&amp; !capturing}">

@@ -90,10 +90,11 @@ json="takes/$take.json"
 # Swap render.py's leveled voice for the raw slice it saved.
 ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
   -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
-# A take with no player events renders as a still frame: flag it, with what the
-# player reported at Stop (diag.json), so the cause can be told apart later.
+# A take with no player events and no ink (strokes or pointing) renders as a
+# still frame: flag it, with what the player reported at Stop (diag.json), so
+# the cause can be told apart later. Ink over a still frame is a legit take.
 warning=""
-if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended")] | length' "$dir/events.json")" = "0" ]; then
+if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended" or .event == "stroke" or .event == "pointer")] | length' "$dir/events.json")" = "0" ]; then
   warning="no player events; $(jq -r '"duration=\(.duration // "none"), paused=\(.paused), currentTime=\(.currentTime)"' "$dir/diag.json" 2>/dev/null || echo "no diag")"
 fi
 # "-": register.py names the take from its first spoken words.

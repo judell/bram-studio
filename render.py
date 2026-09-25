@@ -170,6 +170,98 @@ silent = os.path.join(HERE, "narrated", "parts", f"{name}-video.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", silent],
                check=True)
 
+
+# Ink (PointerLayer, xmlui-org/xmlui#3919): strokes and pointer samples from the
+# take's events, in 0-1 picture coordinates, drawn as a transparent layer over
+# the picture in take time. Frames without ink point at one shared blank PNG.
+INK_FADE_S, POINTER_HOLD_S = 1.5, 0.3
+
+
+def take_time(w):
+    # A wall-clock moment's position in the take, or None inside a cut.
+    t = 0.0
+    for a, b in kept:
+        if w < a:
+            return None
+        if w <= b:
+            return t + (w - a)
+        t += b - a
+    return None
+
+
+def rgba(hex_color, alpha):
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(255 * alpha))
+
+
+strokes, pointer = [], []
+for e in json.load(open(EVENTS)):
+    if e["event"] == "stroke":
+        pts = [(take_time(e["wallMs"] / 1000.0 + p["t"] / 1000.0), p["x"], p["y"]) for p in e["points"]]
+        pts = [p for p in pts if p[0] is not None]
+        if pts:
+            strokes.append({"pts": pts, "end": pts[-1][0], "color": e.get("color", "#ff3b30"),
+                            "width": e.get("width", 4)})
+    elif e["event"] == "pointer":
+        tt = take_time(e["wallMs"] / 1000.0)
+        if tt is not None:
+            pointer.append((tt, e["x"], e["y"]))
+pointer.sort()
+
+if strokes or pointer:
+    from PIL import Image, ImageDraw
+    W, H = (int(v) for v in subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of",
+         "csv=p=0", silent], capture_output=True, text=True, check=True).stdout.strip().split(","))
+    vdur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                 silent], capture_output=True, text=True, check=True).stdout.strip())
+    scale = W / 1200.0  # the live layer draws `width` CSS px over a ~1200px-wide player
+    inkdir = os.path.join(HERE, "narrated", "parts", f"{name}-ink")
+    os.makedirs(inkdir, exist_ok=True)
+    blank = os.path.join(inkdir, "blank.png")
+    Image.new("RGBA", (W, H), (0, 0, 0, 0)).save(blank, compress_level=1)
+    pi, drawn = 0, 0
+    for i in range(int(vdur * FPS)):
+        T = i / FPS
+        frame = os.path.join(inkdir, f"{i:06d}.png")
+        if os.path.lexists(frame):
+            os.remove(frame)
+        img, draw = None, None
+        while pi + 1 < len(pointer) and pointer[pi + 1][0] <= T:
+            pi += 1
+        for st in strokes:
+            if st["pts"][0][0] > T or T > st["end"] + INK_FADE_S:
+                continue
+            alpha = 1.0 if T <= st["end"] else 1.0 - (T - st["end"]) / INK_FADE_S
+            xy = [(x * W, y * H) for tt, x, y in st["pts"] if tt <= T]
+            if not xy:
+                continue
+            if img is None:
+                img = Image.new("RGBA", (W, H), (0, 0, 0, 0)); draw = ImageDraw.Draw(img)
+            w = max(2, round(st["width"] * scale))
+            color = rgba(st["color"], alpha)
+            if len(xy) > 1:
+                draw.line(xy, fill=color, width=w, joint="curve")
+            for x, y in (xy[0], xy[-1]):
+                draw.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=color)
+        if pointer and pointer[pi][0] <= T <= pointer[pi][0] + POINTER_HOLD_S:
+            _, x, y = pointer[pi]
+            if img is None:
+                img = Image.new("RGBA", (W, H), (0, 0, 0, 0)); draw = ImageDraw.Draw(img)
+            r = round(9 * scale)
+            draw.ellipse((x * W - r, y * H - r, x * W + r, y * H + r), fill=(255, 59, 48, 110))
+        if img is None:
+            os.symlink(blank, frame)
+        else:
+            img.save(frame, compress_level=1)
+            drawn += 1
+    inked = os.path.join(HERE, "narrated", "parts", f"{name}-video-ink.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-framerate", str(FPS),
+                    "-i", os.path.join(inkdir, "%06d.png"), "-filter_complex",
+                    "[0:v][1:v]overlay=0:0:shortest=1:format=auto", *ENC, inked], check=True)
+    silent = inked
+    print(f"ink: {len(strokes)} strokes, {len(pointer)} pointer samples, {drawn} frames drawn")
+
 pre = "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120"
 m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", wav, "-af",
                      f"{pre},loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
@@ -196,7 +288,8 @@ meta = {"take": name, "session": os.path.relpath(D, HERE), "source": os.path.bas
         "cuts": [(round(a - w0, 2), round(b - w0, 2)) for a, b in cuts],
         "src_start": tc(src_start), "src_end": tc(src_end),
         "pieces": [{"kind": k, "src": tc(p), "dur": round(d, 2)} for k, p, d in pieces],
-        "path": [(round(w - w0, 2), p, pl) for w, p, pl in path]}
+        "path": [(round(w - w0, 2), p, pl) for w, p, pl in path],
+        "ink": {"strokes": len(strokes), "pointerSamples": len(pointer)}}
 json.dump(meta, open(os.path.join(HERE, "takes", f"{name}.json"), "w"), indent=1)
 plays = sum(d for k, _, d in pieces if k == "play")
 print(f"{name}: {on_air_s:.1f}s on the air ({len(cuts)} cuts), source {tc(src_start)} -> {tc(src_end)}, "
