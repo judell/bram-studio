@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="freehand" var.onAirYet="{false}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.newAfterId="{null}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="line" var.onAirYet="{false}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -190,8 +190,8 @@
              path go into the take's event log, in 0-1 picture coordinates. -->
         <!-- Drawing tools (xmlui-org/xmlui#3919 build 2): the selected one is solid. -->
         <HStack verticalAlignment="center">
-          <Items data="{[['freehand', 'Freehand'], ['line', 'Line'], ['arrow', 'Arrow'], ['rect', 'Rect'], ['ellipse', 'Oval'], ['pointer', 'Point']]}">
-            <Button label="{$item[1]}" size="sm"
+          <Items data="{[['line', 'Line'], ['arrow', 'Arrow'], ['rect', 'Rect'], ['ellipse', 'Oval'], ['pointer', 'Point'], ['freehand', 'Freehand']]}">
+            <Button label="{$item[1]}" size="xs"
               variant="{inkTool === $item[0] ? 'solid' : 'outlined'}"
               tooltip="Hold Command (⌘) and drag to draw. Add Shift (⇧) for a square, circle or 45° line; add Option (⌥) to draw from the center."
               onClick="inkTool = $item[0]" />
