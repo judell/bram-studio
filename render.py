@@ -397,7 +397,40 @@ if denoise.wait() == 0 and os.path.exists(clean_wav):
     voice_wav = clean_wav
 else:
     print("denoise failed; leveling the raw voice")
-level = level_filter(voice_wav, "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
+
+# Silence the voice while the base plays: the narrator doesn't talk over it,
+# so there the mic only records the room, which leveling would raise under the
+# base's audio. The pieces' nominal durations run on the voice's clock (both
+# come from the kept wall-clock intervals). A 0.3s fade-out at Play keeps a
+# last word; a 0.1s fade-in at Pause lets speech start at once. Written to the
+# clean file, so the raw voice (the unleveled comparison) is untouched.
+plays, t = [], 0.0
+for kind, pos, dur in pieces:
+    if kind == "play":
+        plays.append((t, t + dur))
+    t += dur
+with wave.open(voice_wav) as r:
+    vparams = r.getparams()
+    v = array.array("h", r.readframes(r.getnframes()))
+if plays and vparams.nchannels == 1 and vparams.sampwidth == 2:
+    OUT, IN = int(0.3 * vparams.framerate), int(0.1 * vparams.framerate)
+    silenced = 0.0
+    for a, b in plays:
+        i0, i1 = int(a * vparams.framerate), min(len(v), int(b * vparams.framerate))
+        if i1 - i0 < OUT + IN:
+            continue
+        for k in range(OUT):
+            v[i0 + k] = int(v[i0 + k] * (1 - k / OUT))
+        v[i0 + OUT:i1 - IN] = array.array("h", bytes(2 * (i1 - IN - i0 - OUT)))
+        for k in range(IN):
+            v[i1 - IN + k] = int(v[i1 - IN + k] * k / IN)
+        silenced += b - a
+    with wave.open(clean_wav, "wb") as w:
+        w.setparams(vparams)
+        w.writeframes(v.tobytes())
+    voice_wav = clean_wav
+    print(f"voice silenced during {len(plays)} play stretch{'es' if len(plays) != 1 else ''}, {silenced:.1f}s")
+level = level_filter(voice_wav,"highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
 source_level = level_filter(src_wav) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", voice_wav, "-filter_complex",
