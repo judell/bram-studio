@@ -150,6 +150,15 @@ with wave.open(wav, "wb") as w:
     w.setframerate(RATE)
     w.writeframes(voice.tobytes())
 
+# Denoise the voice in the background while the picture renders: anlmdn
+# (non-local means) took the noise between words down ~7.7 dB on a take with
+# a washing machine running, where afftdn managed ~2.5; it costs ~12 s per
+# 2 min of speech, hidden behind the picture. Leveling waits for it; if it
+# fails, the raw voice is used.
+clean_wav = os.path.join(HERE, "takes", f"{name}-voice-clean.wav")
+denoise = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-i", wav, "-af", "anlmdn=s=0.0005:p=0.002:r=0.006",
+                            clean_wav])
+
 def frame_count(path):
     # Decoded video frames in a rendered part; 0 for a part with none.
     out = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
@@ -383,10 +392,15 @@ def level_filter(path, pre=None):
 # The voice gets a highpass and gentle compression first; the source's audio
 # is already a finished mix, so only its loudness is set. record.sh applies
 # both (voiceLevel, sourceLevel in the take's JSON) when it mixes.
-level = level_filter(wav, "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
+voice_wav = wav
+if denoise.wait() == 0 and os.path.exists(clean_wav):
+    voice_wav = clean_wav
+else:
+    print("denoise failed; leveling the raw voice")
+level = level_filter(voice_wav, "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
 source_level = level_filter(src_wav) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", wav, "-filter_complex",
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", voice_wav, "-filter_complex",
                 f"[1:a]{level},afade=t=in:d=0.1,aresample=48000[a]", "-map", "0:v", "-map", "[a]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", final], check=True)
 
@@ -404,7 +418,7 @@ meta = {"take": name, "session": os.path.relpath(D, HERE), "source": os.path.bas
         "pieces": [{"kind": k, "src": tc(p), "dur": round(d, 2)} for k, p, d in pieces],
         "path": [(round(w - w0, 2), p, pl) for w, p, pl in path],
         "ink": {"strokes": len(strokes), "shapes": len(shapes), "pointerSamples": len(pointer)},
-        "voiceLevel": level, "sourceLevel": source_level}
+        "voiceFile": os.path.basename(voice_wav), "voiceLevel": level, "sourceLevel": source_level}
 json.dump(meta, open(os.path.join(HERE, "takes", f"{name}.json"), "w"), indent=1)
 plays = sum(d for k, _, d in pieces if k == "play")
 print(f"{name}: {on_air_s:.1f}s on the air ({len(cuts)} cuts), source {tc(src_start)} -> {tc(src_end)}, "

@@ -95,18 +95,21 @@ json="takes/$take.json"
 # the source's sound. The mix without leveling is kept beside it, unregistered,
 # as <take>-unleveled.mp4. (The registered file keeps its old "-raw" name.)
 vlevel=$(jq -r '.voiceLevel // "anull"' "$json")
+# The voice render.py leveled: denoised (takes/<take>-voice-clean.wav) unless
+# denoising failed. The unleveled comparison keeps the raw voice.
+vfile="takes/$(jq -r --arg d "$take.wav" '.voiceFile // $d' "$json")"
 slevel=$(jq -r '.sourceLevel // empty' "$json")
 if [ -f "takes/$take-source.wav" ] && [ -n "$slevel" ]; then
   ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -i "takes/$take-source.wav" \
     -filter_complex "[1:a]afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[v][2:a]amix=inputs=2:normalize=0[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -shortest "narrated/$take-unleveled.mp4"
-  ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -i "takes/$take-source.wav" \
+  ffmpeg -v error -y -i "narrated/$take.mp4" -i "$vfile" -i "takes/$take-source.wav" \
     -filter_complex "[1:a]$vlevel,aresample=48000,afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[2:a]$slevel,aresample=48000[s];[v][s]amix=inputs=2:normalize=0[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
 else
   ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
     -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-unleveled.mp4"
-  ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
+  ffmpeg -v error -y -i "narrated/$take.mp4" -i "$vfile" -map 0:v -map 1:a -c:v copy \
     -af "$vlevel,aresample=48000,afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
 fi
 # A take with no player events and no ink (strokes or pointing) renders as a
