@@ -87,9 +87,18 @@ python3 "$HERE/render.py" "$dir" "$go" "$stop" "$SRC" --events "$dir/events.json
 take="take-$(basename "$dir")"
 json="takes/$take.json"
 
-# Swap render.py's leveled voice for the raw slice it saved.
-ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
-  -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
+# Swap render.py's leveled voice for the raw slice it saved, mixed with the
+# source's own audio when it has some (render.py's takes/<take>-source.wav,
+# silent in holds). Both at their own level: normalize=0 keeps amix from
+# halving them, and the narrator doesn't talk over the source's sound.
+if [ -f "takes/$take-source.wav" ]; then
+  ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -i "takes/$take-source.wav" \
+    -filter_complex "[1:a]afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[v][2:a]amix=inputs=2:normalize=0[a]" \
+    -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
+else
+  ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \
+    -af "afade=t=in:d=0.1" -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
+fi
 # A take with no player events and no ink (strokes or pointing) renders as a
 # still frame: flag it, with what the player reported at Stop (diag.json), so
 # the cause can be told apart later. Ink over a still frame is a legit take.

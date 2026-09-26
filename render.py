@@ -150,6 +150,13 @@ with wave.open(wav, "wb") as w:
     w.setframerate(RATE)
     w.writeframes(voice.tobytes())
 
+def frame_count(path):
+    # Decoded video frames in a rendered part; 0 for a part with none.
+    out = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                          "stream=nb_read_frames", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+    return int(out.strip().rstrip(",") or 0)
+
+
 # Render each piece, then join, then lay the voice over.
 parts = []
 for i, (kind, pos, dur) in enumerate(pieces):
@@ -158,10 +165,17 @@ for i, (kind, pos, dur) in enumerate(pieces):
         cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{pos:.3f}", "-i", SRC, "-t", f"{dur:.3f}", *ENC, out]
     else:
         # Take the first frame at pos, then hold it for dur. (-frames:v would
-        # cap the OUTPUT at one frame, collapsing every pause.)
-        cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{pos:.3f}", "-i", SRC,
-               "-vf", f"trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={dur:.3f}",
-               *ENC, out]
+        # cap the OUTPUT at one frame, collapsing every pause.) A hold at the
+        # very end ("ended" at the duration) asks for a frame past the last
+        # one and gets an empty file: step back until a frame turns up.
+        for back in (0, 0.05, 0.1, 0.2, 0.5, 1.0):
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, pos - back):.3f}", "-i", SRC,
+                            "-vf", f"trim=end_frame=1,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={dur:.3f}",
+                            *ENC, out], check=True)
+            if frame_count(out):
+                break
+        parts.append(out)
+        continue
     subprocess.run(cmd, check=True)
     parts.append(out)
 lst = os.path.join(HERE, "narrated", "parts", f"{name}.txt")
@@ -170,6 +184,38 @@ with open(lst, "w") as fh:
 silent = os.path.join(HERE, "narrated", "parts", f"{name}-video.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", silent],
                check=True)
+
+# Source audio, aligned to the take: each play piece's range from the source,
+# each hold as silence. Every audio piece is as long as its rendered video part
+# (parts are whole frames, so nominal durations would drift), with 10ms fades
+# at its ends. record.sh mixes it with the raw voice. A source with no audio
+# stream gets no track.
+src_wav = os.path.join(HERE, "takes", f"{name}-source.wav")
+if os.path.exists(src_wav):
+    os.remove(src_wav)
+if subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of",
+                   "csv=p=0", SRC], capture_output=True, text=True).stdout.strip():
+    track = array.array("h")
+    for (kind, pos, dur), part in zip(pieces, parts):
+        n = round(frame_count(part) / FPS * RATE)
+        chunk = array.array("h")
+        if kind == "play":
+            chunk.frombytes(subprocess.run(
+                ["ffmpeg", "-v", "error", "-ss", f"{pos:.3f}", "-i", SRC, "-t", f"{n / RATE:.3f}", "-vn",
+                 "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"], capture_output=True, check=True).stdout)
+        del chunk[2 * n:]
+        chunk.extend([0] * (2 * n - len(chunk)))
+        for k in range(min(FADE, n)):
+            for c in (0, 1):
+                chunk[2 * k + c] = int(chunk[2 * k + c] * k / FADE)
+                chunk[2 * (n - 1 - k) + c] = int(chunk[2 * (n - 1 - k) + c] * k / FADE)
+        track.extend(chunk)
+    with wave.open(src_wav, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(track.tobytes())
+    print(f"source audio: {len(track) / 2 / RATE:.1f}s")
 
 
 # Ink (PointerLayer, xmlui-org/xmlui#3919): strokes and pointer samples from the
