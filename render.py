@@ -210,7 +210,8 @@ for e in json.load(open(EVENTS)):
         if start is not None:
             shapes.append({"tool": e["tool"], "box": (e["x1"], e["y1"], e["x2"], e["y2"]), "start": start,
                            "end": start + e.get("durationMs", 0) / 1000.0,
-                           "color": e.get("color", "#ff3b30"), "width": e.get("width", 4)})
+                           "color": e.get("color", "#ff3b30"), "width": e.get("width", 4),
+                           "pointerShape": e.get("pointerShape") or "arrow"})
     elif e["event"] == "pointer":
         tt = take_time(e["wallMs"] / 1000.0)
         if tt is not None:
@@ -235,9 +236,21 @@ def draw_shape(draw, sh, grow, color, w, W, H):
         box = (min(X1, X2), min(Y1, Y2), max(X1, X2), max(Y1, Y2))
         if box[2] - box[0] >= 1 and box[3] - box[1] >= 1:
             (draw.rectangle if sh["tool"] == "rect" else draw.ellipse)(box, outline=color, width=w)
-    elif sh["tool"] == "pointer":
+    elif sh["tool"] == "pointer" and sh["pointerShape"] == "ring":
         r = round(14 * W / 1200.0)
         draw.ellipse((X1 - r, Y1 - r, X1 + r, Y1 + r), outline=color, width=w)
+    elif sh["tool"] == "pointer":
+        # A fat block arrow, tip on the click, pointing up and to the right at
+        # 45 degrees: PointerLayer's pointerShape="arrow" (#3919 build 3), the
+        # same polygon at the same size (6% of the picture width). Takes logged
+        # before the event carried pointerShape get the arrow too.
+        L = 0.06 * W
+        hl, hw, sw = 0.45 * L, 0.32 * L, 0.12 * L
+        # Along the arrow (u, tip at 0) and across it (v).
+        outline = [(0, 0), (-hl, hw), (-hl, sw), (-L, sw), (-L, -sw), (-hl, -sw), (-hl, -hw)]
+        c, s = math.cos(math.radians(-45)), math.sin(math.radians(-45))
+        pts = [(X1 + u * c - v * s, Y1 + u * s + v * c) for u, v in outline]
+        draw.polygon(pts, fill=color, outline=(255, 255, 255, color[3]), width=max(2, round(2 * W / 1200.0)))
 
 
 def draw_ink_frame(i):

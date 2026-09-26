@@ -188,7 +188,7 @@
         <!-- Ink over the source (xmlui-org/xmlui#3919): hold Command and drag to
              draw; without it, clicks reach the player. Strokes and the pointer
              path go into the take's event log, in 0-1 picture coordinates. -->
-        <!-- Drawing tools (xmlui-org/xmlui#3919 build 2): the selected one is solid. -->
+        <!-- Drawing tools (xmlui-org/xmlui#3919 build 3): the selected one is solid. Point draws an arrow (pointerShape). -->
         <HStack verticalAlignment="center">
           <Items data="{[['line', 'Line'], ['arrow', 'Arrow'], ['rect', 'Rect'], ['ellipse', 'Oval'], ['pointer', 'Point'], ['freehand', 'Freehand']]}">
             <Button label="{$item[1]}" size="xs"
@@ -197,8 +197,8 @@
               onClick="inkTool = $item[0]" />
           </Items>
         </HStack>
-        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}" tool="{inkTool}"
-          onShapeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'shape', tool: e.tool, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, color: e.color, width: e.width, wallMs: e.time, durationMs: e.duration }] }"
+        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}" tool="{inkTool}" pointerShape="arrow"
+          onShapeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'shape', tool: e.tool, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, color: e.color, width: e.width, pointerShape: e.pointerShape, wallMs: e.time, durationMs: e.duration }] }"
           onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
           onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
         <MediaPlayer id="sourcePlayer"
