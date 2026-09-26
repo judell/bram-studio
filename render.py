@@ -364,15 +364,27 @@ if strokes or shapes:
     print(f"ink: {len(strokes)} strokes, {len(shapes)} shapes, {drawn} frames drawn "
           f"({len(pointer)} pointer samples logged, not drawn)")
 
-pre = "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120"
-m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", wav, "-af",
-                     f"{pre},loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
-                    capture_output=True, text=True).stderr
-ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
-level = (f"{pre},loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
-         f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:linear=true")
-if "inf" in ln["input_i"]:
-    level = "anull"  # a silent take has no loudness to normalize (measured_I is -inf)
+def level_filter(path, pre=None):
+    # Two-pass loudnorm to -16 LUFS / -1.5 dBTP: measure, then a filter that
+    # applies the measured values linearly. A silent track has no loudness to
+    # normalize (measured_I is -inf): anull.
+    chain = f"{pre}," if pre else ""
+    m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", path, "-af",
+                         f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
+                        capture_output=True, text=True).stderr
+    ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
+    if "inf" in ln["input_i"]:
+        return "anull"
+    return (f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
+            f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:"
+            "linear=true")
+
+
+# The voice gets a highpass and gentle compression first; the source's audio
+# is already a finished mix, so only its loudness is set. record.sh applies
+# both (voiceLevel, sourceLevel in the take's JSON) when it mixes.
+level = level_filter(wav, "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
+source_level = level_filter(src_wav) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", wav, "-filter_complex",
                 f"[1:a]{level},afade=t=in:d=0.1,aresample=48000[a]", "-map", "0:v", "-map", "[a]",
@@ -391,7 +403,8 @@ meta = {"take": name, "session": os.path.relpath(D, HERE), "source": os.path.bas
         "src_start": tc(src_start), "src_end": tc(src_end),
         "pieces": [{"kind": k, "src": tc(p), "dur": round(d, 2)} for k, p, d in pieces],
         "path": [(round(w - w0, 2), p, pl) for w, p, pl in path],
-        "ink": {"strokes": len(strokes), "shapes": len(shapes), "pointerSamples": len(pointer)}}
+        "ink": {"strokes": len(strokes), "shapes": len(shapes), "pointerSamples": len(pointer)},
+        "voiceLevel": level, "sourceLevel": source_level}
 json.dump(meta, open(os.path.join(HERE, "takes", f"{name}.json"), "w"), indent=1)
 plays = sum(d for k, _, d in pieces if k == "play")
 print(f"{name}: {on_air_s:.1f}s on the air ({len(cuts)} cuts), source {tc(src_start)} -> {tc(src_end)}, "
