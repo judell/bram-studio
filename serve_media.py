@@ -7,7 +7,8 @@ Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
 it (and couldn't seek). This fills that gap until Bram does it itself.
 
-GET /sources lists the movies in sources/ and /sources/<name> streams one;
+GET /sources lists the movies in sources/ and on the Desktop (newest first)
+and /sources/<name> streams one;
 GET /record/status reports a running take's phase; POST /record {source}
 starts record.sh (one take of that movie) for the app's Record button,
 POST /record/stop {events} ends it with the player's event log, and
@@ -38,6 +39,7 @@ ROOT = os.path.join(HERE, "media")
 recorder = None  # the running record.sh, if any
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = os.path.join(HERE, "sources")  # source movies, usually symlinks
+DESKTOP = os.path.expanduser("~/Desktop")  # where recordings usually land
 
 
 PHASES = {"starting": "Starting the recorder…",
@@ -81,10 +83,28 @@ def record_status(running):
     return {"phase": phase, "label": PHASES.get(phase, phase)}
 
 
+def source_paths():
+    # Offered name -> file: videos in sources/ (links made by hand) and at the
+    # top level of the Desktop, newest first. The same file reached both ways
+    # is listed once; on a name clash sources/ wins. Broken links are skipped.
+    found, seen = {}, set()
+    for folder in (SOURCES, DESKTOP):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for n in names:
+            path = os.path.join(folder, n)
+            if (not n.lower().endswith((".mp4", ".mov", ".m4v")) or n.startswith(".")
+                    or not os.path.isfile(path) or n in found or os.path.realpath(path) in seen):
+                continue
+            found[n] = path
+            seen.add(os.path.realpath(path))
+    return dict(sorted(found.items(), key=lambda kv: -os.path.getmtime(kv[1])))
+
+
 def sources():
-    names = os.listdir(SOURCES) if os.path.isdir(SOURCES) else []
-    return sorted(n for n in names if n.lower().endswith((".mp4", ".mov", ".m4v"))
-                  and os.path.isfile(os.path.join(SOURCES, n)))
+    return list(source_paths())
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("audio/mp4", ".m4a")
@@ -96,12 +116,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*a, directory=ROOT, **kw)
 
     def translate_path(self, path):
-        # /sources/<name> streams a source movie (via its symlink), but only a
-        # name GET /sources lists; everything else maps into media/.
+        # /sources/<name> streams a source movie (from sources/ or the
+        # Desktop), but only a name GET /sources lists; everything else maps
+        # into media/.
         name = urllib.parse.unquote(path.split("?", 1)[0])
         if name.startswith("/sources/"):
             name = name[len("/sources/"):]
-            return os.path.join(SOURCES, name) if name in sources() else os.path.join(ROOT, ".no-such-file")
+            return source_paths().get(name, os.path.join(ROOT, ".no-such-file"))
         return super().translate_path(path)
 
     def send_head(self):
@@ -272,13 +293,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not source and len(sources()) == 1:
             source = sources()[0]  # nothing picked, and there's only one to pick
         if source not in sources():
-            return self.send_json(400, {"error": f"no source movie named {source!r} in sources/"})
+            return self.send_json(400, {"error": f"no source movie named {source!r} in sources/ or on the Desktop"})
         if restart and self.recording() and not cancel_recording():
             return self.send_json(409, {"error": "the running take didn't stop in time"})
         if self.recording() or testing.locked():
             return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
         log = open(os.path.join(HERE, "record.log"), "a")
-        recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), os.path.join(SOURCES, source)],
+        recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), source_paths()[source]],
                                     cwd=HERE, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         self.send_json(202, {"started": True})

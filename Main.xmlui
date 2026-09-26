@@ -11,7 +11,7 @@
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
        log, record.sh renders from it, and the take appears when it
        registers. -->
-  <DataSource id="sources" url="http://127.0.0.1:8765/sources" />
+  <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="5" />
   <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
     pollIntervalInSeconds="2" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
