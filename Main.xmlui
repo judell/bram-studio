@@ -199,7 +199,7 @@
           onShapeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'shape', tool: e.tool, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, color: e.color, width: e.width, pointerShape: e.pointerShape, wallMs: e.time, durationMs: e.duration }] }"
           onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
           onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
-        <MediaPlayer id="sourcePlayer"
+        <MediaPlayer id="sourcePlayer" maxHeight="65vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => sourceAspect = e.videoWidth / e.videoHeight"
           onPlay="(e) => { if (capturing) recEvents = [...recEvents, { event: 'play', currentTime: e.currentTime, wallMs: Date.now() }] }"
@@ -214,7 +214,7 @@
           <Button icon="close" variant="ghost" aria-label="Close player"
             tooltip="Close the player" onClick="playing = ''" />
         </HStack>
-        <MediaPlayer id="takePlayer" src="{playing}" autoPlay="true" />
+        <MediaPlayer id="takePlayer" src="{playing}" autoPlay="true" maxHeight="65vh" />
       </VStack>
       <!-- Takes as a drag-reorderable list (DndItems, the xmlui-dnd-list extension
            Bram's queue uses): only the grip drags, so the row's buttons stay live.
