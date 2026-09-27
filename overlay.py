@@ -98,9 +98,10 @@ def fit(draw, text, size, maxw):
 def layout(item, W, H):
     # Where an item's box and lines go. Captions: centered in a band at the
     # bottom (x1..x2 wide, bottom edge at y2). Callouts: top-left at (x1, y1),
-    # at the largest size (up to the caption size) whose wrapped text fits the
-    # box drawn for it, width and height; words are never split. A box too
-    # small to mean anything (a click, not a drag) gets the full size.
+    # at the largest size (up to 3x the caption size, so text grows with a
+    # bigger box) whose wrapped text fits the box drawn for it, width and
+    # height; words are never split. A box too small to mean anything (a
+    # click, not a drag) gets the caption size.
     from PIL import Image, ImageDraw
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     top = round(0.042 * min(W, H))
@@ -110,10 +111,17 @@ def layout(item, W, H):
     elif bw_max < 0.05 * W or bh_max < 0.03 * H:
         L = fit(draw, item["text"], top, 0.4 * W)
     else:
-        for size in range(top, 9, -1):
-            L = fit(draw, item["text"], size, bw_max)
-            if L["bw"] <= bw_max and L["bh"] <= bh_max:
-                break
+        # Binary search for the largest size that fits (the wrapped text only
+        # grows with the size); the smallest, 10, if nothing does.
+        lo, hi = 10, 3 * top
+        L = fit(draw, item["text"], lo, bw_max)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            M = fit(draw, item["text"], mid, bw_max)
+            if M["bw"] <= bw_max and M["bh"] <= bh_max:
+                lo, L = mid, M
+            else:
+                hi = mid - 1
     if item["kind"] == "caption":
         left, y = ((item["x1"] + item["x2"]) / 2) * W - L["bw"] / 2, item["y2"] * H - L["bh"]
     else:
