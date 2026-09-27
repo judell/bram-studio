@@ -18,7 +18,15 @@ POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
+POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
+/callouts/update {id, ...the same} and /callouts/delete {id} edit a take's
+callouts; POST /callouts/preview {...a callout} draws a still of it into
+media/.preview/<take id>.png, and POST /callouts/sprite {...} just the callout,
+with where it goes, for the take player's PointerLayer anchors (#3922);
+POST /overlay/render {id} burns the take's text
+in with overlay.py (from its clean copy).
 """
+import hashlib
 import http.server
 import json
 import mimetypes
@@ -28,10 +36,12 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 
+import overlay
 import voicetest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +59,7 @@ PHASES = {"starting": "Starting the recorder…",
 
 
 exporting = threading.Lock()  # one export at a time
+overlaying = threading.Lock()  # one overlay.py render at a time
 
 
 def probe(path, entries, stream=None):
@@ -120,6 +131,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Desktop), but only a name GET /sources lists; everything else maps
         # into media/.
         name = urllib.parse.unquote(path.split("?", 1)[0])
+        if name.startswith("/clean/"):
+            # A take without its burned-in text (overlay.py's clean copy), for
+            # the callout editor, which draws the text live; the take itself
+            # if it has never had text. Only plain take file names.
+            name = name[len("/clean/"):]
+            if "/" in name or name.startswith(".") or not os.path.isfile(os.path.join(ROOT, name)):
+                return os.path.join(ROOT, ".no-such-file")
+            clean = os.path.join(ROOT, ".clean", name)
+            return clean if os.path.isfile(clean) else os.path.join(ROOT, name)
         if name.startswith("/sources/"):
             name = name[len("/sources/"):]
             return source_paths().get(name, os.path.join(ROOT, ".no-such-file"))
@@ -202,6 +222,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.reorder_takes()
         if self.path == "/export":
             return self.export_takes()
+        if self.path == "/callouts/add":
+            return self.add_callout()
+        if self.path == "/callouts/update":
+            return self.add_callout(update=True)
+        if self.path == "/callouts/preview":
+            return self.preview_callout()
+        if self.path == "/callouts/sprite":
+            return self.callout_sprite()
+        if self.path == "/callouts/sprites":
+            return self.callout_sprites()
+        if self.path == "/callouts/delete":
+            return self.delete_callout()
+        if self.path == "/overlay/render":
+            return self.render_overlay()
         self.send_json(404, {"error": "not found"})
 
     def export_takes(self):
@@ -248,6 +282,151 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         finally:
             exporting.release()
 
+    def callout_fields(self, body):
+        # A callout's fields from a request, checked: (take_id, text, box, t_in,
+        # t_out) with the box's corners ordered and clamped to 0-1, or an error.
+        text = str(body.get("text", "")).strip()
+        try:
+            x1, y1, x2, y2, t_in, t_out = (float(body[k]) for k in ("x1", "y1", "x2", "y2", "t_in", "t_out"))
+        except (KeyError, TypeError, ValueError):
+            return None, "a callout needs x1, y1, x2, y2, t_in and t_out"
+        if not text or not isinstance(body.get("take_id"), int):
+            return None, "a callout needs a take and some text"
+        if t_out <= t_in:
+            return None, "the out point must come after the in point"
+        clamp = lambda v: max(0.0, min(1.0, v))
+        box = (clamp(min(x1, x2)), clamp(min(y1, y2)), clamp(max(x1, x2)), clamp(max(y1, y2)))
+        # A speech-bubble tail at one of the box's compass points, or none.
+        tail = body.get("tail") if body.get("tail") in overlay.TAILS else None
+        return (body["take_id"], text, box, max(0.0, t_in), t_out, tail), None
+
+    def add_callout(self, update=False):
+        # One callout: text in a box (0-1 picture coordinates, from the take
+        # player's PointerLayer) shown from t_in to t_out (take seconds). With
+        # update, the callout with body["id"] is replaced.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        fields, err = self.callout_fields(body)
+        if err:
+            return self.send_json(400, {"error": err})
+        take_id, text, box, t_in, t_out, tail = fields
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take_id,)).fetchone():
+            return self.send_json(404, {"error": f"no take with id {take_id}"})
+        if update:
+            n = db.execute("UPDATE overlays SET text = ?, x1 = ?, y1 = ?, x2 = ?, y2 = ?, t_in = ?, t_out = ?, "
+                           "tail = ? WHERE id = ? AND take_id = ? AND kind = 'callout'",
+                           (text, *box, t_in, t_out, tail, body.get("id"), take_id)).rowcount
+            db.commit()
+            return self.send_json(200 if n else 404, {"id": body.get("id")} if n else {"error": "no such callout"})
+        cur = db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail) "
+                         "VALUES (?, 'callout', ?, ?, ?, ?, ?, ?, ?, ?)", (take_id, text, *box, t_in, t_out, tail))
+        db.commit()
+        self.send_json(200, {"id": cur.lastrowid})
+
+    def callout_sprite(self):
+        # The callout being edited as a transparent image of just its box,
+        # tail and text (overlay.sprite, the drawing Apply uses) plus where it
+        # goes in 0-1 picture coordinates, for PointerLayer's anchors to place
+        # over the video (xmlui-org/xmlui#3922). Named by its content, so an
+        # unchanged callout keeps its URL.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        fields, err = self.callout_fields({"t_in": 0, "t_out": 1, **body})
+        if err:
+            return self.send_json(400, {"error": err})
+        take_id, text, box, _, _, tail = fields
+        item = {"text": text, "x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3], "tail": tail,
+                "frame": bool(body.get("frame"))}
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        try:
+            self.send_json(200, self.sprite_file(db, take_id, item))
+        except LookupError as e:
+            self.send_json(404, {"error": str(e)})
+
+    def sprite_file(self, db, take_id, item):
+        # Draw one callout sprite into media/.preview/sprite-<take>-<tag>.png,
+        # named by its content (an unchanged callout keeps its URL), and return
+        # its URL and where it goes.
+        tag = hashlib.sha1(json.dumps(item, sort_keys=True).encode()).hexdigest()[:10]
+        outdir = os.path.join(ROOT, ".preview")
+        path = os.path.join(outdir, f"sprite-{take_id}-{tag}.png")
+        img, where = overlay.sprite(db, take_id, item, frame=item.get("frame", False))
+        os.makedirs(outdir, exist_ok=True)
+        if not os.path.exists(path):
+            img.save(path)
+        return {"url": f"http://127.0.0.1:{PORT}/.preview/sprite-{take_id}-{tag}.png", "tag": tag, **where}
+
+    def callout_sprites(self):
+        # Every saved callout of a take as a sprite, with its in and out
+        # points, for the editor to show over the take's clean copy.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        take_id = body.get("take_id")
+        if not isinstance(take_id, int):
+            return self.send_json(400, {"error": "take_id must be a take id"})
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        rows = db.execute("SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail FROM overlays "
+                          "WHERE take_id = ? AND kind = 'callout' ORDER BY t_in", (take_id,)).fetchall()
+        out = []
+        try:
+            for cid, text, x1, y1, x2, y2, t_in, t_out, tail in rows:
+                item = {"text": text, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "tail": tail}
+                out.append({"id": cid, "t_in": t_in, "t_out": t_out, **self.sprite_file(db, take_id, item)})
+        except LookupError as e:
+            return self.send_json(404, {"error": str(e)})
+        # Prune this take's other sprites (edits since superseded); ones under
+        # a minute old may still be on screen in the editor.
+        outdir, keep = os.path.join(ROOT, ".preview"), {f"sprite-{take_id}-{o['tag']}.png" for o in out}
+        for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
+            path = os.path.join(outdir, name)
+            if (name.startswith(f"sprite-{take_id}-") and name not in keep
+                    and time.time() - os.path.getmtime(path) > 60):
+                os.remove(path)
+        self.send_json(200, out)
+
+    def preview_callout(self):
+        # A still of the take with this callout (and whatever else shows then),
+        # drawn as overlay.py render would: media/.preview/<take id>.png.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        fields, err = self.callout_fields(body)
+        if err:
+            return self.send_json(400, {"error": err})
+        take_id, text, box, t_in, t_out, tail = fields
+        item = {"id": body.get("id"), "text": text, "x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3],
+                "t_in": t_in, "t_out": t_out, "tail": tail}
+        out = os.path.join(ROOT, ".preview", f"{take_id}.png")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(item, fh)
+        try:
+            r = subprocess.run(["python3", os.path.join(HERE, "overlay.py"), "preview", str(take_id), fh.name, out],
+                               cwd=HERE, capture_output=True, text=True)
+        finally:
+            os.remove(fh.name)
+        if r.returncode:
+            return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["preview failed"])[-1]})
+        self.send_json(200, {"url": f"http://127.0.0.1:{PORT}/.preview/{take_id}.png?v={time.time():.3f}"})
+
+    def delete_callout(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        n = db.execute("DELETE FROM overlays WHERE id = ? AND kind = 'callout'", (body.get("id"),)).rowcount
+        db.commit()
+        self.send_json(200 if n else 404, {"deleted": body.get("id")} if n else {"error": "no such callout"})
+
+    def render_overlay(self):
+        # Burn a take's text in (overlay.py), from its clean copy.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if not isinstance(body.get("id"), int):
+            return self.send_json(400, {"error": "id must be a take id"})
+        if not overlaying.acquire(blocking=False):
+            return self.send_json(409, {"error": "a take is already being rendered"})
+        try:
+            r = subprocess.run(["python3", os.path.join(HERE, "overlay.py"), "render", str(body["id"])],
+                               cwd=HERE, capture_output=True, text=True)
+        finally:
+            overlaying.release()
+        if r.returncode:
+            return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["render failed"])[-1]})
+        self.send_json(200, json.loads(r.stdout.strip().splitlines()[-1]))
+
     def reorder_takes(self):
         # The takes list's drag order: each id's index becomes its position.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
@@ -277,7 +456,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except OSError as e:
                 return self.send_json(500, {"error": f"couldn't move {row[0]} to .trash: {e}"})
             trashed = f".trash/{name}"
+            # Its text-free copy (overlay.py) goes along, beside it.
+            clean = os.path.join(ROOT, ".clean", row[0])
+            if os.path.exists(clean):
+                stem, ext = os.path.splitext(name)
+                shutil.move(clean, os.path.join(trash, f"{stem}-clean{ext}"))
         db.execute("DELETE FROM takes WHERE id = ?", (body["id"],))
+        db.execute("DELETE FROM overlays WHERE take_id = ?", (body["id"],))
         db.commit()
         self.send_json(200, {"deleted": body["id"], "trashed": trashed})
 
@@ -344,4 +529,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+# The callouts query reads overlays, so it must exist before the page asks.
+with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
+    overlay.ensure_schema(_db)
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
