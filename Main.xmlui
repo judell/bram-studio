@@ -167,7 +167,6 @@
             recPaused = false;
             recEvents = [];
           " />
-        <Button label="Refresh" variant="outlined" size="sm" onClick="takes.refetch()" />
         <Button label="Export" variant="outlined" size="sm"
           tooltip="Join all takes, in list order, into one video"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
