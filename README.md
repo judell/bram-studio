@@ -42,8 +42,9 @@ voice recorder uses AVFoundation).
 
 - [Bram](https://github.com/judell/bram), with this project as its target app, and
   `python3 serve_media.py` running (port 8765).
-- `ffmpeg`, Python 3 with Pillow, and Xcode's command-line tools (`record.sh` compiles
-  `record_native.swift` on first use).
+- `ffmpeg`, Python 3 with Pillow, and Apple's Command Line Tools for `swiftc`
+  (`xcode-select --install`; about 2.4 GB, not the full Xcode app; Homebrew installs
+  them too). `record.sh` compiles `record_native.swift` on first use.
 - `whisper-cli` (whisper.cpp) and a model at
   `~/.local/share/whisper-models/ggml-small.en.bin` (or set `WHISPER_MODEL`), for naming
   takes.
