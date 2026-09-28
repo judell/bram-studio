@@ -46,8 +46,9 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS overlays (
 # The eight places a callout's tail can come off its box.
 TAILS = ("n", "ne", "e", "se", "s", "sw", "w", "nw")
 # Shapes on a take (kind 'shape'), drawn like recording ink: the box for rect
-# and ellipse, tail then tip for arrow, the tip in (x1, y1) for pointer.
-SHAPES = ("rect", "ellipse", "arrow", "pointer")
+# and ellipse, tail then tip for arrow (end to end for line), the tip in
+# (x1, y1) for pointer.
+SHAPES = ("rect", "ellipse", "arrow", "line", "pointer")
 INK_COLOR = "#ff3b30"
 
 
@@ -297,26 +298,38 @@ def dashed_frame(img, box, W, H):
             draw.line(seg, fill=(255, 255, 255, 230), width=1)
 
 
-def sprite(db, take_id, item, frame=False):
+def video_size(path):
+    # A video's picture size, cached by file and modification time.
+    key = (path, os.path.getmtime(path))
+    if key not in SIZES:
+        SIZES[key] = tuple(int(v) for v in probe(path, "stream=width,height", "v:0").split(","))
+    return SIZES[key]
+
+
+def sprite(db, take_id, item, frame=False, size=None):
     # Just the callout (box, tail and text), or the shape when item["shape"]
     # names one, drawn as render() draws it, on a
     # clear layer the size of the picture, cropped to what was drawn. Returns
     # the image and its box in 0-1 picture coordinates, for PointerLayer's
     # anchors (xmlui-org/xmlui#3922) to place over the video. frame adds the
-    # editor's dashed outline of the callout's box.
+    # editor's dashed outline of the callout's box. size (W, H) is given while
+    # recording, when there is no take yet (the source's size is the take's).
     from PIL import Image
-    row = db.execute("SELECT file FROM takes WHERE id = ?", (take_id,)).fetchone()
-    if not row:
-        raise LookupError(f"no take with id {take_id}")
-    src = os.path.join(MEDIA, row[0])
-    key = (src, os.path.getmtime(src))
-    if key not in SIZES:
-        SIZES[key] = tuple(int(v) for v in probe(src, "stream=width,height", "v:0").split(","))
-    W, H = SIZES[key]
+    if size:
+        W, H = size
+    else:
+        row = db.execute("SELECT file FROM takes WHERE id = ?", (take_id,)).fetchone()
+        if not row:
+            raise LookupError(f"no take with id {take_id}")
+        W, H = video_size(os.path.join(MEDIA, row[0]))
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     kind = "shape" if item.get("shape") in SHAPES else "callout"
+    if kind == "callout" and not str(item.get("text", "")).strip():
+        # An empty callout (placed while recording, not yet written): a
+        # placeholder in the editor; render() leaves it out of the take.
+        item = {**item, "text": "Callout text"}
     paint(layer, [(layout({**item, "kind": kind}, W, H), 1.0)])
-    if frame:
+    if frame and item["x2"] - item["x1"] > 0.001 and item["y2"] - item["y1"] > 0.001:
         dashed_frame(layer, (item["x1"], item["y1"], item["x2"], item["y2"]), W, H)
     # Nothing drawn (a shape too small to show): one clear pixel where it is.
     bbox = layer.getbbox()
@@ -350,6 +363,8 @@ def render(db, take_id):
              for r in db.execute(
         "SELECT kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? ORDER BY t_in",
         (take_id,))]
+    # Empty callouts (placed while recording, never written) aren't drawn.
+    items = [it for it in items if it["kind"] != "callout" or it["text"].strip()]
     tmp_out = take + ".overlay.mp4"
     if not items:
         shutil.copy2(clean, tmp_out)

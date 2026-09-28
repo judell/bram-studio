@@ -119,7 +119,8 @@ warning=""
 if [ "$(jq '[.[] | select(.event == "play" or .event == "pause" or .event == "seeked" or .event == "ended" or .event == "stroke" or .event == "shape" or .event == "pointer")] | length' "$dir/events.json")" = "0" ]; then
   warning="no player events; $(jq -r '"duration=\(.duration // "none"), paused=\(.paused), currentTime=\(.currentTime)"' "$dir/diag.json" 2>/dev/null || echo "no diag")"
 fi
-# "-": register.py names the take from its first spoken words.
+# "-": register.py names the take from its first spoken words. The take's JSON
+# carries the annotations placed while recording (render.py's annotations).
 phase naming
 python3 "$HERE/register.py" "narrated/$take-raw.mp4" - \
-  "$(jq -r .src_start "$json")" "$(jq -r .src_end "$json")" "$(basename "$SRC")" "$warning"
+  "$(jq -r .src_start "$json")" "$(jq -r .src_end "$json")" "$(basename "$SRC")" "$warning" "$json"

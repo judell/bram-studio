@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="line" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -114,6 +114,11 @@
             recPaused = true;
             onAirYet = false;
             recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
+            liveAnnots = [];
+            liveCur = null;
+            liveDrag = null;
+            liveFrom = null;
+            lastLiveSprites = null;
             capturing = true;
             try {
               startRecording.execute({ source: sourceChoice.value });
@@ -150,6 +155,11 @@
             recPaused = true;
             onAirYet = false;
             recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
+            liveAnnots = [];
+            liveCur = null;
+            liveDrag = null;
+            liveFrom = null;
+            lastLiveSprites = null;
           " />
         <Button label="Stop" themeColor="attention" when="{capturing}"
           enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
@@ -198,21 +208,114 @@
            take's picture path (render.py's events input). -->
       <!-- One player at a time: the source player exists only while recording
            (Record clears any loaded take; Stop removes it). -->
-      <VStack when="{capturing}">
-        <!-- Ink over the source (xmlui-org/xmlui#3919): hold Command and drag to
-             draw; without it, clicks reach the player. Strokes and the pointer
-             path go into the take's event log, in 0-1 picture coordinates. -->
-        <!-- Drawing tools (xmlui-org/xmlui#3919 build 3): the selected one is solid. Point draws an arrow (pointerShape). -->
+      <!-- Annotations while recording: the take editor's layer on the source
+           player. A placed callout or shape appears at once and stays until
+           removed; add, changes and removal go into the event log (annotAdd,
+           annotSet, annotRemove), and render.py/register.py make them editable
+           items on the take (their on-air spans, last positions winning).
+           liveAnnots: the items up now; liveCur: the current one (last placed
+           or clicked), whose handles resize it and whose text and tail the row
+           below edits. Freehand stays plain ink. Sprites come from
+           /annotations/sprites (sized from the source), the last set kept
+           while the next loads so a dragged anchor never vanishes. -->
+      <VStack when="{capturing}"
+        var.liveCurItem="{liveAnnots.find((a) => a.cid === liveCur) || null}"
+        var.liveSpritesNow="{liveAnnots.length ? (liveSprites.value || lastLiveSprites || []).filter((s) => liveAnnots.some((a) => a.cid === s.cid)) : []}"
+        var.liveHandleBox="{liveCurItem ? (!liveCurItem.shape &amp;&amp; liveCurItem.x2 - liveCurItem.x1 &lt; 0.001 &amp;&amp; liveSpritesNow.find((s) => s.cid === liveCur) ? { x1: liveSpritesNow.find((s) => s.cid === liveCur).x, y1: liveSpritesNow.find((s) => s.cid === liveCur).y, x2: liveSpritesNow.find((s) => s.cid === liveCur).x + liveSpritesNow.find((s) => s.cid === liveCur).width, y2: liveSpritesNow.find((s) => s.cid === liveCur).y + liveSpritesNow.find((s) => s.cid === liveCur).height } : liveCurItem) : null}"
+        var.liveHandles="{liveHandleBox &amp;&amp; sourceAspect &amp;&amp; !liveDrag &amp;&amp; liveCurItem.shape !== 'pointer' ? ((liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line') ? [['a', liveHandleBox.x1, liveHandleBox.y1], ['b', liveHandleBox.x2, liveHandleBox.y2]] : [['nw', liveHandleBox.x1, liveHandleBox.y1], ['n', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y1], ['ne', liveHandleBox.x2, liveHandleBox.y1], ['e', liveHandleBox.x2, (liveHandleBox.y1 + liveHandleBox.y2) / 2], ['se', liveHandleBox.x2, liveHandleBox.y2], ['s', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y2], ['sw', liveHandleBox.x1, liveHandleBox.y2], ['w', liveHandleBox.x1, (liveHandleBox.y1 + liveHandleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * sourceAspect, width: 0.018, height: 0.018 * sourceAspect })) : []}">
+        <!-- Items last 3 s of on-air time (placing and typing while paused don't
+             count), unless kept; an expiring item is taken down exactly as
+             Remove does, so the take matches the screen. -->
+        <Timer interval="250" enabled="{capturing &amp;&amp; !recPaused &amp;&amp; liveAnnots.some((a) => !a.kept)}"
+          onTick="
+            const expired = liveAnnots.filter((a) => !a.kept &amp;&amp; a.left &lt;= 0.25);
+            liveAnnots = liveAnnots.filter((a) => a.kept || a.left > 0.25).map((a) => a.kept ? a : { ...a, left: a.left - 0.25 });
+            if (expired.length) {
+              recEvents = recEvents.concat(expired.map((a) => ({ event: 'annotRemove', cid: a.cid, wallMs: Date.now() })));
+              if (expired.some((a) => a.cid === liveCur)) {
+                liveCur = null;
+                liveText.setValue('');
+                liveTail.setValue('none');
+              }
+            }
+          " />
+        <DataSource id="liveSprites" url="http://127.0.0.1:8765/annotations/sprites" method="POST"
+          when="{liveAnnots.length > 0}"
+          body="{{ source: sourceChoice.value, items: liveAnnots.map((a) => ({ cid: a.cid, shape: a.shape, text: a.text, tail: a.tail, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, frame: a.cid === liveCur })) }}"
+          onLoaded="(d) => { lastLiveSprites = d; liveDrag = null; }" />
+        <!-- What Command-drag places: a callout or shape (kept, editable), or
+             Freehand ink. The selected one is solid. -->
         <HStack verticalAlignment="center">
-          <Items data="{[['line', 'Line'], ['arrow', 'Arrow'], ['rect', 'Rect'], ['ellipse', 'Oval'], ['pointer', 'Point'], ['freehand', 'Freehand']]}">
+          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer'], ['freehand', 'Freehand']]}">
             <Button label="{$item[1]}" size="xs"
               variant="{inkTool === $item[0] ? 'solid' : 'outlined'}"
-              tooltip="Hold Command (⌘) and drag to draw. Add Shift (⇧) for a square, circle or 45° line; add Option (⌥) to draw from the center."
+              tooltip="Hold Command (⌘) and drag to place (click, for Pointer). Items stay until removed; Freehand is ink that fades."
               onClick="inkTool = $item[0]" />
           </Items>
         </HStack>
-        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}" tool="{inkTool}" pointerShape="arrow"
-          onShapeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'shape', tool: e.tool, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, color: e.color, width: e.width, pointerShape: e.pointerShape, wallMs: e.time, durationMs: e.duration }] }"
+        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}" pointerShape="arrow" anchorDrag="true"
+          tool="{inkTool === 'callout' ? 'rect' : inkTool}"
+          anchors="{liveSpritesNow.map((s) => ({ id: s.cid, url: s.url, x: liveDrag &amp;&amp; liveDrag.cid === s.cid ? liveDrag.x : s.x, y: liveDrag &amp;&amp; liveDrag.cid === s.cid ? liveDrag.y : s.y, width: s.width, height: s.height })).concat(liveHandles)}"
+          onAnchorDragStart="(e) => {
+            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
+            if (edges) {
+              liveFrom = liveHandleBox;
+            } else {
+              const it = liveAnnots.find((a) => a.cid === e.id);
+              liveCur = e.id;
+              liveText.setValue(it ? it.text : '');
+              liveTail.setValue(it &amp;&amp; it.tail ? it.tail : 'none');
+            }
+          }"
+          onAnchorDragMove="(e) => {
+            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
+            if (edges &amp;&amp; liveFrom &amp;&amp; liveCurItem) {
+              const b = liveFrom;
+              const free = liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line';
+              const x1 = free ? Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)) : Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
+              const y1 = free ? Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)) : Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
+              const x2 = free ? Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)) : Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
+              const y2 = free ? Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) : Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
+              liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, x1: x1, y1: y1, x2: x2, y2: y2 } : a);
+            } else if (!edges) {
+              liveDrag = { cid: e.id, x: e.x, y: e.y };
+            }
+          }"
+          onAnchorDragEnd="(e) => {
+            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
+            if (edges &amp;&amp; liveFrom &amp;&amp; liveCurItem) {
+              const b = liveFrom;
+              const free = liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line';
+              const x1 = free ? Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)) : Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
+              const y1 = free ? Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)) : Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
+              const x2 = free ? Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)) : Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
+              const y2 = free ? Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) : Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
+              liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, x1: x1, y1: y1, x2: x2, y2: y2 } : a);
+              recEvents = [...recEvents, { event: 'annotSet', cid: liveCur, x1: x1, y1: y1, x2: x2, y2: y2, wallMs: Date.now() }];
+            } else if (!edges) {
+              const it = liveAnnots.find((a) => a.cid === e.id);
+              if (it) {
+                const dx = Math.min(Math.max(e.dx, -Math.min(it.x1, it.x2)), 1 - Math.max(it.x1, it.x2));
+                const dy = Math.min(Math.max(e.dy, -Math.min(it.y1, it.y2)), 1 - Math.max(it.y1, it.y2));
+                liveAnnots = liveAnnots.map((a) => a.cid === e.id ? { ...a, x1: it.x1 + dx, y1: it.y1 + dy, x2: it.x2 + dx, y2: it.y2 + dy } : a);
+                recEvents = [...recEvents, { event: 'annotSet', cid: e.id, x1: it.x1 + dx, y1: it.y1 + dy, x2: it.x2 + dx, y2: it.y2 + dy, wallMs: Date.now() }];
+              }
+            }
+            liveFrom = null;
+          }"
+          onShapeEnd="(e) => {
+            if (capturing &amp;&amp; inkTool !== 'freehand') {
+              const cid = liveSeq + 1;
+              const pt = inkTool === 'pointer';
+              const a = { cid: cid, shape: inkTool === 'callout' ? null : inkTool, text: '', tail: 'none', x1: e.x1, y1: e.y1, x2: pt ? e.x1 : e.x2, y2: pt ? e.y1 : e.y2, left: 3, kept: false };
+              liveSeq = cid;
+              liveAnnots = liveAnnots.concat([a]);
+              liveCur = cid;
+              liveText.setValue('');
+              liveTail.setValue('none');
+              recEvents = [...recEvents, { event: 'annotAdd', cid: cid, shape: a.shape, text: '', tail: 'none', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, wallMs: Date.now() }];
+            }
+          }"
           onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
           onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
         <MediaPlayer id="sourcePlayer" maxHeight="65vh"
@@ -222,7 +325,75 @@
           onPause="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pause', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onSeeked="(e) => { if (capturing) recEvents = [...recEvents, { event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }] }"
           onEnded="(e) => { if (capturing) recEvents = [...recEvents, { event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }] }" />
+          <property name="anchorTemplate">
+            <Image src="{$item.url}" width="100%" />
+          </property>
         </PointerLayer>
+        <!-- The current item's text and tail (a callout's), and removal, which
+             ends its span in the take. Always rendered (dimmed with nothing
+             current) so setValue always has a component to reach. -->
+        <HStack verticalAlignment="center">
+          <TextBox id="liveText" width="*" enabled="{!!liveCurItem &amp;&amp; !liveCurItem.shape}"
+            placeholder="{!liveCurItem ? 'Hold Command and drag to place a callout or shape' : liveCurItem.shape ? 'Shapes have no text' : 'Callout text (or fill it in after the take)'}"
+            onDidChange="(v) => {
+              if (liveCurItem &amp;&amp; !liveCurItem.shape &amp;&amp; v !== liveCurItem.text) {
+                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, text: v } : a);
+                recEvents = [...recEvents, { event: 'annotSet', cid: liveCur, text: v, wallMs: Date.now() }];
+              }
+            }" />
+          <Select id="liveTail" initialValue="none" width="130px" enabled="{!!liveCurItem &amp;&amp; !liveCurItem.shape}"
+            onDidChange="(v) => {
+              if (liveCurItem &amp;&amp; !liveCurItem.shape &amp;&amp; v !== liveCurItem.tail) {
+                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, tail: v } : a);
+                recEvents = [...recEvents, { event: 'annotSet', cid: liveCur, tail: v, wallMs: Date.now() }];
+              }
+            }">
+            <Option value="none" label="No tail" />
+            <Option value="nw" label="Tail ↖ nw" />
+            <Option value="n" label="Tail ↑ n" />
+            <Option value="ne" label="Tail ↗ ne" />
+            <Option value="e" label="Tail → e" />
+            <Option value="se" label="Tail ↘ se" />
+            <Option value="s" label="Tail ↓ s" />
+            <Option value="sw" label="Tail ↙ sw" />
+            <Option value="w" label="Tail ← w" />
+          </Select>
+          <Button label="{liveCurItem &amp;&amp; liveCurItem.kept ? 'Kept' : 'Keep'}" size="xs"
+            variant="{liveCurItem &amp;&amp; liveCurItem.kept ? 'solid' : 'outlined'}" enabled="{!!liveCurItem}"
+            tooltip="Keep this item up until you remove it, instead of 3 seconds on the air (click again to let it expire)"
+            onClick="liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, kept: !a.kept, left: 3 } : a)" />
+          <Button label="Remove" size="xs" variant="outlined" enabled="{!!liveCurItem}"
+            tooltip="Take this item down now (its span in the take ends here)"
+            onClick="
+              recEvents = [...recEvents, { event: 'annotRemove', cid: liveCur, wallMs: Date.now() }];
+              liveAnnots = liveAnnots.filter((a) => a.cid !== liveCur);
+              liveCur = null;
+              liveText.setValue('');
+              liveTail.setValue('none');
+            " />
+        </HStack>
+        <!-- Items up now: click one to make it current, ✕ to take it down. -->
+        <Items data="{liveAnnots}">
+          <HStack verticalAlignment="center">
+            <Button size="xs" variant="{$item.cid === liveCur ? 'solid' : 'ghost'}"
+              label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ($item.kept ? ' · kept' : ' · ' + Math.ceil($item.left) + ' s')}"
+              onClick="
+                liveCur = $item.cid;
+                liveText.setValue($item.text);
+                liveTail.setValue($item.tail || 'none');
+              " />
+            <Button icon="close" size="xs" variant="ghost" aria-label="Take this item down"
+              onClick="
+                recEvents = [...recEvents, { event: 'annotRemove', cid: $item.cid, wallMs: Date.now() }];
+                liveAnnots = liveAnnots.filter((a) => a.cid !== $item.cid);
+                if (liveCur === $item.cid) {
+                  liveCur = null;
+                  liveText.setValue('');
+                  liveTail.setValue('none');
+                }
+              " />
+          </HStack>
+        </Items>
       </VStack>
       <!-- The take loaded in the take player (its URL); hidden while recording. -->
       <!-- calloutHandles: the edited callout's eight resize handles (anchors
@@ -240,7 +411,8 @@
       <VStack when="{playing &amp;&amp; !capturing}"
         var.editSprite="{calloutSprite.value || lastSprite}"
         var.calloutKey="{calloutBox ? [annotKind, calloutText.value, calloutBox.x1, calloutBox.y1, calloutBox.x2, calloutBox.y2, calloutIn, calloutOut, calloutTail.value].join('|') : ''}"
-        var.calloutHandles="{calloutBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; annotKind !== 'pointer' ? (annotKind === 'arrow' ? [['a', calloutBox.x1, calloutBox.y1], ['b', calloutBox.x2, calloutBox.y2]] : [['nw', calloutBox.x1, calloutBox.y1], ['n', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y1], ['ne', calloutBox.x2, calloutBox.y1], ['e', calloutBox.x2, (calloutBox.y1 + calloutBox.y2) / 2], ['se', calloutBox.x2, calloutBox.y2], ['s', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y2], ['sw', calloutBox.x1, calloutBox.y2], ['w', calloutBox.x1, (calloutBox.y1 + calloutBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
+        var.handleBox="{calloutBox &amp;&amp; annotKind === 'callout' &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : calloutBox}"
+        var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; annotKind !== 'pointer' ? ((annotKind === 'arrow' || annotKind === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
         <HStack horizontalAlignment="end">
           <Button icon="close" variant="ghost" aria-label="Close player"
             tooltip="Close the player" onClick="playing = ''" />
@@ -271,15 +443,15 @@
              Command-drag ink is invisible once there's a box: it does nothing
              then. -->
         <PointerLayer id="calloutLayer" contentAspect="{takeAspect}" anchorDrag="true" pointerShape="arrow"
-          tool="{annotKind === 'arrow' ? 'arrow' : annotKind === 'pointer' ? 'pointer' : 'rect'}"
+          tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
           color="{calloutBox ? 'transparent' : '#ff3b30'}"
           anchors="{(savedSprites.value || []).filter((a) => a.id !== editCallout &amp;&amp; playerTime >= a.t_in &amp;&amp; playerTime &lt;= a.t_out).concat(calloutBox &amp;&amp; editSprite ? [{ id: 'edit', url: editSprite.url, x: dragPos ? dragPos.x : editSprite.x, y: dragPos ? dragPos.y : editSprite.y, width: editSprite.width, height: editSprite.height }] : []).concat(calloutHandles)}"
-          onAnchorDragStart="(e) => { dragFrom = calloutBox; }"
+          onAnchorDragStart="(e) => { dragFrom = e.id === 'edit' ? calloutBox : handleBox; }"
           onAnchorDragMove="(e) => {
             const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
             if (e.id === 'edit') {
               dragPos = { x: e.x, y: e.y };
-            } else if (edges &amp;&amp; dragFrom &amp;&amp; annotKind === 'arrow') {
+            } else if (edges &amp;&amp; dragFrom &amp;&amp; (annotKind === 'arrow' || annotKind === 'line')) {
               const b = dragFrom;
               calloutBox = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
             } else if (edges &amp;&amp; dragFrom) {
@@ -298,7 +470,7 @@
               const dx = Math.min(Math.max(e.dx, -Math.min(c.x1, c.x2)), 1 - Math.max(c.x1, c.x2));
               const dy = Math.min(Math.max(e.dy, -Math.min(c.y1, c.y2)), 1 - Math.max(c.y1, c.y2));
               calloutBox = { x1: c.x1 + dx, y1: c.y1 + dy, x2: c.x2 + dx, y2: c.y2 + dy };
-            } else if (edges &amp;&amp; dragFrom &amp;&amp; annotKind === 'arrow') {
+            } else if (edges &amp;&amp; dragFrom &amp;&amp; (annotKind === 'arrow' || annotKind === 'line')) {
               const b = dragFrom;
               calloutBox = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
             } else if (edges &amp;&amp; dragFrom) {
@@ -331,7 +503,7 @@
              Fixed while a saved one is being edited; switching drops an
              unsaved new one. -->
         <HStack verticalAlignment="center">
-          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['pointer', 'Pointer']]}">
+          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
             <Button label="{$item[1]}" size="xs" enabled="{!editCallout}"
               variant="{annotKind === $item[0] ? 'solid' : 'outlined'}"
               onClick="
@@ -342,7 +514,7 @@
           </Items>
         </HStack>
         <!-- Which one the editor holds, and what's missing. -->
-        <Text value="{(editCallout ? 'Editing a saved ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', pointer: 'pointer' })[annotKind] + ': drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it') + '; Update keeps the changes, Done when finished' : 'New ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', pointer: 'pointer' })[annotKind] + ': once placed, drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it')) + (calloutBox ? '' : annotKind === 'pointer' ? ' · Hold Command and click where it should point' : annotKind === 'arrow' ? ' · Hold Command and drag from tail to tip' : ' · Hold Command and drag a box on the picture')}" />
+        <Text value="{(editCallout ? 'Editing a saved ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', line: 'line', pointer: 'pointer' })[annotKind] + ': drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it') + '; Update keeps the changes, Done when finished' : 'New ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', line: 'line', pointer: 'pointer' })[annotKind] + ': once placed, drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it')) + (calloutBox ? '' : annotKind === 'pointer' ? ' · Hold Command and click where it should point' : annotKind === 'arrow' ? ' · Hold Command and drag from tail to tip' : annotKind === 'line' ? ' · Hold Command and drag from end to end' : ' · Hold Command and drag a box on the picture')}" />
         <HStack verticalAlignment="center">
           <TextBox id="calloutText" width="*" enabled="{annotKind === 'callout'}"
             placeholder="{annotKind !== 'callout' ? 'Shapes have no text' : calloutBox ? 'Callout text' : 'Hold Command and drag a box on the picture, then type the callout'}" />
@@ -414,7 +586,7 @@
         </HStack>
         <Items data="{callouts}">
           <HStack verticalAlignment="center">
-            <Text value="{$item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', pointer: 'Pointer' })[$item.shape] : $item.text}" width="*" />
+            <Text value="{$item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)'}" width="*" />
             <Text value="{$item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + 's'}" />
             <Button label="Go to" size="xs" variant="ghost" onClick="takePlayer.seek($item.t_in)" />
             <Button label="Edit" size="xs" variant="ghost" tooltip="Load this callout into the editor"

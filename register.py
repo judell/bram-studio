@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Add a rendered take to studio.db and media/.
 
-    python3 register.py <mp4> [name] [src_start] [src_end] [source] [warning]
+    python3 register.py <mp4> [name] [src_start] [src_end] [source] [warning] [take.json]
 
 Copies the MP4 into media/ and inserts a row into takes; its URL points at
-serve_media.py (port 8765).
+serve_media.py (port 8765). With the take's JSON (render.py), the callouts
+and shapes placed while recording become editable items on the take.
 
 With no name, or "-", the take is named from its narration: whisper.cpp
 transcribes up to the first 10 minutes, and the first 24 spoken words become
@@ -12,6 +13,7 @@ the name (the first ~40 go into notes). A take with fewer than 3 words (whisper
 invents "you" from silence), or one whisper can't read, is "untitled <file
 stem>". WHISPER_MODEL overrides the model path.
 """
+import json
 import os
 import re
 import shutil
@@ -20,6 +22,8 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
+
+import overlay
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("WHISPER_MODEL", os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
@@ -76,9 +80,23 @@ if "position" not in columns:
         db.execute("UPDATE takes SET position = ? WHERE id = ?", (pos, tid))
 # A new take goes to the top of the list.
 position = (db.execute("SELECT min(position) FROM takes").fetchone()[0] or 0) - 1
-db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, warning, "
-           "position) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-           (name, datetime.now().strftime("%Y-%m-%d %H:%M"), round(dur, 1), src_start, src_end, fname,
-            f"http://127.0.0.1:8765/{fname}", notes, source, warning, position))
+cur = db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, "
+                 "warning, position) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 (name, datetime.now().strftime("%Y-%m-%d %H:%M"), round(dur, 1), src_start, src_end, fname,
+                  f"http://127.0.0.1:8765/{fname}", notes, source, warning, position))
+# Callouts and shapes placed while recording (the take's JSON, render.py's
+# annotations), with their on-air spans and last positions: editable items on
+# the take, burned in only by the editor's Apply. An empty callout stays empty
+# (a placeholder until written; Apply skips it).
+annotations = json.load(open(sys.argv[7])).get("annotations", []) if len(sys.argv) > 7 else []
+if annotations:
+    overlay.ensure_schema(db)
+    db.executemany(
+        "INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(cur.lastrowid, "shape" if a.get("shape") in overlay.SHAPES else "callout",
+          "" if a.get("shape") in overlay.SHAPES else a.get("text") or "", a["x1"], a["y1"], a["x2"], a["y2"],
+          a["t_in"], a["t_out"], a.get("tail") if a.get("tail") in overlay.TAILS else None,
+          a.get("shape") if a.get("shape") in overlay.SHAPES else None) for a in annotations])
 db.commit()
-print(f"registered {name}: {fname} ({dur:.1f}s)")
+print(f"registered {name}: {fname} ({dur:.1f}s)" + (f", {len(annotations)} annotations" if annotations else ""))

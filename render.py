@@ -250,7 +250,7 @@ def rgba(hex_color, alpha):
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(255 * alpha))
 
 
-strokes, shapes, pointer = [], [], []
+strokes, shapes, pointer, annots = [], [], [], {}
 for e in json.load(open(EVENTS)):
     if e["event"] == "stroke":
         pts = [(take_time(e["wallMs"] / 1000.0 + p["t"] / 1000.0), p["x"], p["y"]) for p in e["points"]]
@@ -271,7 +271,35 @@ for e in json.load(open(EVENTS)):
         tt = take_time(e["wallMs"] / 1000.0)
         if tt is not None:
             pointer.append((tt, e["x"], e["y"]))
+    elif e["event"] in ("annotAdd", "annotSet", "annotRemove"):
+        # Annotations placed while recording (callouts and shapes): not drawn
+        # here, but listed in the take's JSON for register.py to add to the
+        # take as editable items. The last values win.
+        a = annots.setdefault(e["cid"], {"add": e["wallMs"] / 1000.0, "remove": None})
+        if e["event"] == "annotRemove":
+            a["remove"] = e["wallMs"] / 1000.0
+        else:
+            a.update({k: e[k] for k in ("shape", "text", "tail", "x1", "y1", "x2", "y2") if k in e})
 pointer.sort()
+
+
+def on_air_span(start, end):
+    # The first on-air moment at or after start and the last at or before end,
+    # in take time, or None if the span is never on the air.
+    after = [max(a, start) for a, b in kept if b > start]
+    before = [min(b, end) for a, b in kept if a < end]
+    if not after or not before or after[0] >= before[-1]:
+        return None
+    return take_time(after[0]), take_time(before[-1])
+
+
+annotations = []
+for cid, a in sorted(annots.items(), key=lambda kv: kv[1]["add"]):
+    span = on_air_span(a["add"], a["remove"] if a["remove"] is not None else w1)
+    if span and "x1" in a:
+        annotations.append({"shape": a.get("shape"), "text": a.get("text") or "", "tail": a.get("tail"),
+                            "x1": a["x1"], "y1": a["y1"], "x2": a["x2"], "y2": a["y2"],
+                            "t_in": round(span[0], 3), "t_out": round(span[1], 3)})
 
 
 
@@ -425,6 +453,7 @@ meta = {"take": name, "session": os.path.relpath(D, HERE), "source": os.path.bas
         "pieces": [{"kind": k, "src": tc(p), "dur": round(d, 2)} for k, p, d in pieces],
         "path": [(round(w - w0, 2), p, pl) for w, p, pl in path],
         "ink": {"strokes": len(strokes), "shapes": len(shapes), "pointerSamples": len(pointer)},
+        "annotations": annotations,
         "voiceFile": os.path.basename(voice_wav), "voiceLevel": level, "sourceLevel": source_level}
 json.dump(meta, open(os.path.join(HERE, "takes", f"{name}.json"), "w"), indent=1)
 plays = sum(d for k, _, d in pieces if k == "play")

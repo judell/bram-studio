@@ -60,6 +60,7 @@ PHASES = {"starting": "Starting the recorder…",
 
 exporting = threading.Lock()  # one export at a time
 overlaying = threading.Lock()  # one overlay.py render at a time
+SPRITE_WHERE = {}  # recording sprite tag -> where it goes (0-1 picture box)
 
 
 def probe(path, entries, stream=None):
@@ -232,6 +233,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.callout_sprite()
         if self.path == "/callouts/sprites":
             return self.callout_sprites()
+        if self.path == "/annotations/sprites":
+            return self.annotation_sprites()
         if self.path == "/callouts/delete":
             return self.delete_callout()
         if self.path == "/overlay/render":
@@ -301,7 +304,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if t_out <= t_in:
             return None, "the out point must come after the in point"
         clamp = lambda v: max(0.0, min(1.0, v))
-        if shape == "arrow":
+        if shape in ("arrow", "line"):
             box = (clamp(x1), clamp(y1), clamp(x2), clamp(y2))
         else:
             box = (clamp(min(x1, x2)), clamp(min(y1, y2)), clamp(max(x1, x2)), clamp(max(y1, y2)))
@@ -365,6 +368,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not os.path.exists(path):
             img.save(path)
         return {"url": f"http://127.0.0.1:{PORT}/.preview/sprite-{take_id}-{tag}.png", "tag": tag, **where}
+
+    def annotation_sprites(self):
+        # The callouts and shapes placed while recording, as sprites over the
+        # source player (there is no take yet): {source, items: [{cid, shape,
+        # text, tail, x1, y1, x2, y2, frame}]} -> [{cid, url, x, y, width,
+        # height}], sized from the source video (the take's size too). Files
+        # are named by content, so unchanged items keep their URLs.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        path = source_paths().get(body.get("source"))
+        if not path:
+            return self.send_json(404, {"error": f"no source movie named {body.get('source')!r}"})
+        size = overlay.video_size(path)
+        outdir = os.path.join(ROOT, ".preview")
+        os.makedirs(outdir, exist_ok=True)
+        out = []
+        for it in body.get("items") or []:
+            try:
+                x1, y1, x2, y2 = (max(0.0, min(1.0, float(it[k]))) for k in ("x1", "y1", "x2", "y2"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            shape = it.get("shape") if it.get("shape") in overlay.SHAPES else None
+            item = {"text": "" if shape else str(it.get("text") or ""), "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "tail": it.get("tail") if not shape and it.get("tail") in overlay.TAILS else None,
+                    "shape": shape, "frame": bool(it.get("frame")) and not shape, "size": list(size)}
+            tag = hashlib.sha1(json.dumps(item, sort_keys=True).encode()).hexdigest()[:10]
+            name = f"sprite-src-{tag}.png"
+            where = None
+            if not os.path.exists(os.path.join(outdir, name)) or tag not in SPRITE_WHERE:
+                img, where = overlay.sprite(None, None, item, frame=item["frame"], size=size)
+                img.save(os.path.join(outdir, name))
+                SPRITE_WHERE[tag] = where
+            out.append({"cid": it.get("cid"), "url": f"http://127.0.0.1:{PORT}/.preview/{name}",
+                        **SPRITE_WHERE[tag]})
+        # Recording sprites older than ten minutes are stale.
+        for name in os.listdir(outdir):
+            p = os.path.join(outdir, name)
+            if name.startswith("sprite-src-") and time.time() - os.path.getmtime(p) > 600:
+                os.remove(p)
+                SPRITE_WHERE.pop(name[len("sprite-src-"):-len(".png")], None)
+        self.send_json(200, out)
 
     def callout_sprites(self):
         # Every saved callout of a take as a sprite, with its in and out
@@ -541,7 +584,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class AdoptedRecorder:
+    # A record.sh that was already running when this server started (it was
+    # restarted mid-take): stands in for the Popen handle, so Stop, Cancel and
+    # the status line keep working instead of reporting "nothing is recording".
+    def __init__(self, pid):
+        self.pid = pid
+
+    def poll(self):
+        try:
+            os.kill(self.pid, 0)
+            return None
+        except OSError:
+            return 0
+
+    def wait(self, timeout=None):
+        deadline = time.time() + (timeout if timeout is not None else 1e9)
+        while self.poll() is None:
+            if time.time() > deadline:
+                raise subprocess.TimeoutExpired("record.sh", timeout)
+            time.sleep(0.1)
+        return 0
+
+
+def adopt_running_take():
+    # record.sh writes its session dir to media/.record-session and the voice
+    # recorder's pid to <session>/pids; the recorder's parent is record.sh.
+    try:
+        session = open(os.path.join(ROOT, ".record-session")).read().strip()
+        rec_pid = int(open(os.path.join(session, "pids")).read().split()[0])
+        ppid = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(rec_pid)], capture_output=True,
+                                  text=True).stdout.strip())
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(ppid)], capture_output=True, text=True).stdout
+    except (OSError, ValueError):
+        return None
+    if "record.sh" not in cmd:
+        return None
+    print(f"adopted the running take: record.sh pid {ppid}, session {session}", flush=True)
+    return AdoptedRecorder(ppid)
+
+
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
     overlay.ensure_schema(_db)
+recorder = adopt_running_take()
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
