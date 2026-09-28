@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="line" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="line" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -44,10 +44,11 @@
   <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <!-- Callouts: text burned into a take (overlay.py). Add/delete edit the
-       list; render burns the take's text in from its clean copy. -->
+  <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
+       a take (overlay.py). Add/delete edit the list; render burns them in from
+       the take's clean copy. -->
   <DataSource id="callouts" url="/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail FROM overlays WHERE take_id = ? AND kind = ? ORDER BY t_in', params: [editTake, &quot;callout&quot;] }}" />
+    body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [editTake, &quot;callout&quot;, &quot;shape&quot;] }}" />
   <APICall id="addCallout" method="post" url="http://127.0.0.1:8765/callouts/add"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -232,11 +233,14 @@
            (PointerLayer ends a drag whose anchor disappears). -->
       <!-- editSprite: the DataSource's sprite, or the last one while the next
            loads. calloutKey: the editor's state as one string; Update is dimmed
-           while it equals savedKey (the callout as last loaded or saved). -->
+           while it equals savedKey (the callout as last loaded or saved).
+           annotKind: what the editor places (callout, rect, ellipse, arrow or
+           pointer); an arrow gets two handles at its ends (a: tail, b: tip), a
+           pointer none (it only moves). -->
       <VStack when="{playing &amp;&amp; !capturing}"
         var.editSprite="{calloutSprite.value || lastSprite}"
-        var.calloutKey="{calloutBox ? [calloutText.value, calloutBox.x1, calloutBox.y1, calloutBox.x2, calloutBox.y2, calloutIn, calloutOut, calloutTail.value].join('|') : ''}"
-        var.calloutHandles="{calloutBox &amp;&amp; takeAspect &amp;&amp; !dragPos ? [['nw', calloutBox.x1, calloutBox.y1], ['n', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y1], ['ne', calloutBox.x2, calloutBox.y1], ['e', calloutBox.x2, (calloutBox.y1 + calloutBox.y2) / 2], ['se', calloutBox.x2, calloutBox.y2], ['s', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y2], ['sw', calloutBox.x1, calloutBox.y2], ['w', calloutBox.x1, (calloutBox.y1 + calloutBox.y2) / 2]].map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
+        var.calloutKey="{calloutBox ? [annotKind, calloutText.value, calloutBox.x1, calloutBox.y1, calloutBox.x2, calloutBox.y2, calloutIn, calloutOut, calloutTail.value].join('|') : ''}"
+        var.calloutHandles="{calloutBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; annotKind !== 'pointer' ? (annotKind === 'arrow' ? [['a', calloutBox.x1, calloutBox.y1], ['b', calloutBox.x2, calloutBox.y2]] : [['nw', calloutBox.x1, calloutBox.y1], ['n', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y1], ['ne', calloutBox.x2, calloutBox.y1], ['e', calloutBox.x2, (calloutBox.y1 + calloutBox.y2) / 2], ['se', calloutBox.x2, calloutBox.y2], ['s', (calloutBox.x1 + calloutBox.x2) / 2, calloutBox.y2], ['sw', calloutBox.x1, calloutBox.y2], ['w', calloutBox.x1, (calloutBox.y1 + calloutBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
         <HStack horizontalAlignment="end">
           <Button icon="close" variant="ghost" aria-label="Close player"
             tooltip="Close the player" onClick="playing = ''" />
@@ -252,13 +256,13 @@
              Command-drag places a new callout's box. -->
         <DataSource id="calloutSprite" url="http://127.0.0.1:8765/callouts/sprite" method="POST"
           when="{!!calloutBox &amp;&amp; !!editTake}"
-          body="{{ take_id: editTake, text: calloutText.value || 'Callout text', x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, tail: calloutTail.value, frame: true }}"
+          body="{{ take_id: editTake, text: calloutText.value || 'Callout text', x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, tail: calloutTail.value, shape: annotKind === 'callout' ? null : annotKind, frame: annotKind === 'callout' }}"
           onLoaded="(d) => { lastSprite = d; dragPos = null; }" />
         <!-- applyState.dirty: the saved callouts differ from what was last burned
              in (the SQL is overlay.py's APPLIED_SQL, which fills
              takes.overlay_applied at Apply); Apply is dimmed otherwise. -->
         <DataSource id="applyState" url="/query" method="POST" dataType="sql" when="{!!editTake}"
-          body="{{ sql: 'SELECT (SELECT group_concat(id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)), char(124)) FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)) IS NOT overlay_applied AS dirty FROM takes WHERE id = ?', params: [editTake, editTake] }}" />
+          body="{{ sql: 'SELECT (SELECT group_concat(id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) || ifnull(shape, char(45)), char(124)) FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)) IS NOT overlay_applied AS dirty FROM takes WHERE id = ?', params: [editTake, editTake] }}" />
         <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
           when="{!!editTake}" body="{{ take_id: editTake }}" />
         <!-- lastSprite: the edited callout's latest sprite, kept while the next
@@ -266,14 +270,18 @@
              dragged anchor that unmounts leaves PointerLayer's drag stuck).
              Command-drag ink is invisible once there's a box: it does nothing
              then. -->
-        <PointerLayer id="calloutLayer" tool="rect" contentAspect="{takeAspect}" anchorDrag="true"
+        <PointerLayer id="calloutLayer" contentAspect="{takeAspect}" anchorDrag="true" pointerShape="arrow"
+          tool="{annotKind === 'arrow' ? 'arrow' : annotKind === 'pointer' ? 'pointer' : 'rect'}"
           color="{calloutBox ? 'transparent' : '#ff3b30'}"
           anchors="{(savedSprites.value || []).filter((a) => a.id !== editCallout &amp;&amp; playerTime >= a.t_in &amp;&amp; playerTime &lt;= a.t_out).concat(calloutBox &amp;&amp; editSprite ? [{ id: 'edit', url: editSprite.url, x: dragPos ? dragPos.x : editSprite.x, y: dragPos ? dragPos.y : editSprite.y, width: editSprite.width, height: editSprite.height }] : []).concat(calloutHandles)}"
           onAnchorDragStart="(e) => { dragFrom = calloutBox; }"
           onAnchorDragMove="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0] }[e.id];
+            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
             if (e.id === 'edit') {
               dragPos = { x: e.x, y: e.y };
+            } else if (edges &amp;&amp; dragFrom &amp;&amp; annotKind === 'arrow') {
+              const b = dragFrom;
+              calloutBox = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
             } else if (edges &amp;&amp; dragFrom) {
               const b = dragFrom;
               const x1 = Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
@@ -284,13 +292,15 @@
             }
           }"
           onAnchorDragEnd="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0] }[e.id];
+            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
             if (e.id === 'edit') {
-              const w = calloutBox.x2 - calloutBox.x1;
-              const h = calloutBox.y2 - calloutBox.y1;
-              const nx = Math.min(Math.max(calloutBox.x1 + e.dx, 0), 1 - w);
-              const ny = Math.min(Math.max(calloutBox.y1 + e.dy, 0), 1 - h);
-              calloutBox = { x1: nx, y1: ny, x2: nx + w, y2: ny + h };
+              const c = calloutBox;
+              const dx = Math.min(Math.max(e.dx, -Math.min(c.x1, c.x2)), 1 - Math.max(c.x1, c.x2));
+              const dy = Math.min(Math.max(e.dy, -Math.min(c.y1, c.y2)), 1 - Math.max(c.y1, c.y2));
+              calloutBox = { x1: c.x1 + dx, y1: c.y1 + dy, x2: c.x2 + dx, y2: c.y2 + dy };
+            } else if (edges &amp;&amp; dragFrom &amp;&amp; annotKind === 'arrow') {
+              const b = dragFrom;
+              calloutBox = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
             } else if (edges &amp;&amp; dragFrom) {
               const b = dragFrom;
               const x1 = Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
@@ -317,17 +327,31 @@
             <Image src="{$item.url}" width="100%" />
           </property>
         </PointerLayer>
-        <!-- Which callout the editor holds, and what's missing. -->
-        <Text value="{(editCallout ? 'Editing a saved callout: drag it to move it, drag a handle to resize it; Update keeps the changes, Done when finished' : 'New callout: once placed, drag it to move it, drag a handle to resize it') + (calloutBox ? '' : ' · Hold Command and drag a box on the picture')}" />
+        <!-- What to place: a callout, or a shape drawn like recording ink.
+             Fixed while a saved one is being edited; switching drops an
+             unsaved new one. -->
         <HStack verticalAlignment="center">
-          <TextBox id="calloutText" width="*"
-            placeholder="{calloutBox ? 'Callout text' : 'Hold Command and drag a box on the picture, then type the callout'}" />
+          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['pointer', 'Pointer']]}">
+            <Button label="{$item[1]}" size="xs" enabled="{!editCallout}"
+              variant="{annotKind === $item[0] ? 'solid' : 'outlined'}"
+              onClick="
+                annotKind = $item[0];
+                calloutBox = null;
+                lastSprite = null;
+              " />
+          </Items>
+        </HStack>
+        <!-- Which one the editor holds, and what's missing. -->
+        <Text value="{(editCallout ? 'Editing a saved ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', pointer: 'pointer' })[annotKind] + ': drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it') + '; Update keeps the changes, Done when finished' : 'New ' + ({ callout: 'callout', rect: 'box', ellipse: 'oval', arrow: 'arrow', pointer: 'pointer' })[annotKind] + ': once placed, drag it to move it' + (annotKind === 'pointer' ? '' : ', drag a handle to resize it')) + (calloutBox ? '' : annotKind === 'pointer' ? ' · Hold Command and click where it should point' : annotKind === 'arrow' ? ' · Hold Command and drag from tail to tip' : ' · Hold Command and drag a box on the picture')}" />
+        <HStack verticalAlignment="center">
+          <TextBox id="calloutText" width="*" enabled="{annotKind === 'callout'}"
+            placeholder="{annotKind !== 'callout' ? 'Shapes have no text' : calloutBox ? 'Callout text' : 'Hold Command and drag a box on the picture, then type the callout'}" />
           <Button label="{'In ' + calloutIn.toFixed(1) + 's'}" size="xs" variant="outlined"
             tooltip="Set the in point to the playhead" onClick="calloutIn = takePlayer.getCurrentTime()" />
           <Button label="{'Out ' + calloutOut.toFixed(1) + 's'}" size="xs" variant="outlined"
             tooltip="Set the out point to the playhead" onClick="calloutOut = takePlayer.getCurrentTime()" />
           <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
-          <Select id="calloutTail" initialValue="none" width="130px">
+          <Select id="calloutTail" initialValue="none" width="130px" enabled="{annotKind === 'callout'}">
             <Option value="none" label="No tail" />
             <Option value="nw" label="Tail ↖ nw" />
             <Option value="n" label="Tail ↑ n" />
@@ -341,13 +365,13 @@
           <!-- Add saves a new callout and clears the editor; Update saves the
                one being edited and keeps it loaded; Done stops editing. -->
           <Button label="{editCallout ? 'Update' : 'Add'}" size="xs"
-            enabled="{!!calloutBox &amp;&amp; !!calloutText.value &amp;&amp; calloutOut > calloutIn &amp;&amp; (!editCallout || calloutKey !== savedKey)}"
+            enabled="{!!calloutBox &amp;&amp; (annotKind !== 'callout' || !!calloutText.value) &amp;&amp; calloutOut > calloutIn &amp;&amp; (!editCallout || calloutKey !== savedKey)}"
             onClick="
               if (editCallout) {
-                updateCallout.execute({ take_id: editTake, id: editCallout, text: calloutText.value, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: calloutTail.value });
+                updateCallout.execute({ take_id: editTake, id: editCallout, text: calloutText.value, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: calloutTail.value, shape: annotKind === 'callout' ? null : annotKind });
                 savedKey = calloutKey;
               } else {
-                addCallout.execute({ take_id: editTake, text: calloutText.value, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: calloutTail.value });
+                addCallout.execute({ take_id: editTake, text: calloutText.value, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: calloutTail.value, shape: annotKind === 'callout' ? null : annotKind });
               calloutText.setValue('');
               calloutBox = null;
               editCallout = null;
@@ -390,18 +414,19 @@
         </HStack>
         <Items data="{callouts}">
           <HStack verticalAlignment="center">
-            <Text value="{$item.text}" width="*" />
+            <Text value="{$item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', pointer: 'Pointer' })[$item.shape] : $item.text}" width="*" />
             <Text value="{$item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + 's'}" />
             <Button label="Go to" size="xs" variant="ghost" onClick="takePlayer.seek($item.t_in)" />
             <Button label="Edit" size="xs" variant="ghost" tooltip="Load this callout into the editor"
               onClick="
                 editCallout = $item.id;
+                annotKind = $item.shape || 'callout';
                 calloutText.setValue($item.text);
                 calloutBox = { x1: $item.x1, y1: $item.y1, x2: $item.x2, y2: $item.y2 };
                 calloutIn = $item.t_in;
                 calloutOut = $item.t_out;
                 calloutTail.setValue($item.tail || 'none');
-                savedKey = [$item.text, $item.x1, $item.y1, $item.x2, $item.y2, $item.t_in, $item.t_out, $item.tail || 'none'].join('|');
+                savedKey = [$item.shape || 'callout', $item.text, $item.x1, $item.y1, $item.x2, $item.y2, $item.t_in, $item.t_out, $item.tail || 'none'].join('|');
                 lastSprite = null;
                 takePlayer.seek($item.t_in);
               " />

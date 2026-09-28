@@ -40,28 +40,73 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS overlays (
   x1 REAL, y1 REAL, x2 REAL, y2 REAL,
   t_in REAL NOT NULL,
   t_out REAL NOT NULL,
-  tail TEXT
+  tail TEXT,
+  shape TEXT
 )"""
 # The eight places a callout's tail can come off its box.
 TAILS = ("n", "ne", "e", "se", "s", "sw", "w", "nw")
+# Shapes on a take (kind 'shape'), drawn like recording ink: the box for rect
+# and ellipse, tail then tip for arrow, the tip in (x1, y1) for pointer.
+SHAPES = ("rect", "ellipse", "arrow", "pointer")
+INK_COLOR = "#ff3b30"
 
 
-# A take's callouts as one string, in id order: stored in takes.overlay_applied
-# when they're burned in, and computed the same way by the page (Main.xmlui's
-# applyState, which must keep this exact text) to tell whether Apply has
-# anything to do. char(58) ':' and char(124) '|' keep quotes out of it.
+# A take's text and shapes as one string, in id order: stored in
+# takes.overlay_applied when they're burned in, and computed the same way by
+# the page (Main.xmlui's applyState, which must keep this exact text) to tell
+# whether Apply has anything to do. char(58) ':' and char(124) '|' keep quotes
+# out of it.
 APPLIED_SQL = ("SELECT group_concat(id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 "
-               "|| char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)), "
-               "char(124)) FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)")
+               "|| char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) "
+               "|| char(58) || ifnull(shape, char(45)), char(124)) "
+               "FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)")
 
 
 def ensure_schema(db):
     # The overlays table, and columns added since it was first made.
     db.execute(SCHEMA)
-    if "tail" not in [c[1] for c in db.execute("PRAGMA table_info(overlays)")]:
-        db.execute("ALTER TABLE overlays ADD COLUMN tail TEXT")
+    columns = [c[1] for c in db.execute("PRAGMA table_info(overlays)")]
+    for col in ("tail", "shape"):
+        if col not in columns:
+            db.execute(f"ALTER TABLE overlays ADD COLUMN {col} TEXT")
     if "overlay_applied" not in [c[1] for c in db.execute("PRAGMA table_info(takes)")]:
         db.execute("ALTER TABLE takes ADD COLUMN overlay_applied TEXT")
+
+
+def draw_shape(draw, sh, grow, color, w, W, H):
+    # Recording ink's shapes (render.py) and shapes on a take (kind 'shape'):
+    # sh = {"tool", "box": (x1, y1, x2, y2) in 0-1 picture coordinates,
+    # "pointerShape"}. grow runs 0..1 over a recorded drag; the shape is drawn
+    # up to that fraction.
+    import math
+    x1, y1, x2, y2 = sh["box"]
+    X1, Y1 = x1 * W, y1 * H
+    X2, Y2 = X1 + (x2 * W - X1) * grow, Y1 + (y2 * H - Y1) * grow
+    if sh["tool"] in ("line", "arrow"):
+        draw.line([(X1, Y1), (X2, Y2)], fill=color, width=w)
+        if sh["tool"] == "arrow" and (X2, Y2) != (X1, Y1):
+            ang, head = math.atan2(Y2 - Y1, X2 - X1), 5 * w
+            for side in (-1, 1):
+                a = ang + math.pi + side * math.radians(28)
+                draw.line([(X2, Y2), (X2 + head * math.cos(a), Y2 + head * math.sin(a))], fill=color, width=w)
+    elif sh["tool"] in ("rect", "ellipse"):
+        box = (min(X1, X2), min(Y1, Y2), max(X1, X2), max(Y1, Y2))
+        if box[2] - box[0] >= 1 and box[3] - box[1] >= 1:
+            (draw.rectangle if sh["tool"] == "rect" else draw.ellipse)(box, outline=color, width=w)
+    elif sh["tool"] == "pointer" and sh.get("pointerShape") == "ring":
+        r = round(14 * W / 1200.0)
+        draw.ellipse((X1 - r, Y1 - r, X1 + r, Y1 + r), outline=color, width=w)
+    elif sh["tool"] == "pointer":
+        # A fat block arrow, tip on the click, pointing up and to the right at
+        # 45 degrees: PointerLayer's pointerShape="arrow" (#3919), the same
+        # polygon at the same size (6% of the picture width).
+        L = 0.06 * W
+        hl, hw, sw = 0.45 * L, 0.32 * L, 0.12 * L
+        # Along the arrow (u, tip at 0) and across it (v).
+        outline = [(0, 0), (-hl, hw), (-hl, sw), (-L, sw), (-L, -sw), (-hl, -sw), (-hl, -hw)]
+        c, s = math.cos(math.radians(-45)), math.sin(math.radians(-45))
+        pts = [(X1 + u * c - v * s, Y1 + u * s + v * c) for u, v in outline]
+        draw.polygon(pts, fill=color, outline=(255, 255, 255, color[3]), width=max(2, round(2 * W / 1200.0)))
 
 
 def probe(path, entries, stream=None):
@@ -103,6 +148,11 @@ def layout(item, W, H):
     # height; words are never split. A box too small to mean anything (a
     # click, not a drag) gets the caption size.
     from PIL import Image, ImageDraw
+    if item["kind"] == "shape":
+        # Shapes have no text: draw_shape's arguments, with recording ink's
+        # line width (4 px over a ~1200-px-wide player, scaled to the take).
+        return {"shape": {"tool": item.get("shape"), "box": (item["x1"], item["y1"], item["x2"], item["y2"]),
+                          "pointerShape": "arrow"}, "W": W, "H": H, "w": max(2, round(4 * W / 1200.0))}
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     top = round(0.042 * min(W, H))
     bw_max, bh_max = (item["x2"] - item["x1"]) * W, (item["y2"] - item["y1"]) * H
@@ -156,6 +206,11 @@ def paint(img, drawn):
     from PIL import ImageDraw
     draw = ImageDraw.Draw(img)
     for L, a in drawn:
+        if "shape" in L:
+            h = INK_COLOR.lstrip("#")
+            color = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), round(255 * a))
+            draw_shape(draw, L["shape"], 1.0, color, L["w"], L["W"], L["H"])
+            continue
         fill = (0, 0, 0, round(165 * a))
         if L.get("tail"):
             draw.polygon(tail_points(L), fill=fill)
@@ -210,8 +265,9 @@ def preview_image(db, take_id, item):
             FRAMES[key] = Image.open(still).convert("RGBA")
     img = FRAMES[key]
     W, H = img.size
-    others = [dict(zip(("kind", "text", "x1", "y1", "x2", "y2", "t_in", "t_out", "tail"), r)) for r in db.execute(
-        "SELECT kind, text, x1, y1, x2, y2, t_in, t_out, tail FROM overlays WHERE take_id = ? AND id != ?",
+    others = [dict(zip(("kind", "text", "x1", "y1", "x2", "y2", "t_in", "t_out", "tail", "shape"), r))
+              for r in db.execute(
+        "SELECT kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND id != ?",
         (take_id, item.get("id") or -1))]
     drawn = [(layout(o, W, H), alpha_at(o, t)) for o in others if alpha_at(o, t) > 0]
     # Drawn on a clear layer and composited, as ffmpeg's overlay does in
@@ -242,7 +298,8 @@ def dashed_frame(img, box, W, H):
 
 
 def sprite(db, take_id, item, frame=False):
-    # Just the callout (box, tail and text) drawn as render() draws it, on a
+    # Just the callout (box, tail and text), or the shape when item["shape"]
+    # names one, drawn as render() draws it, on a
     # clear layer the size of the picture, cropped to what was drawn. Returns
     # the image and its box in 0-1 picture coordinates, for PointerLayer's
     # anchors (xmlui-org/xmlui#3922) to place over the video. frame adds the
@@ -257,10 +314,16 @@ def sprite(db, take_id, item, frame=False):
         SIZES[key] = tuple(int(v) for v in probe(src, "stream=width,height", "v:0").split(","))
     W, H = SIZES[key]
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    paint(layer, [(layout({**item, "kind": "callout"}, W, H), 1.0)])
+    kind = "shape" if item.get("shape") in SHAPES else "callout"
+    paint(layer, [(layout({**item, "kind": kind}, W, H), 1.0)])
     if frame:
         dashed_frame(layer, (item["x1"], item["y1"], item["x2"], item["y2"]), W, H)
-    x1, y1, x2, y2 = layer.getbbox()
+    # Nothing drawn (a shape too small to show): one clear pixel where it is.
+    bbox = layer.getbbox()
+    if not bbox:
+        px, py = min(W - 1, max(0, round(item["x1"] * W))), min(H - 1, max(0, round(item["y1"] * H)))
+        bbox = (px, py, px + 1, py + 1)
+    x1, y1, x2, y2 = bbox
     return layer.crop((x1, y1, x2, y2)), {"x": x1 / W, "y": y1 / H, "width": (x2 - x1) / W, "height": (y2 - y1) / H}
 
 
@@ -283,8 +346,9 @@ def render(db, take_id):
     if not os.path.exists(clean):
         os.makedirs(os.path.dirname(clean), exist_ok=True)
         shutil.copy2(take, clean)
-    items = [dict(zip(("kind", "text", "x1", "y1", "x2", "y2", "t_in", "t_out", "tail"), r)) for r in db.execute(
-        "SELECT kind, text, x1, y1, x2, y2, t_in, t_out, tail FROM overlays WHERE take_id = ? ORDER BY t_in",
+    items = [dict(zip(("kind", "text", "x1", "y1", "x2", "y2", "t_in", "t_out", "tail", "shape"), r))
+             for r in db.execute(
+        "SELECT kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? ORDER BY t_in",
         (take_id,))]
     tmp_out = take + ".overlay.mp4"
     if not items:

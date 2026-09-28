@@ -30,15 +30,17 @@ CREATE TABLE IF NOT EXISTS voice_tests (
   leveled_url TEXT NOT NULL
 );
 
--- Text burned into a take (overlay.py): captions from its narration and
--- callouts, in 0-1 picture coordinates and take seconds.
+-- Text and shapes burned into a take (overlay.py): captions from its
+-- narration, callouts, and shapes drawn like recording ink, in 0-1 picture
+-- coordinates and take seconds.
 CREATE TABLE IF NOT EXISTS overlays (
   id INTEGER PRIMARY KEY,
   take_id INTEGER NOT NULL,
-  kind TEXT NOT NULL,  -- 'caption' or 'callout'
-  text TEXT NOT NULL,
-  x1 REAL, y1 REAL, x2 REAL, y2 REAL,
+  kind TEXT NOT NULL,  -- 'caption', 'callout' or 'shape'
+  text TEXT NOT NULL,  -- empty for shapes
+  x1 REAL, y1 REAL, x2 REAL, y2 REAL,  -- an arrow: tail x1,y1, tip x2,y2; a pointer: tip x1,y1
   t_in REAL NOT NULL,
   t_out REAL NOT NULL,
-  tail TEXT  -- a callout's speech-bubble tail: n, ne, e, se, s, sw, w, nw, or none
+  tail TEXT,  -- a callout's speech-bubble tail: n, ne, e, se, s, sw, w, nw, or none
+  shape TEXT  -- a shape's kind: rect, ellipse, arrow, pointer
 );

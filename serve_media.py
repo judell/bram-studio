@@ -283,22 +283,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             exporting.release()
 
     def callout_fields(self, body):
-        # A callout's fields from a request, checked: (take_id, text, box, t_in,
-        # t_out) with the box's corners ordered and clamped to 0-1, or an error.
-        text = str(body.get("text", "")).strip()
+        # A callout's or shape's fields from a request, checked: (take_id,
+        # text, box, t_in, t_out, tail, shape), clamped to 0-1, or an error.
+        # shape (overlay.SHAPES) makes it a shape: no text or tail, and an
+        # arrow keeps its direction (tail x1,y1 to tip x2,y2); other boxes get
+        # their corners ordered.
+        shape = body.get("shape") if body.get("shape") in overlay.SHAPES else None
+        text = "" if shape else str(body.get("text", "")).strip()
         try:
             x1, y1, x2, y2, t_in, t_out = (float(body[k]) for k in ("x1", "y1", "x2", "y2", "t_in", "t_out"))
         except (KeyError, TypeError, ValueError):
-            return None, "a callout needs x1, y1, x2, y2, t_in and t_out"
-        if not text or not isinstance(body.get("take_id"), int):
-            return None, "a callout needs a take and some text"
+            return None, "a callout or shape needs x1, y1, x2, y2, t_in and t_out"
+        if not isinstance(body.get("take_id"), int):
+            return None, "a callout or shape needs a take"
+        if not shape and not text:
+            return None, "a callout needs some text"
         if t_out <= t_in:
             return None, "the out point must come after the in point"
         clamp = lambda v: max(0.0, min(1.0, v))
-        box = (clamp(min(x1, x2)), clamp(min(y1, y2)), clamp(max(x1, x2)), clamp(max(y1, y2)))
+        if shape == "arrow":
+            box = (clamp(x1), clamp(y1), clamp(x2), clamp(y2))
+        else:
+            box = (clamp(min(x1, x2)), clamp(min(y1, y2)), clamp(max(x1, x2)), clamp(max(y1, y2)))
         # A speech-bubble tail at one of the box's compass points, or none.
-        tail = body.get("tail") if body.get("tail") in overlay.TAILS else None
-        return (body["take_id"], text, box, max(0.0, t_in), t_out, tail), None
+        tail = body.get("tail") if not shape and body.get("tail") in overlay.TAILS else None
+        return (body["take_id"], text, box, max(0.0, t_in), t_out, tail, shape), None
 
     def add_callout(self, update=False):
         # One callout: text in a box (0-1 picture coordinates, from the take
@@ -308,18 +317,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         fields, err = self.callout_fields(body)
         if err:
             return self.send_json(400, {"error": err})
-        take_id, text, box, t_in, t_out, tail = fields
+        take_id, text, box, t_in, t_out, tail, shape = fields
+        kind = "shape" if shape else "callout"
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
         if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take_id,)).fetchone():
             return self.send_json(404, {"error": f"no take with id {take_id}"})
         if update:
-            n = db.execute("UPDATE overlays SET text = ?, x1 = ?, y1 = ?, x2 = ?, y2 = ?, t_in = ?, t_out = ?, "
-                           "tail = ? WHERE id = ? AND take_id = ? AND kind = 'callout'",
-                           (text, *box, t_in, t_out, tail, body.get("id"), take_id)).rowcount
+            n = db.execute("UPDATE overlays SET kind = ?, text = ?, x1 = ?, y1 = ?, x2 = ?, y2 = ?, t_in = ?, "
+                           "t_out = ?, tail = ?, shape = ? WHERE id = ? AND take_id = ? AND kind IN ('callout', 'shape')",
+                           (kind, text, *box, t_in, t_out, tail, shape, body.get("id"), take_id)).rowcount
             db.commit()
             return self.send_json(200 if n else 404, {"id": body.get("id")} if n else {"error": "no such callout"})
-        cur = db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail) "
-                         "VALUES (?, 'callout', ?, ?, ?, ?, ?, ?, ?, ?)", (take_id, text, *box, t_in, t_out, tail))
+        cur = db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (take_id, kind, text, *box, t_in, t_out, tail, shape))
         db.commit()
         self.send_json(200, {"id": cur.lastrowid})
 
@@ -333,9 +344,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         fields, err = self.callout_fields({"t_in": 0, "t_out": 1, **body})
         if err:
             return self.send_json(400, {"error": err})
-        take_id, text, box, _, _, tail = fields
+        take_id, text, box, _, _, tail, shape = fields
         item = {"text": text, "x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3], "tail": tail,
-                "frame": bool(body.get("frame"))}
+                "shape": shape, "frame": bool(body.get("frame")) and not shape}
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
         try:
             self.send_json(200, self.sprite_file(db, take_id, item))
@@ -363,12 +374,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not isinstance(take_id, int):
             return self.send_json(400, {"error": "take_id must be a take id"})
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-        rows = db.execute("SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail FROM overlays "
-                          "WHERE take_id = ? AND kind = 'callout' ORDER BY t_in", (take_id,)).fetchall()
+        rows = db.execute("SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays "
+                          "WHERE take_id = ? AND kind IN ('callout', 'shape') ORDER BY t_in", (take_id,)).fetchall()
         out = []
         try:
-            for cid, text, x1, y1, x2, y2, t_in, t_out, tail in rows:
-                item = {"text": text, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "tail": tail}
+            for cid, text, x1, y1, x2, y2, t_in, t_out, tail, shape in rows:
+                item = {"text": text, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "tail": tail, "shape": shape,
+                        "frame": False}
                 out.append({"id": cid, "t_in": t_in, "t_out": t_out, **self.sprite_file(db, take_id, item)})
         except LookupError as e:
             return self.send_json(404, {"error": str(e)})
@@ -389,7 +401,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         fields, err = self.callout_fields(body)
         if err:
             return self.send_json(400, {"error": err})
-        take_id, text, box, t_in, t_out, tail = fields
+        take_id, text, box, t_in, t_out, tail, _ = fields
         item = {"id": body.get("id"), "text": text, "x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3],
                 "t_in": t_in, "t_out": t_out, "tail": tail}
         out = os.path.join(ROOT, ".preview", f"{take_id}.png")
@@ -407,7 +419,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def delete_callout(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-        n = db.execute("DELETE FROM overlays WHERE id = ? AND kind = 'callout'", (body.get("id"),)).rowcount
+        n = db.execute("DELETE FROM overlays WHERE id = ? AND kind IN ('callout', 'shape')", (body.get("id"),)).rowcount
         db.commit()
         self.send_json(200 if n else 404, {"deleted": body.get("id")} if n else {"error": "no such callout"})
 
