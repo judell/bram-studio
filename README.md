@@ -28,9 +28,9 @@ voice recorder uses AVFoundation).
 - **Ink:** hold ⌘ and drag over the picture to draw: line, arrow, rectangle, oval, point
   (an arrow at the spot you click) or freehand. Ink is drawn into the take and fades.
 - **Sound:** the take has your narration and the source's own audio, in sync. Each is
-  leveled to -16 LUFS so they match; your voice is denoised; and your mic is silenced
-  while the source plays, since you don't talk over it. Wear headphones, so the mic
-  doesn't hear the source.
+  leveled to -16 LUFS so they match; your voice is denoised; and a speech detector keeps
+  your voice only while you're talking, whether the source is playing or held, so room
+  noise between phrases drops out. Wear headphones, so the mic doesn't hear the source.
 - **Callouts:** on a recorded take, ⌘-drag a box on the video and type. Drag the callout
   to move it, drag its eight handles to resize it (the text grows to fit), give it a
   speech-bubble tail at any compass point, and set when it appears and disappears.
@@ -47,5 +47,8 @@ voice recorder uses AVFoundation).
   them too). `record.sh` compiles `record_native.swift` on first use.
 - `whisper-cli` (whisper.cpp) and a model at
   `~/.local/share/whisper-models/ggml-small.en.bin` (or set `WHISPER_MODEL`), for naming
-  takes.
+  takes. For the speech detector, Silero VAD at
+  `~/.local/share/whisper-models/ggml-silero-v5.1.2.bin` (about 0.9 MB, from
+  [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad); or set `VAD_MODEL`);
+  without it, the voice isn't gated.
 - The recorder uses the MacBook Air microphone by default (`MIC` in `record.sh`).

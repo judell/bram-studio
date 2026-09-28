@@ -26,8 +26,10 @@ import array
 import math
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import wave
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
@@ -400,38 +402,62 @@ if denoise.wait() == 0 and os.path.exists(clean_wav):
 else:
     print("denoise failed; leveling the raw voice")
 
-# Silence the voice while the base plays: the narrator doesn't talk over it,
-# so there the mic only records the room, which leveling would raise under the
-# base's audio. The pieces' nominal durations run on the voice's clock (both
-# come from the kept wall-clock intervals). A 0.3s fade-out at Play keeps a
-# last word; a 0.1s fade-in at Pause lets speech start at once. Written to the
-# clean file, so the raw voice (the unleveled comparison) is untouched.
-plays, t = [], 0.0
-for kind, pos, dur in pieces:
-    if kind == "play":
-        plays.append((t, t + dur))
-    t += dur
+# Keep the voice only where there's speech, whether the source is playing or
+# held: the mic otherwise records the room, which leveling would raise. Silero
+# VAD (whisper.cpp's whisper-vad-speech-segments) finds the speech; loudness
+# can't, since quiet words can be softer than a noisy room. Segments are
+# padded 250 ms so word edges survive, with 300 ms minimum silence so the gate
+# doesn't chatter, and 50 ms fades. Written to the clean file, so the raw voice
+# (the unleveled comparison) is untouched. No speech: a silent track, which
+# leveling leaves alone. No VAD: the voice isn't gated.
+VAD_MODEL = os.environ.get("VAD_MODEL", os.path.expanduser("~/.local/share/whisper-models/ggml-silero-v5.1.2.bin"))
+
+
+def speech_segments(path):
+    # [(start, end)] seconds of speech in a voice file, or None if the VAD
+    # can't run (tool or model missing, or it failed).
+    if not os.path.exists(VAD_MODEL):
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        w16 = os.path.join(tmp, "v.wav")
+        try:
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-ac", "1", "-ar", "16000", w16], check=True)
+            r = subprocess.run(["whisper-vad-speech-segments", "-vm", VAD_MODEL, "-f", w16,
+                                "--vad-speech-pad-ms", "250", "--vad-min-silence-duration-ms", "300"],
+                               capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError):
+            return None
+    if r.returncode:
+        return None
+    return [(float(a), float(b)) for a, b in
+            re.findall(r"VAD segment \d+: start = ([\d.]+), end = ([\d.]+)", r.stdout + r.stderr)]
+
+
+segs = speech_segments(voice_wav)
 with wave.open(voice_wav) as r:
     vparams = r.getparams()
     v = array.array("h", r.readframes(r.getnframes()))
-if plays and vparams.nchannels == 1 and vparams.sampwidth == 2:
-    OUT, IN = int(0.3 * vparams.framerate), int(0.1 * vparams.framerate)
-    silenced = 0.0
-    for a, b in plays:
-        i0, i1 = int(a * vparams.framerate), min(len(v), int(b * vparams.framerate))
-        if i1 - i0 < OUT + IN:
+if segs is None:
+    print(f"voice gate: no VAD ({VAD_MODEL} or whisper-vad-speech-segments missing); voice not gated")
+elif vparams.nchannels == 1 and vparams.sampwidth == 2:
+    fr, gated, speech_s = vparams.framerate, array.array("h", bytes(2 * len(v))), 0.0
+    fade = int(0.05 * fr)
+    for a, b in segs:
+        i0, i1 = max(0, int(a * fr)), min(len(v), int(b * fr))
+        if i1 <= i0:
             continue
-        for k in range(OUT):
-            v[i0 + k] = int(v[i0 + k] * (1 - k / OUT))
-        v[i0 + OUT:i1 - IN] = array.array("h", bytes(2 * (i1 - IN - i0 - OUT)))
-        for k in range(IN):
-            v[i1 - IN + k] = int(v[i1 - IN + k] * k / IN)
-        silenced += b - a
+        gated[i0:i1] = v[i0:i1]
+        n = min(fade, (i1 - i0) // 2)
+        for k in range(n):
+            gated[i0 + k] = int(v[i0 + k] * k / n)
+            gated[i1 - 1 - k] = int(v[i1 - 1 - k] * k / n)
+        speech_s += (i1 - i0) / fr
     with wave.open(clean_wav, "wb") as w:
         w.setparams(vparams)
-        w.writeframes(v.tobytes())
+        w.writeframes(gated.tobytes())
     voice_wav = clean_wav
-    print(f"voice silenced during {len(plays)} play stretch{'es' if len(plays) != 1 else ''}, {silenced:.1f}s")
+    print(f"voice gate: {len(segs)} speech segment{'s' if len(segs) != 1 else ''}, "
+          f"{speech_s:.1f}s kept of {len(v) / fr:.1f}s")
 level = level_filter(voice_wav,"highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
 source_level = level_filter(src_wav) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
