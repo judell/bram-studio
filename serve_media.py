@@ -95,6 +95,30 @@ def record_status(running):
     return {"phase": phase, "label": PHASES.get(phase, phase)}
 
 
+EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
+
+
+def list_exports():
+    # Every export in media/exports/, newest first: {name, url, created, seconds}.
+    # created comes from the name's <YYYYMMDD-HHMMSS> stamp (the file's mtime if
+    # the name has none); lengths are probed once per file version.
+    outdir = os.path.join(ROOT, "exports")
+    out = []
+    for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
+        path = os.path.join(outdir, name)
+        if not name.endswith(".mp4") or not os.path.isfile(path):
+            continue
+        key = (path, os.path.getmtime(path))
+        if key not in EXPORT_SECONDS:
+            EXPORT_SECONDS[key] = round(float(probe(path, "format=duration") or 0), 1)
+        m = re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", name)
+        created = (f"{m[1]}-{m[2]}-{m[3]} {m[4]}:{m[5]}:{m[6]}" if m
+                   else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(key[1])))
+        out.append({"name": name, "url": f"http://127.0.0.1:{PORT}/exports/{name}", "created": created,
+                    "seconds": EXPORT_SECONDS[key]})
+    return sorted(out, key=lambda e: e["created"], reverse=True)
+
+
 def source_paths():
     # Offered name -> file: videos in sources/ (links made by hand) and at the
     # top level of the Desktop, newest first. The same file reached both ways
@@ -202,6 +226,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, record_status(self.recording()))
         if self.path == "/sources":
             return self.send_json(200, [{"name": n} for n in sources()])
+        if self.path == "/exports":
+            return self.send_json(200, list_exports())
         super().do_GET()
 
     def do_POST(self):
@@ -223,6 +249,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.reorder_takes()
         if self.path == "/export":
             return self.export_takes()
+        if self.path == "/exports/delete":
+            return self.delete_export()
         if self.path == "/callouts/add":
             return self.add_callout()
         if self.path == "/callouts/update":
@@ -240,6 +268,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/overlay/render":
             return self.render_overlay()
         self.send_json(404, {"error": "not found"})
+
+    def delete_export(self):
+        # Move one export to media/.trash/ (like a deleted take): plain export
+        # file names only.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name = str(body.get("name", ""))
+        src = os.path.join(ROOT, "exports", name)
+        if "/" in name or name.startswith(".") or not name.endswith(".mp4") or not os.path.isfile(src):
+            return self.send_json(404, {"error": f"no export named {name!r}"})
+        trash = os.path.join(ROOT, ".trash")
+        os.makedirs(trash, exist_ok=True)
+        dest = os.path.join(trash, name)
+        if os.path.exists(dest):
+            stem, ext = os.path.splitext(name)
+            dest = os.path.join(trash, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}")
+        shutil.move(src, dest)
+        self.send_json(200, {"deleted": name, "trashed": f".trash/{os.path.basename(dest)}"})
 
     def export_takes(self):
         # All takes, in list order, as one MP4 in media/exports/. Identical
