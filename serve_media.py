@@ -30,9 +30,12 @@ GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
 "record"|"exports"} whenever watch_changes() sees one of them change, so the
 page refetches then instead of polling.
 """
+import array
 import hashlib
 import http.server
+import io
 import json
+import math
 import mimetypes
 import os
 import queue
@@ -44,7 +47,11 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
+import wave
 
 import overlay
 import voicetest
@@ -105,9 +112,15 @@ EVENT_LOCK = threading.Lock()
 
 
 def notify(kind):
+    push({"changed": kind})
+
+
+def push(message):
+    # Any JSON-able message to every page on GET /events: {"changed": kind}
+    # from the watcher, {"dictation": key, "text": ...} while a note is spoken.
     with EVENT_LOCK:
         for q in EVENT_QUEUES:
-            q.put(kind)
+            q.put(message)
 
 
 def fingerprints():
@@ -122,7 +135,7 @@ def fingerprints():
     return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
             "takes": mtime(os.path.join(HERE, "studio.db")),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
-            "exports": (mtime(os.path.join(ROOT, "exports")), mtime(DESKTOP))}
+            "exports": exports_fingerprint()}
 
 
 def watch_changes():
@@ -144,19 +157,285 @@ def watch_changes():
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
 
+# Which files in media/exports/ Studio wrote itself, so the lists can tell
+# them from an editor's output even when the editor reuses the name (ScreenPal
+# saves an edit under its input's name by default): {name: {kind: "export" |
+# "leveled", size, mtime_ns}}. A file matches only if all three still agree;
+# anything else there is an edited export.
+STUDIO_FILES = os.path.join(ROOT, "exports", ".studio-files.json")
+STUDIO_LOCK = threading.Lock()
 
-def export_entry(path, url, where):
+
+def studio_files():
+    try:
+        with open(STUDIO_FILES) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_studio_files(files):
+    tmp = STUDIO_FILES + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(files, f, indent=1)
+    os.replace(tmp, STUDIO_FILES)
+
+
+def record_studio_file(name, path, kind):
+    # path may be the hidden .part file about to be renamed to name: a rename
+    # keeps size and mtime, and recording first means the watcher never sees
+    # the file under its final name unrecorded.
+    st = os.stat(path)
+    with STUDIO_LOCK:
+        files = studio_files()
+        files[name] = {"kind": kind, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        save_studio_files(files)
+
+
+def forget_studio_file(name):
+    with STUDIO_LOCK:
+        files = studio_files()
+        if files.pop(name, None) is not None:
+            save_studio_files(files)
+
+
+def studio_kind(name, st, files):
+    e = files.get(name)
+    if e and e.get("size") == st.st_size and e.get("mtime_ns") == st.st_mtime_ns:
+        return e.get("kind")
+    return None
+
+
+# A free-text note per listed file, saying what it is ("edit of the 22:09
+# export, intro cut"), since names can't: {key: note}, key = the name in
+# media/exports/ or "desktop/<name>" for a Desktop edited-*.mp4.
+NOTES = os.path.join(ROOT, "exports", ".notes.json")
+NOTES_LOCK = threading.Lock()
+
+
+# Dictated notes: the mic record.sh uses, the whisper model register.py uses.
+NOTE_MIC = os.environ.get("MIC", "MacBook Air Microphone")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL",
+                               os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
+DICTATION_LOCK = threading.Lock()
+dictation = {}  # the one note being dictated (see start_dictation), or empty
+
+# Live dictation, after Bram's (judell/bram dc6645d): ffmpeg writes raw 16 kHz
+# mono PCM; every LIVE_STEP s the audio since the last commit is transcribed
+# by a whisper-server this process starts (model stays loaded), with the
+# committed text as prompt; a pause or LIVE_CAP s commits it. Silent windows
+# are never sent (whisper invents "Thank you." from quiet). Each partial is
+# pushed on /events as {"dictation": key, "text": base + committed + partial}.
+RATE = 16000
+LIVE_STEP, LIVE_CAP, PAUSE_S = 0.7, 12.0, 0.5
+VOICED_DB = -45.0  # a 100 ms chunk louder than this is speech; room here is ~-55
+WHISPER_PORT = 8767
+whisper_server = {"proc": None}
+
+
+def ensure_whisper_server():
+    p = whisper_server["proc"]
+    if p and p.poll() is None:
+        return True
+    try:
+        whisper_server["proc"] = subprocess.Popen(
+            ["whisper-server", "-m", WHISPER_MODEL, "--host", "127.0.0.1", "--port", str(WHISPER_PORT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    for _ in range(100):  # the model loads in a second or two
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{WHISPER_PORT}/", timeout=0.5)
+            return True
+        except urllib.error.HTTPError:
+            return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
+def clean_transcript(text):
+    # Drop [BLANK_AUDIO]-style tags and what whisper invents from silence.
+    text = " ".join(re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", text).split())
+    return "" if text.lower().strip(" .!") in ("", "you", "thank you") else text
+
+
+def transcribe_pcm(pcm, prompt=""):
+    # One window of 16 kHz s16le mono: whisper-server if it's up, else whisper-cli.
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm)
+    audio = buf.getvalue()
+    if ensure_whisper_server():
+        boundary = uuid.uuid4().hex
+        parts = [("response_format", "json"), ("temperature", "0")] + ([("prompt", prompt[-200:])] if prompt else [])
+        body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                        for k, v in parts)
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="w.wav"\r\n'
+                 f"Content-Type: audio/wav\r\n\r\n").encode() + audio + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{WHISPER_PORT}/inference", data=body,
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return clean_transcript(json.load(r).get("text", ""))
+        except (OSError, ValueError) as e:
+            print(f"whisper-server: {e}", flush=True)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio)
+    try:
+        r = subprocess.run(["whisper-cli", "-m", WHISPER_MODEL, "-f", f.name, "-nt", "-np"],
+                           capture_output=True, text=True, timeout=120)
+        return clean_transcript(r.stdout)
+    finally:
+        os.remove(f.name)
+
+
+def voiced_chunks(pcm):
+    # For each 100 ms of s16le audio: is it louder than VOICED_DB?
+    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+    step, out = RATE // 10, []
+    for i in range(0, len(samples) - step + 1, step):
+        chunk = samples[i:i + step]
+        rms = math.sqrt(sum(s * s for s in chunk) / step) or 1
+        out.append(20 * math.log10(rms / 32768) > VOICED_DB)
+    return out
+
+
+def join_note(*parts):
+    return " ".join(p.strip() for p in parts if p and p.strip())
+
+
+def live_dictation(d):
+    # The live loop for one dictation d (see start_dictation) until d["stop"].
+    while not d["stop"].wait(LIVE_STEP):
+        try:
+            with open(d["pcm"], "rb") as f:
+                f.seek(d["start"])
+                window = f.read()
+        except OSError:
+            continue
+        voiced = voiced_chunks(window)
+        if not any(voiced):
+            if len(voiced) > 20:  # 2 s of nothing: don't let the window grow
+                d["start"] += len(window) - RATE  # keep the last 0.5 s
+            continue
+        d["partial"] = transcribe_pcm(window, d["committed"])
+        paused = len(voiced) >= 5 and not any(voiced[-int(PAUSE_S * 10):])
+        if paused or len(window) >= LIVE_CAP * RATE * 2:
+            d["committed"] = join_note(d["committed"], d["partial"])
+            d["partial"] = ""
+            d["start"] += len(window)
+        push({"dictation": d["key"], "text": join_note(d["base"], d["committed"], d["partial"])})
+
+
+def note_key(name, where):
+    return f"desktop/{name}" if where == "desktop" else name
+
+
+def export_notes():
+    try:
+        with open(NOTES) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def set_export_note(key, note):
+    # An empty note removes the entry.
+    note = (note or "").strip()
+    with NOTES_LOCK:
+        notes = export_notes()
+        if note:
+            notes[key] = note
+        elif notes.pop(key, None) is None:
+            return
+        os.makedirs(os.path.dirname(NOTES), exist_ok=True)
+        with open(NOTES + ".tmp", "w") as f:
+            json.dump(notes, f, indent=1)
+        os.replace(NOTES + ".tmp", NOTES)
+
+
+def backfill_studio_files():
+    # Once, for files written before the manifest existed: an Export-named file
+    # modified within 10 minutes of the time in its name is Export's own (an
+    # editor saving under that name later is off by more); a leveled- file with
+    # its loudness report is Level's. After this only the manifest decides.
+    outdir = os.path.join(ROOT, "exports")
+    with STUDIO_LOCK:
+        files = studio_files()
+        changed = False
+        for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
+            path = os.path.join(outdir, name)
+            if name in files or name.startswith(".") or not os.path.isfile(path):
+                continue
+            st = os.stat(path)
+            kind = None
+            if EXPORT_NAME.match(name):
+                stamp = time.mktime(time.strptime(name[:15], "%Y%m%d-%H%M%S"))
+                if abs(st.st_mtime - stamp) <= 600:
+                    kind = "export"
+            elif name.startswith("leveled-") and os.path.exists(os.path.join(outdir, f".{name}.json")):
+                kind = "leveled"
+            if kind:
+                files[name] = {"kind": kind, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+                changed = True
+                print(f"backfill_studio_files: {name} -> {kind}", flush=True)
+        if changed:
+            save_studio_files(files)
+
+
+def export_entry(path, url, where, from_name=False):
     # {name, url, created, seconds, where} for one listed file. created comes
-    # from the name's leading <YYYYMMDD-HHMMSS> stamp (Export's names), else the
-    # file's mtime; lengths are probed once per file version.
+    # from the name's leading <YYYYMMDD-HHMMSS> stamp for Export's own files
+    # (from_name), else the file's mtime (an editor may reuse an export's name);
+    # lengths are probed once per file version.
+    # A file modified in the last WRITING_S seconds is still being written by
+    # whatever editor saved it: report its size, and don't probe (or cache) a
+    # length that isn't final.
     name = os.path.basename(path)
-    key = (path, os.path.getmtime(path))
-    if key not in EXPORT_SECONDS:
-        EXPORT_SECONDS[key] = round(float(probe(path, "format=duration") or 0), 1)
-    m = re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", name)
+    st = os.stat(path)
+    key = (path, st.st_mtime)
+    m = from_name and re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", name)
     created = (f"{m[1]}-{m[2]}-{m[3]} {m[4]}:{m[5]}:{m[6]}" if m
                else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(key[1])))
-    return {"name": name, "url": url, "created": created, "seconds": EXPORT_SECONDS[key], "where": where}
+    entry = {"name": name, "url": url, "created": created, "where": where,
+             "writing": is_writing(st), "bytes": st.st_size, "seconds": None}
+    if not entry["writing"]:
+        if key not in EXPORT_SECONDS:
+            EXPORT_SECONDS[key] = round(float(probe(path, "format=duration") or 0), 1)
+        entry["seconds"] = EXPORT_SECONDS[key]
+    return entry
+
+
+WRITING_S = 3  # seconds since the last write before a file counts as finished
+
+
+def is_writing(st):
+    return time.time() - st.st_mtime < WRITING_S
+
+
+def exports_fingerprint():
+    # Folder mtimes catch files appearing, renamed or removed; (name, size,
+    # writing) per listed file catches one growing, and the moment it stops.
+    def files(folder, keep):
+        try:
+            names = sorted(n for n in os.listdir(folder) if keep(n))
+        except OSError:
+            return ()
+        out = []
+        for n in names:
+            try:
+                st = os.stat(os.path.join(folder, n))
+            except OSError:
+                continue
+            out.append((n, st.st_size, is_writing(st)))
+        return tuple(out)
+    exports = os.path.join(ROOT, "exports")
+    return (files(exports, lambda n: n.endswith(".mp4") and not n.startswith(".")),
+            files(DESKTOP, lambda n: n.startswith("edited-") and n.endswith(".mp4")))
 
 
 def level_report(outdir, name):
@@ -172,22 +451,25 @@ def level_report(outdir, name):
 
 def list_exports():
     # Three stages of the finishing workflow, each newest first:
-    #   exports: what Export makes (<YYYYMMDD-HHMMSS>-takes.mp4, EXPORT_NAME);
-    #   leveled: leveled-*.mp4, written by POST /exports/level (level_edit.py);
-    #   edited:  any other .mp4 in media/exports/ (saved there from another
-    #            editor, whatever its name), plus edited-*.mp4 at the top of
+    #   exports: files Export wrote (recorded in STUDIO_FILES);
+    #   leveled: files Level wrote (recorded in STUDIO_FILES);
+    #   edited:  any other .mp4 in media/exports/, whatever its name (an
+    #            editor may reuse an export's), plus edited-*.mp4 at the top of
     #            the Desktop (served there via /sources/<name>).
     # Hidden names (.<name>.part.mp4 while being written) are skipped.
     outdir = os.path.join(ROOT, "exports")
     lists = {"exports": [], "edited": [], "leveled": []}
+    files = studio_files()
     for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
         path = os.path.join(outdir, name)
         if name.startswith(".") or not name.endswith(".mp4") or not os.path.isfile(path):
             continue
-        entry = export_entry(path, f"http://127.0.0.1:{PORT}/exports/{name}", "exports")
-        if EXPORT_NAME.match(name):
+        kind = studio_kind(name, os.stat(path), files)
+        entry = export_entry(path, f"http://127.0.0.1:{PORT}/exports/{name}", "exports",
+                             from_name=kind == "export")
+        if kind == "export":
             lists["exports"].append(entry)
-        elif name.startswith("leveled-"):
+        elif kind == "leveled":
             entry["report"] = level_report(outdir, name)
             lists["leveled"].append(entry)
         else:
@@ -197,6 +479,10 @@ def list_exports():
         if name.startswith("edited-") and name.endswith(".mp4") and os.path.isfile(path):
             lists["edited"].append(export_entry(
                 path, f"http://127.0.0.1:{PORT}/sources/{urllib.parse.quote(name)}", "desktop"))
+    notes = export_notes()
+    for entries in lists.values():
+        for e in entries:
+            e["note"] = notes.get(note_key(e["name"], e["where"]), "")
     return {k: sorted(v, key=lambda e: e["created"], reverse=True) for k, v in lists.items()}
 
 
@@ -329,7 +615,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.flush()
             while True:
                 try:
-                    self.wfile.write(f"data: {json.dumps({'changed': q.get(timeout=15)})}\n\n".encode())
+                    self.wfile.write(f"data: {json.dumps(q.get(timeout=15))}\n\n".encode())
                 except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
@@ -364,6 +650,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_export()
         if self.path == "/exports/level":
             return self.level_export()
+        if self.path == "/exports/note":
+            return self.save_export_note()
+        if self.path == "/dictation/start":
+            return self.start_dictation()
+        if self.path == "/dictation/stop":
+            return self.stop_dictation()
         if self.path == "/callouts/add":
             return self.add_callout()
         if self.path == "/callouts/update":
@@ -409,10 +701,78 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             stem, ext = os.path.splitext(name)
             dest = os.path.join(trash, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}")
         shutil.move(src, dest)
+        if body.get("where") != "desktop":
+            forget_studio_file(name)
+        set_export_note(note_key(name, body.get("where")), "")
         report = os.path.join(os.path.dirname(src), f".{name}.json")
         if os.path.exists(report):
             shutil.move(report, os.path.join(trash, f".{os.path.basename(dest)}.json"))
         self.send_json(200, {"deleted": name, "trashed": f".trash/{os.path.basename(dest)}"})
+
+    def start_dictation(self):
+        # {name, where, base}: record a spoken note for that row from the mic
+        # record.sh uses, transcribing live (live_dictation) until
+        # /dictation/stop. One at a time, and never during a take (the take
+        # owns the mic).
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name, where = str(body.get("name", "")), body.get("where")
+        with DICTATION_LOCK:
+            if self.recording():
+                return self.send_json(409, {"error": "a take is recording"})
+            if dictation:
+                return self.send_json(409, {"error": "already dictating"})
+            pcm = os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
+            proc = subprocess.Popen(
+                ["ffmpeg", "-v", "error", "-y", "-f", "avfoundation", "-i", f":{NOTE_MIC}",
+                 "-ac", "1", "-ar", str(RATE), "-f", "s16le", pcm],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            dictation.update(proc=proc, pcm=pcm, name=name, where=where,
+                             key=f"{where}/{name}", base=str(body.get("base") or ""),
+                             committed="", partial="", start=0, stop=threading.Event())
+            dictation["thread"] = threading.Thread(target=live_dictation, args=(dictation,), daemon=True)
+            dictation["thread"].start()
+        threading.Thread(target=ensure_whisper_server, daemon=True).start()  # warm it up
+        self.send_json(200, {"dictating": dictation["key"]})
+
+    def stop_dictation(self):
+        # Stop recording and the live loop, transcribe only what hasn't been
+        # committed yet, and save base + everything as the row's note.
+        with DICTATION_LOCK:
+            d = dict(dictation)
+            dictation.clear()
+        if not d:
+            return self.send_json(409, {"error": "not dictating"})
+        d["stop"].set()
+        d["thread"].join(timeout=60)
+        try:
+            d["proc"].communicate(b"q", timeout=5)
+        except subprocess.TimeoutExpired:
+            d["proc"].kill()
+        try:
+            with open(d["pcm"], "rb") as f:
+                f.seek(d["start"])
+                rest = f.read()
+            if any(voiced_chunks(rest)):
+                d["committed"] = join_note(d["committed"], transcribe_pcm(rest, d["committed"]))
+        except OSError as e:
+            print(f"stop_dictation: {e}", flush=True)
+        finally:
+            if os.path.exists(d["pcm"]):
+                os.remove(d["pcm"])
+        note = join_note(d["base"], d["committed"])
+        if d["committed"] and self.listed_export(d["name"], d["where"]):
+            set_export_note(note_key(d["name"], d["where"]), note[:500])
+        push({"dictation": d["key"], "text": note, "done": True})
+        self.send_json(200, {"text": d["committed"], "note": note})
+
+    def save_export_note(self):
+        # {name, where, note} for a listed file; an empty note removes it.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name, where = str(body.get("name", "")), body.get("where")
+        if not self.listed_export(name, where):
+            return self.send_json(404, {"error": f"no export named {name!r}"})
+        set_export_note(note_key(name, where), str(body.get("note", ""))[:500])
+        self.send_json(200, {"name": name, "note": export_notes().get(note_key(name, where), "")})
 
     def level_export(self):
         # Run level_edit.py on an edited file (any listed .mp4 that isn't an
@@ -423,7 +783,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name = str(body.get("name", ""))
         src = self.listed_export(name, body.get("where"))
-        if not src or EXPORT_NAME.match(name) or name.startswith("leveled-"):
+        if not src or (body.get("where") != "desktop" and studio_kind(name, os.stat(src), studio_files())):
             return self.send_json(404, {"error": f"no edited export named {name!r}"})
         outdir = os.path.join(ROOT, "exports")
         os.makedirs(outdir, exist_ok=True)
@@ -442,7 +802,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 report[m[1]] = {"I": float(m[2]), "LRA": float(m[3]), "TP": float(m[4])}
         with open(os.path.join(outdir, f".{leveled}.json"), "w") as f:
             json.dump(report, f)
+        record_studio_file(leveled, part, "leveled")
         os.replace(part, os.path.join(outdir, leveled))
+        note = export_notes().get(note_key(name, body.get("where")))
+        if note:
+            set_export_note(leveled, f"{note} (leveled)")
         self.send_json(200, {"leveled": leveled, "report": report})
 
     def export_takes(self):
@@ -488,6 +852,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if os.path.exists(out):
                     os.remove(out)
                 return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["export failed"])[-1]})
+            record_studio_file(name, out, "export")
             os.replace(out, final)
             out = final
             seconds = float(probe(out, "format=duration") or 0)
@@ -883,5 +1248,6 @@ def adopt_running_take():
 with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
     overlay.ensure_schema(_db)
 recorder = adopt_running_take()
+backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -21,7 +21,8 @@
        the polls above stay as a 60 s fallback. -->
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {
-      if (m.changed === 'takes') takes.refetch();
+      if (m.dictation !== undefined) { if (m.dictation === dictating) liveNote = m.text; }
+      else if (m.changed === 'takes') takes.refetch();
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') recStatus.refetch();
       else if (m.changed === 'exports') exports.refetch();
@@ -60,6 +61,56 @@
   <APICall id="levelExport" method="post" url="http://127.0.0.1:8765/exports/level"
     body="{{ name: $param.name, where: $param.where }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
+  <!-- A row's note, saved when its field loses focus: the buffered-edit shape
+       from https://www.xmlui.org/docs/howto/buffer-a-reactive-edit (noteBuffer),
+       refetching in the handler instead of onSuccess (xmlui-org/xmlui#3924). -->
+  <APICall id="saveExportNote" method="post" url="http://127.0.0.1:8765/exports/note"
+    body="{{ name: $param.name, where: $param.where, note: $param.note }}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <!-- Export-row notes: typed, or dictated with the row's mic. The mic starts
+       serve_media.py recording (POST /dictation/start); the mic again, or
+       Enter in the note (its Form submits,
+       https://www.xmlui.org/docs/howto/submit-a-form-from-a-custom-button),
+       stops it: whisper-cli transcribes, the server appends the text to the
+       note and saves it, and the refetched note re-seeds the field through
+       initialValue. Actions.callApi is awaited in handlers
+       (https://www.xmlui.org/docs/howto/add-an-async-uniqueness-check). -->
+  <script>
+    function noteKey(item) { return item.where + '/' + item.name; }
+    function commitNote(item) {
+      const note = noteBuffer.trim();
+      if (note === (item.note || '')) return;
+      saveExportNote.execute({ name: item.name, where: item.where, note });
+      exports.refetch();
+    }
+    function startDictation(item, box) {
+      try {
+        liveNote = item.note || '';
+        Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/start', method: 'post',
+                          body: { name: item.name, where: item.where, base: item.note || '' } });
+        dictating = noteKey(item);
+        box.focus();
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function stopDictation(item) {
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/stop', method: 'post' });
+        // The server saved it: take its note as the buffer, so leaving the
+        // field afterwards doesn't write the pre-dictation text back.
+        if (r) { noteBuffer = r.note; liveNote = r.note; }
+      } catch (e) {
+        toast.error(e.message);
+      }
+      exports.refetch();
+      dictating = '';
+    }
+    function submitNote(item) {
+      if (dictating === noteKey(item)) stopDictation(item);
+      else commitNote(item);
+    }
+  </script>
   <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
   <APICall id="exportTakes" method="post" url="http://127.0.0.1:8765/export"
     invalidates="{[]}"
@@ -231,6 +282,14 @@
            (media/exports/ or the Desktop), and leveled-*.mp4 from Level.
            Collapsed by default; open or closed is remembered in localStorage
            (https://www.xmlui.org/docs/globals#local-storage-utilities). -->
+      <!-- One Theme around the panel, not one per row: small spinners
+           (https://www.xmlui.org/docs/howto/scope-theme-outside-loops), and no
+           right padding on the panel's content, so each row's trash lines up
+           with the takes' below (paddingRight-content-ExpandableItem,
+           https://www.xmlui.org/docs/reference/components/ExpandableItem). A
+           row whose file an editor is still writing shows "writing… N MB" and
+           waits to offer Level. -->
+      <Theme size-Spinner="1em" paddingRight-content-ExpandableItem="0">
       <ExpandableItem summary="Exports" iconPosition="start"
         initiallyExpanded="{readLocalStorage('studio.exportsExpanded', false)}"
         onExpandedChange="(open) => writeLocalStorage('studio.exportsExpanded', open)">
@@ -238,11 +297,32 @@
       <Text variant="strong" value="Exports" />
       <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
         value="Nothing exported yet." />
+      <!-- Every row, in all three sections, uses the same columns so the notes
+           line up: time 110px, length 150px, name 340px, mic + note (*, a
+           leveled row's loudness beneath it),
+           trailing column 100px (Level), delete. -->
       <Items data="{exports.value ? exports.value.exports : []}">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
-          <Text value="{$item.seconds + 's'}" width="70px" />
-          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="*" />
+          <HStack width="150px" verticalAlignment="center" gap="$space-1">
+            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
+            <Spinner when="{$item.writing}" />
+            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
+          </HStack>
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="340px" />
+          <HStack width="*" verticalAlignment="center" gap="$space-1">
+            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
+              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
+              enabled="{!dictating || dictating === noteKey($item)}"
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+                onGotFocus="noteBuffer = $item.note || ''"
+                onDidChange="(v) => noteBuffer = v"
+                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
+            </Form>
+          </HStack>
+          <Stack width="100px" />
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete export" tooltip="Delete this export (moves it to media/.trash)"
             onClick="
@@ -257,16 +337,34 @@
       <Items data="{exports.value ? exports.value.edited : []}">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
-          <Text value="{$item.seconds + 's'}" width="70px" />
+          <HStack width="150px" verticalAlignment="center" gap="$space-1">
+            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
+            <Spinner when="{$item.writing}" />
+            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
+          </HStack>
           <Link to="{$item.url}" target="_blank"
-            label="{$item.name + ($item.where === 'desktop' ? ' (Desktop)' : '')}" width="*" />
-          <Button label="Level" variant="outlined" size="sm"
-            enabled="{!levelExport.inProgress}"
-            tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
-            onClick="
-              levelExport.execute($item);
-              exports.refetch();
-            " />
+            label="{$item.name + ($item.where === 'desktop' ? ' (Desktop)' : '')}" width="340px" />
+          <HStack width="*" verticalAlignment="center" gap="$space-1">
+            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
+              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
+              enabled="{!dictating || dictating === noteKey($item)}"
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+                onGotFocus="noteBuffer = $item.note || ''"
+                onDidChange="(v) => noteBuffer = v"
+                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
+            </Form>
+          </HStack>
+          <HStack width="100px" horizontalAlignment="end">
+            <Button label="Level" variant="outlined" size="sm"
+              enabled="{!levelExport.inProgress &amp;&amp; !$item.writing}"
+              tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
+              onClick="
+                levelExport.execute($item);
+                exports.refetch();
+              " />
+          </HStack>
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete edited export" tooltip="Delete this file (moves it to media/.trash)"
             onClick="
@@ -285,9 +383,26 @@
       <Items data="{exports.value ? exports.value.leveled : []}">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
-          <Text value="{$item.seconds + 's'}" width="70px" />
-          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="*" />
-          <Text variant="secondary" value="{$item.report}" />
+          <HStack width="150px" verticalAlignment="center" gap="$space-1">
+            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
+            <Spinner when="{$item.writing}" />
+            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
+          </HStack>
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="340px" />
+          <HStack width="*" verticalAlignment="center" gap="$space-1">
+            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
+              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
+              enabled="{!dictating || dictating === noteKey($item)}"
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+                onGotFocus="noteBuffer = $item.note || ''"
+                onDidChange="(v) => noteBuffer = v"
+                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
+              <Text variant="secondary" value="{$item.report}" />
+            </Form>
+          </HStack>
+          <Stack width="100px" />
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete leveled export" tooltip="Delete this file (moves it to media/.trash)"
             onClick="
@@ -298,6 +413,7 @@
       </Items>
       </VStack>
       </ExpandableItem>
+      </Theme>
       <!-- A take this page didn't start (it was reloaded mid-take, or another
            tab started it): it has no event log to render, so offer Discard. -->
       <HStack verticalAlignment="center"
