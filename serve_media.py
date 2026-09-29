@@ -15,7 +15,8 @@ POST /record/stop {events} ends it with the player's event log, and
 POST /record/cancel / /record/restart {source} discard it (and start anew);
 record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
-POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row;
+POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row,
+keeping both in a .trash/<stem>.json that POST /undelete {undo} restores;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
 POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
@@ -245,6 +246,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.run_voicetest()
         if self.path == "/delete":
             return self.delete_take()
+        if self.path == "/undelete":
+            return self.undelete_take()
         if self.path == "/reorder":
             return self.reorder_takes()
         if self.path == "/export":
@@ -538,33 +541,77 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def delete_take(self):
         # Move the take's MP4 to media/.trash/ first; drop the row only if that worked.
+        # Beside it, <name>.json keeps the take's row and its overlays for /undelete.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-        row = db.execute("SELECT file FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
             return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
-        src, trashed = os.path.join(ROOT, row[0]), None
+        trash = os.path.join(ROOT, ".trash")
+        os.makedirs(trash, exist_ok=True)
+        name = row["file"]
+        stem, ext = os.path.splitext(name)
+        if any(os.path.exists(os.path.join(trash, n)) for n in (name, f"{stem}.json")):
+            stem = f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+            name = f"{stem}{ext}"
+        saved = {"take": dict(row), "files": {},
+                 "overlays": [dict(r) for r in db.execute(
+                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))]}
+        src, trashed = os.path.join(ROOT, row["file"]), None
         if os.path.exists(src):
-            trash = os.path.join(ROOT, ".trash")
-            os.makedirs(trash, exist_ok=True)
-            name = row[0]
-            if os.path.exists(os.path.join(trash, name)):
-                stem, ext = os.path.splitext(name)
-                name = f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}"
             try:
                 shutil.move(src, os.path.join(trash, name))
             except OSError as e:
-                return self.send_json(500, {"error": f"couldn't move {row[0]} to .trash: {e}"})
+                return self.send_json(500, {"error": f"couldn't move {row['file']} to .trash: {e}"})
             trashed = f".trash/{name}"
+            saved["files"][row["file"]] = name
             # Its text-free copy (overlay.py) goes along, beside it.
-            clean = os.path.join(ROOT, ".clean", row[0])
+            clean = os.path.join(ROOT, ".clean", row["file"])
             if os.path.exists(clean):
-                stem, ext = os.path.splitext(name)
                 shutil.move(clean, os.path.join(trash, f"{stem}-clean{ext}"))
-        db.execute("DELETE FROM takes WHERE id = ?", (body["id"],))
-        db.execute("DELETE FROM overlays WHERE take_id = ?", (body["id"],))
+                saved["files"][f".clean/{row['file']}"] = f"{stem}-clean{ext}"
+        undo = f"{stem}.json"
+        with open(os.path.join(trash, undo), "w") as f:
+            json.dump(saved, f, indent=1)
+        db.execute("DELETE FROM takes WHERE id = ?", (row["id"],))
+        db.execute("DELETE FROM overlays WHERE take_id = ?", (row["id"],))
         db.commit()
-        self.send_json(200, {"deleted": body["id"], "trashed": trashed})
+        self.send_json(200, {"deleted": row["id"], "name": row["name"], "trashed": trashed, "undo": undo})
+
+    def undelete_take(self):
+        # Undo a take delete from its media/.trash/<stem>.json: files back where
+        # they were, then the take (same id if still free) and its overlays.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        undo = str(body.get("undo", ""))
+        trash = os.path.join(ROOT, ".trash")
+        path = os.path.join(trash, undo)
+        if "/" in undo or undo.startswith(".") or not undo.endswith(".json") or not os.path.isfile(path):
+            return self.send_json(404, {"error": f"nothing to undo named {undo!r}"})
+        with open(path) as f:
+            saved = json.load(f)
+        files = saved["files"]
+        taken = [orig for orig in files if os.path.exists(os.path.join(ROOT, orig))]
+        if taken:
+            return self.send_json(409, {"error": f"can't undo: {', '.join(taken)} exists again"})
+        for orig, trashed in files.items():
+            os.makedirs(os.path.dirname(os.path.join(ROOT, orig)), exist_ok=True)
+            shutil.move(os.path.join(trash, trashed), os.path.join(ROOT, orig))
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        take = dict(saved["take"])
+        if db.execute("SELECT 1 FROM takes WHERE id = ?", (take["id"],)).fetchone():
+            del take["id"]
+        cols = list(take)
+        cur = db.execute(f"INSERT INTO takes ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                         [take[c] for c in cols])
+        take_id = cur.lastrowid
+        for o in saved["overlays"]:
+            o = {k: v for k, v in o.items() if k != "id"}
+            o["take_id"] = take_id
+            db.execute(f"INSERT INTO overlays ({', '.join(o)}) VALUES ({', '.join('?' * len(o))})", list(o.values()))
+        db.commit()
+        os.remove(path)
+        self.send_json(200, {"restored": take_id, "name": take["name"], "overlays": len(saved["overlays"])})
 
     def recording(self):
         return recorder is not None and recorder.poll() is None
