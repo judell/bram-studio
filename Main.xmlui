@@ -79,7 +79,10 @@
   <APICall id="saveExportNote" method="post" url="http://127.0.0.1:8765/exports/note"
     body="{{ name: $param.name, where: $param.where, note: $param.note }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <!-- Export-row notes: typed, or dictated with the row's mic. The mic starts
+  <!-- Every field that takes dictation has the same frame: 🎤 before it (⏹
+       while dictating) and ✕ after it to clear it. Keep that when adding
+       dictation anywhere else.
+       Export-row notes: typed, or dictated with the row's mic. The mic starts
        serve_media.py recording (POST /dictation/start); the mic again, or
        Enter in the note (its Form submits,
        https://www.xmlui.org/docs/howto/submit-a-form-from-a-custom-button),
@@ -96,6 +99,13 @@
       // type into never removes its note (dictation-robust).
       if (note === '') { if (!noteEdited) return; }
       saveExportNote.execute({ name: item.name, where: item.where, note });
+      exports.refetch();
+    }
+    // The ✕ after a dictation field: clearing is the edit itself, so it saves
+    // the empty note directly, without the noteEdited guard.
+    function clearNote(item) {
+      noteBuffer = '';
+      saveExportNote.execute({ name: item.name, where: item.where, note: '' });
       exports.refetch();
     }
     function startDictation(item, box) {
@@ -336,6 +346,9 @@
                 onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
             </Form>
+            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
+              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
+              onClick="clearNote($item)" />
           </HStack>
           <Stack width="100px" />
           <Button icon="trash" variant="ghost" themeColor="attention"
@@ -370,6 +383,9 @@
                 onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
             </Form>
+            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
+              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
+              onClick="clearNote($item)" />
           </HStack>
           <HStack width="100px" horizontalAlignment="end">
             <Button label="Level" variant="outlined" size="sm"
@@ -416,6 +432,9 @@
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
               <Text variant="secondary" value="{$item.report}" />
             </Form>
+            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
+              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
+              onClick="clearNote($item)" />
           </HStack>
           <Stack width="100px" />
           <Button icon="trash" variant="ghost" themeColor="attention"
