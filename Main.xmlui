@@ -49,11 +49,16 @@
        the 5s poll, and clicking one gave "no take with id N"). invalidates="{[]}"
        stops the default refresh of every DataSource (including /devices, which
        runs ffmpeg) after each delete; only the takes table needs refetching. -->
-  <!-- Every export (media/exports/), newest first, and deleting one (moved to
-       media/.trash/). -->
+  <!-- The finishing workflow's three lists ({exports, edited, leveled}, each
+       newest first; see list_exports() in serve_media.py), deleting one (moved
+       to media/.trash/), and leveling an edited one with level_edit.py. No
+       onSuccess on either call (xmlui-org/xmlui#3924): the clicks refetch. -->
   <DataSource id="exports" url="http://127.0.0.1:8765/exports" />
   <APICall id="deleteExport" method="post" url="http://127.0.0.1:8765/exports/delete"
-    body="{{ name: $param }}" invalidates="{[]}"
+    body="{{ name: $param.name, where: $param.where }}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <APICall id="levelExport" method="post" url="http://127.0.0.1:8765/exports/level"
+    body="{{ name: $param.name, where: $param.where }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
   <APICall id="exportTakes" method="post" url="http://127.0.0.1:8765/export"
@@ -220,8 +225,20 @@
         <Spinner />
         <Text value="Exporting takes…" />
       </HStack>
-      <!-- Every export, newest first: when, how long, a link, and delete. -->
-      <Items data="{exports}">
+      <!-- The finishing workflow, a section per stage, each newest first: when,
+           how long, a link, and delete. Filename prefixes say which stage a
+           file is in: what Export makes, edited-*.mp4 saved from another editor
+           (media/exports/ or the Desktop), and leveled-*.mp4 from Level.
+           Collapsed by default; open or closed is remembered in localStorage
+           (https://www.xmlui.org/docs/globals#local-storage-utilities). -->
+      <ExpandableItem summary="Exports" iconPosition="start"
+        initiallyExpanded="{readLocalStorage('studio.exportsExpanded', false)}"
+        onExpandedChange="(open) => writeLocalStorage('studio.exportsExpanded', open)">
+      <VStack>
+      <Text variant="strong" value="Exports" />
+      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
+        value="Nothing exported yet." />
+      <Items data="{exports.value ? exports.value.exports : []}">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
           <Text value="{$item.seconds + 's'}" width="70px" />
@@ -229,11 +246,58 @@
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete export" tooltip="Delete this export (moves it to media/.trash)"
             onClick="
-              deleteExport.execute($item.name);
+              deleteExport.execute($item);
               exports.refetch();
             " />
         </HStack>
       </Items>
+      <Text variant="strong" value="Edited exports" />
+      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.edited.length === 0}"
+        value="Save your edit in media/exports." />
+      <Items data="{exports.value ? exports.value.edited : []}">
+        <HStack verticalAlignment="center">
+          <Text value="{$item.created.substring(5, 16)}" width="110px" />
+          <Text value="{$item.seconds + 's'}" width="70px" />
+          <Link to="{$item.url}" target="_blank"
+            label="{$item.name + ($item.where === 'desktop' ? ' (Desktop)' : '')}" width="*" />
+          <Button label="Level" variant="outlined" size="sm"
+            enabled="{!levelExport.inProgress}"
+            tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
+            onClick="
+              levelExport.execute($item);
+              exports.refetch();
+            " />
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete edited export" tooltip="Delete this file (moves it to media/.trash)"
+            onClick="
+              deleteExport.execute($item);
+              exports.refetch();
+            " />
+        </HStack>
+      </Items>
+      <HStack verticalAlignment="center" when="{levelExport.inProgress}">
+        <Spinner />
+        <Text value="Leveling…" />
+      </HStack>
+      <Text variant="strong" value="Leveled exports" />
+      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
+        value="Click Level on an edited export." />
+      <Items data="{exports.value ? exports.value.leveled : []}">
+        <HStack verticalAlignment="center">
+          <Text value="{$item.created.substring(5, 16)}" width="110px" />
+          <Text value="{$item.seconds + 's'}" width="70px" />
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="*" />
+          <Text variant="secondary" value="{$item.report}" />
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete leveled export" tooltip="Delete this file (moves it to media/.trash)"
+            onClick="
+              deleteExport.execute($item);
+              exports.refetch();
+            " />
+        </HStack>
+      </Items>
+      </VStack>
+      </ExpandableItem>
       <!-- A take this page didn't start (it was reloaded mid-take, or another
            tab started it): it has no event log to render, so offer Discard. -->
       <HStack verticalAlignment="center"

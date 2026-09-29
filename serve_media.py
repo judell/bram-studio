@@ -122,7 +122,7 @@ def fingerprints():
     return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
             "takes": mtime(os.path.join(HERE, "studio.db")),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
-            "exports": mtime(os.path.join(ROOT, "exports"))}
+            "exports": (mtime(os.path.join(ROOT, "exports")), mtime(DESKTOP))}
 
 
 def watch_changes():
@@ -142,27 +142,62 @@ def watch_changes():
 
 
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
+EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
+
+
+def export_entry(path, url, where):
+    # {name, url, created, seconds, where} for one listed file. created comes
+    # from the name's leading <YYYYMMDD-HHMMSS> stamp (Export's names), else the
+    # file's mtime; lengths are probed once per file version.
+    name = os.path.basename(path)
+    key = (path, os.path.getmtime(path))
+    if key not in EXPORT_SECONDS:
+        EXPORT_SECONDS[key] = round(float(probe(path, "format=duration") or 0), 1)
+    m = re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", name)
+    created = (f"{m[1]}-{m[2]}-{m[3]} {m[4]}:{m[5]}:{m[6]}" if m
+               else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(key[1])))
+    return {"name": name, "url": url, "created": created, "seconds": EXPORT_SECONDS[key], "where": where}
+
+
+def level_report(outdir, name):
+    # "before -> after" loudness saved by POST /exports/level beside a leveled file.
+    try:
+        with open(os.path.join(outdir, f".{name}.json")) as f:
+            r = json.load(f)
+        b, a = r["before"], r["after"]
+        return f"{b['I']} → {a['I']} LUFS, range {b['LRA']} → {a['LRA']} LU"
+    except (OSError, ValueError, KeyError):
+        return ""
 
 
 def list_exports():
-    # Every export in media/exports/, newest first: {name, url, created, seconds}.
-    # created comes from the name's <YYYYMMDD-HHMMSS> stamp (the file's mtime if
-    # the name has none); lengths are probed once per file version.
+    # Three stages of the finishing workflow, each newest first:
+    #   exports: what Export makes (<YYYYMMDD-HHMMSS>-takes.mp4, EXPORT_NAME);
+    #   leveled: leveled-*.mp4, written by POST /exports/level (level_edit.py);
+    #   edited:  any other .mp4 in media/exports/ (saved there from another
+    #            editor, whatever its name), plus edited-*.mp4 at the top of
+    #            the Desktop (served there via /sources/<name>).
+    # Hidden names (.<name>.part.mp4 while being written) are skipped.
     outdir = os.path.join(ROOT, "exports")
-    out = []
+    lists = {"exports": [], "edited": [], "leveled": []}
     for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
         path = os.path.join(outdir, name)
-        if not name.endswith(".mp4") or not os.path.isfile(path):
+        if name.startswith(".") or not name.endswith(".mp4") or not os.path.isfile(path):
             continue
-        key = (path, os.path.getmtime(path))
-        if key not in EXPORT_SECONDS:
-            EXPORT_SECONDS[key] = round(float(probe(path, "format=duration") or 0), 1)
-        m = re.match(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", name)
-        created = (f"{m[1]}-{m[2]}-{m[3]} {m[4]}:{m[5]}:{m[6]}" if m
-                   else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(key[1])))
-        out.append({"name": name, "url": f"http://127.0.0.1:{PORT}/exports/{name}", "created": created,
-                    "seconds": EXPORT_SECONDS[key]})
-    return sorted(out, key=lambda e: e["created"], reverse=True)
+        entry = export_entry(path, f"http://127.0.0.1:{PORT}/exports/{name}", "exports")
+        if EXPORT_NAME.match(name):
+            lists["exports"].append(entry)
+        elif name.startswith("leveled-"):
+            entry["report"] = level_report(outdir, name)
+            lists["leveled"].append(entry)
+        else:
+            lists["edited"].append(entry)
+    for name in os.listdir(DESKTOP) if os.path.isdir(DESKTOP) else []:
+        path = os.path.join(DESKTOP, name)
+        if name.startswith("edited-") and name.endswith(".mp4") and os.path.isfile(path):
+            lists["edited"].append(export_entry(
+                path, f"http://127.0.0.1:{PORT}/sources/{urllib.parse.quote(name)}", "desktop"))
+    return {k: sorted(v, key=lambda e: e["created"], reverse=True) for k, v in lists.items()}
 
 
 def source_paths():
@@ -327,6 +362,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.export_takes()
         if self.path == "/exports/delete":
             return self.delete_export()
+        if self.path == "/exports/level":
+            return self.level_export()
         if self.path == "/callouts/add":
             return self.add_callout()
         if self.path == "/callouts/update":
@@ -345,13 +382,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.render_overlay()
         self.send_json(404, {"error": "not found"})
 
+    @staticmethod
+    def listed_export(name, where):
+        # The file a {name, where} from the exports lists names, or None: plain
+        # .mp4 names only; on the Desktop, only edited-*.mp4 at the top level.
+        if "/" in name or name.startswith(".") or not name.endswith(".mp4"):
+            return None
+        if where == "desktop":
+            path = os.path.join(DESKTOP, name) if name.startswith("edited-") else None
+        else:
+            path = os.path.join(ROOT, "exports", name)
+        return path if path and os.path.isfile(path) else None
+
     def delete_export(self):
-        # Move one export to media/.trash/ (like a deleted take): plain export
-        # file names only.
+        # Move one listed file to media/.trash/ (like a deleted take), with a
+        # leveled file's loudness report.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name = str(body.get("name", ""))
-        src = os.path.join(ROOT, "exports", name)
-        if "/" in name or name.startswith(".") or not name.endswith(".mp4") or not os.path.isfile(src):
+        src = self.listed_export(name, body.get("where"))
+        if not src:
             return self.send_json(404, {"error": f"no export named {name!r}"})
         trash = os.path.join(ROOT, ".trash")
         os.makedirs(trash, exist_ok=True)
@@ -360,7 +409,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             stem, ext = os.path.splitext(name)
             dest = os.path.join(trash, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}")
         shutil.move(src, dest)
+        report = os.path.join(os.path.dirname(src), f".{name}.json")
+        if os.path.exists(report):
+            shutil.move(report, os.path.join(trash, f".{os.path.basename(dest)}.json"))
         self.send_json(200, {"deleted": name, "trashed": f".trash/{os.path.basename(dest)}"})
+
+    def level_export(self):
+        # Run level_edit.py on an edited file (any listed .mp4 that isn't an
+        # Export or already leveled) into media/exports/leveled-<name>.mp4, an
+        # edited- prefix dropped (written hidden, then renamed, like Export),
+        # keeping its before/after loudness in .leveled-<name>.mp4.json for the
+        # list. Leveling again replaces the earlier result.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name = str(body.get("name", ""))
+        src = self.listed_export(name, body.get("where"))
+        if not src or EXPORT_NAME.match(name) or name.startswith("leveled-"):
+            return self.send_json(404, {"error": f"no edited export named {name!r}"})
+        outdir = os.path.join(ROOT, "exports")
+        os.makedirs(outdir, exist_ok=True)
+        leveled = "leveled-" + (name[len("edited-"):] if name.startswith("edited-") else name)
+        part = os.path.join(outdir, f".{leveled[:-4]}.part.mp4")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "level_edit.py"), src, part],
+                           capture_output=True, text=True)
+        if r.returncode:
+            if os.path.exists(part):
+                os.remove(part)
+            return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["leveling failed"])[-1]})
+        report = {}
+        for line in r.stdout.splitlines():
+            m = re.match(r"(before|after)\s+(-?[\d.]+) LUFS\s+range\s+([\d.]+) LU\s+true peak\s+(-?[\d.]+) dBFS", line)
+            if m:
+                report[m[1]] = {"I": float(m[2]), "LRA": float(m[3]), "TP": float(m[4])}
+        with open(os.path.join(outdir, f".{leveled}.json"), "w") as f:
+            json.dump(report, f)
+        os.replace(part, os.path.join(outdir, leveled))
+        self.send_json(200, {"leveled": leveled, "report": report})
 
     def export_takes(self):
         # All takes, in list order, as one MP4 in media/exports/. Identical
@@ -377,7 +460,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             outdir = os.path.join(ROOT, "exports")
             os.makedirs(outdir, exist_ok=True)
             name = time.strftime("%Y%m%d-%H%M%S") + "-takes.mp4"
-            out = os.path.join(outdir, name)
+            # Written under a hidden name and renamed when complete, so the
+            # /events watcher never announces (and the list never probes) a
+            # half-written file.
+            final, out = os.path.join(outdir, name), os.path.join(outdir, f".{name[:-4]}.part.mp4")
             copied = len({stream_signature(f) for f in files}) == 1
             if copied:
                 lst = out + ".txt"
@@ -399,7 +485,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if copied:
                 os.remove(lst)
             if r.returncode:
+                if os.path.exists(out):
+                    os.remove(out)
                 return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["export failed"])[-1]})
+            os.replace(out, final)
+            out = final
             seconds = float(probe(out, "format=duration") or 0)
             self.send_json(200, {"url": f"http://127.0.0.1:{PORT}/exports/{name}", "file": f"exports/{name}",
                                  "takes": len(files), "seconds": round(seconds, 1), "copied": copied})
