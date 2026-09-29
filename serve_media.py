@@ -26,12 +26,16 @@ media/.preview/<take id>.png, and POST /callouts/sprite {...} just the callout,
 with where it goes, for the take player's PointerLayer anchors (#3922);
 POST /overlay/render {id} burns the take's text
 in with overlay.py (from its clean copy).
+GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
+"record"|"exports"} whenever watch_changes() sees one of them change, so the
+page refetches then instead of polling.
 """
 import hashlib
 import http.server
 import json
 import mimetypes
 import os
+import queue
 import re
 import shutil
 import sqlite3
@@ -94,6 +98,47 @@ def record_status(running):
     except OSError:
         phase = "starting"
     return {"phase": phase, "label": PHASES.get(phase, phase)}
+
+
+EVENT_QUEUES = set()  # one queue per page listening on GET /events
+EVENT_LOCK = threading.Lock()
+
+
+def notify(kind):
+    with EVENT_LOCK:
+        for q in EVENT_QUEUES:
+            q.put(kind)
+
+
+def fingerprints():
+    # What each of the page's lists is built from, cheaply: the recording
+    # phase, studio.db (takes, callouts; register.py writes it too), the two
+    # source folders and the exports folder. A change means "refetch that".
+    def mtime(path):
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return None
+    return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
+            "takes": mtime(os.path.join(HERE, "studio.db")),
+            "sources": (mtime(SOURCES), mtime(DESKTOP)),
+            "exports": mtime(os.path.join(ROOT, "exports"))}
+
+
+def watch_changes():
+    # Once a second, in one place, instead of every open page polling each list.
+    last = fingerprints()
+    while True:
+        time.sleep(1)
+        try:
+            now = fingerprints()
+        except Exception as e:  # keep watching; a bad tick shouldn't end the stream
+            print(f"watch_changes: {e}", flush=True)
+            continue
+        for kind, value in now.items():
+            if value != last.get(kind):
+                notify(kind)
+        last = now
 
 
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
@@ -229,7 +274,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, [{"name": n} for n in sources()])
         if self.path == "/exports":
             return self.send_json(200, list_exports())
+        if self.path == "/events":
+            return self.stream_events()
         super().do_GET()
+
+    def stream_events(self):
+        # Server-sent events for the page's <EventSource>: data: {"changed":
+        # "takes"|"sources"|"record"|"exports"} as watch_changes() sees them,
+        # and a comment line every 15 s so an idle connection stays open.
+        q = queue.Queue()
+        with EVENT_LOCK:
+            EVENT_QUEUES.add(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(b"retry: 2000\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    self.wfile.write(f"data: {json.dumps({'changed': q.get(timeout=15)})}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with EVENT_LOCK:
+                EVENT_QUEUES.discard(q)
 
     def do_POST(self):
         if self.path == "/record":
@@ -720,4 +793,5 @@ def adopt_running_take():
 with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
     overlay.ensure_schema(_db)
 recorder = adopt_running_take()
+threading.Thread(target=watch_changes, daemon=True).start()
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

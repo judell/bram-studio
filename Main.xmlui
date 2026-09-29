@@ -7,13 +7,25 @@
        loopback can't do yet (no video content types, no byte ranges). -->
   <DataSource id="takes" url="/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
-    pollIntervalInSeconds="5" />
+    pollIntervalInSeconds="60" />
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
        log, record.sh renders from it, and the take appears when it
        registers. -->
-  <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="5" />
+  <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
   <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
-    pollIntervalInSeconds="2" />
+    pollIntervalInSeconds="60" />
+  <!-- Push instead of polling: serve_media.py's GET /events says which list
+       changed ({changed: 'takes'|'sources'|'record'|'exports'}) and only that
+       one is refetched. EventSource is experimental in XMLUI and has no docs
+       page yet (source: xmlui/src/components/EventSource/EventSource.tsx), so
+       the polls above stay as a 60 s fallback. -->
+  <EventSource url="http://127.0.0.1:8765/events"
+    onMessage="(m) => {
+      if (m.changed === 'takes') takes.refetch();
+      else if (m.changed === 'sources') sources.refetch();
+      else if (m.changed === 'record') recStatus.refetch();
+      else if (m.changed === 'exports') exports.refetch();
+    }" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     body="{$param}"
     errorNotificationMessage="{$error.message}" />
