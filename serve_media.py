@@ -47,6 +47,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -218,7 +219,7 @@ NOTE_MIC = os.environ.get("MIC", "MacBook Air Microphone")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL",
                                os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
 DICTATION_LOCK = threading.Lock()
-dictation = {}  # the one note being dictated (see start_dictation), or empty
+dictation = {"current": None}  # the one note being dictated (see start_dictation)
 
 # Live dictation, after Bram's (judell/bram dc6645d): ffmpeg writes raw 16 kHz
 # mono PCM; every LIVE_STEP s the audio since the last commit is transcribed
@@ -319,6 +320,15 @@ def live_dictation(d):
     # chunks count as speech, whisper's latency and text, and any commit.
     t0 = time.time()
     while not d["stop"].wait(LIVE_STEP):
+        if d["proc"].poll() is not None:
+            # Watchdog: the recorder died mid-dictation. End this dictation (if
+            # it's still the current one) and tell the page (dictation-robust).
+            print(f"live: recorder exited ({d['proc'].returncode}) during {d['key']}", flush=True)
+            with DICTATION_LOCK:
+                if dictation["current"] is d:
+                    dictation["current"] = None
+            push({"dictation": d["key"], "error": "recording stopped"})
+            return
         try:
             with open(d["pcm"], "rb") as f:
                 f.seek(d["start"])
@@ -611,6 +621,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, [{"name": n} for n in sources()])
         if self.path == "/exports":
             return self.send_json(200, list_exports())
+        if self.path == "/dictation/status":
+            return self.dictation_status()
         if self.path == "/events":
             return self.stream_events()
         super().do_GET()
@@ -729,15 +741,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # {name, where, base}: record a spoken note for that row from the mic
         # record.sh uses, transcribing live (live_dictation) until
         # /dictation/stop. One at a time, and never during a take (the take
-        # owns the mic).
+        # owns the mic). Answers only once audio is actually arriving.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name, where = str(body.get("name", "")), body.get("where")
         with DICTATION_LOCK:
             if self.recording():
                 return self.send_json(409, {"error": "a take is recording"})
-            if dictation:
+            if dictation["current"]:
                 return self.send_json(409, {"error": "already dictating"})
             pcm = os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
+            if os.path.exists(pcm):
+                os.remove(pcm)
             proc = subprocess.Popen(
                 # -flush_packets 1: without it ffmpeg wrote the PCM in 256 KiB
                 # blocks (~8 s), so the live loop saw nothing for 10 s, then
@@ -745,44 +759,72 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ["ffmpeg", "-v", "error", "-y", "-f", "avfoundation", "-i", f":{NOTE_MIC}",
                  "-ac", "1", "-ar", str(RATE), "-flush_packets", "1", "-f", "s16le", pcm],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            dictation.update(proc=proc, pcm=pcm, name=name, where=where,
-                             key=f"{where}/{name}", base=str(body.get("base") or ""),
-                             committed="", partial="", start=0, stop=threading.Event())
-            dictation["thread"] = threading.Thread(target=live_dictation, args=(dictation,), daemon=True)
-            dictation["thread"].start()
+            # Wait for audio: an ffmpeg that can't open the mic exits at once,
+            # and must not leave a dictation "running" (dictation-robust).
+            deadline = time.time() + 2
+            while time.time() < deadline and proc.poll() is None:
+                if os.path.exists(pcm) and os.path.getsize(pcm) > 0:
+                    break
+                time.sleep(0.05)
+            if proc.poll() is not None or not os.path.exists(pcm) or os.path.getsize(pcm) == 0:
+                if proc.poll() is None:
+                    proc.kill()
+                err = (proc.stderr.read().decode(errors="replace").strip().splitlines() or ["no audio"])[-1]
+                print(f"live: start failed: {err}", flush=True)
+                return self.send_json(500, {"error": f"couldn't open the microphone: {err}"})
+            # Each dictation is its own object; the shared state only points at
+            # the current one. (Sharing one dict let a loop still transcribing
+            # after stop write keys back into it, so it looked "already
+            # dictating" forever, and the next stop failed on the fragment.)
+            d = {"proc": proc, "pcm": pcm, "name": name, "where": where, "key": f"{where}/{name}",
+                 "base": str(body.get("base") or ""), "committed": "", "partial": "", "start": 0,
+                 "stop": threading.Event()}
+            d["thread"] = threading.Thread(target=live_dictation, args=(d,), daemon=True)
+            dictation["current"] = d
+            d["thread"].start()
+        print(f"live: start {d['key']}", flush=True)
         threading.Thread(target=ensure_whisper_server, daemon=True).start()  # warm it up
-        self.send_json(200, {"dictating": dictation["key"]})
+        self.send_json(200, {"dictating": d["key"]})
 
     def stop_dictation(self):
         # Stop recording and the live loop, transcribe only what hasn't been
-        # committed yet, and save base + everything as the row's note.
+        # committed yet, and save base + everything as the row's note. Always
+        # clears the state and always answers.
         with DICTATION_LOCK:
-            d = dict(dictation)
-            dictation.clear()
+            d, dictation["current"] = dictation["current"], None
         if not d:
             return self.send_json(409, {"error": "not dictating"})
-        d["stop"].set()
-        d["thread"].join(timeout=60)
+        note, text = d.get("base", ""), ""
         try:
-            d["proc"].communicate(b"q", timeout=5)
-        except subprocess.TimeoutExpired:
-            d["proc"].kill()
-        try:
+            d["stop"].set()
+            d["thread"].join(timeout=60)
+            try:
+                if d["proc"].poll() is None:
+                    d["proc"].communicate(b"q", timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                d["proc"].kill()
             with open(d["pcm"], "rb") as f:
                 f.seek(d["start"])
                 rest = f.read()
             if any(voiced_chunks(rest)):
                 d["committed"] = join_note(d["committed"], transcribe_pcm(rest, d["committed"]))
-        except OSError as e:
-            print(f"stop_dictation: {e}", flush=True)
+            text = d["committed"]
+            note = join_note(d["base"], text)
+            if text and self.listed_export(d["name"], d["where"]):
+                set_export_note(note_key(d["name"], d["where"]), note[:500])
+        except Exception:
+            print(f"live: stop failed\n{traceback.format_exc()}", flush=True)
         finally:
-            if os.path.exists(d["pcm"]):
+            if os.path.exists(d.get("pcm", "")):
                 os.remove(d["pcm"])
-        note = join_note(d["base"], d["committed"])
-        if d["committed"] and self.listed_export(d["name"], d["where"]):
-            set_export_note(note_key(d["name"], d["where"]), note[:500])
-        push({"dictation": d["key"], "text": note, "done": True})
-        self.send_json(200, {"text": d["committed"], "note": note})
+        print(f"live: stop {d.get('key')} -> {text!r}", flush=True)
+        push({"dictation": d.get("key"), "text": note, "done": True})
+        self.send_json(200, {"text": text, "note": note})
+
+    def dictation_status(self):
+        with DICTATION_LOCK:
+            d = dictation["current"]
+        self.send_json(200, {"key": d["key"] if d else None})
 
     def save_export_note(self):
         # {name, where, note} for a listed file; an empty note removes it.

@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -19,9 +19,21 @@
        one is refetched. EventSource is experimental in XMLUI and has no docs
        page yet (source: xmlui/src/components/EventSource/EventSource.tsx), so
        the polls above stay as a 60 s fallback. -->
+  <!-- onOpen (load and every reconnect): ask the server which row, if any, is
+       dictating, so a reload can't leave page and server disagreeing
+       (dictation-robust). -->
   <EventSource url="http://127.0.0.1:8765/events"
+    onOpen="() => {
+      try {
+        const s = Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/status', method: 'get' });
+        dictating = (s &amp;&amp; s.key) || '';
+      } catch (e) { }
+    }"
     onMessage="(m) => {
-      if (m.dictation !== undefined) { if (m.dictation === dictating) liveNote = m.text; }
+      if (m.dictation !== undefined) {
+        if (m.error &amp;&amp; m.dictation === dictating) { dictating = ''; toast.error('Dictation stopped: ' + m.error); }
+        else if (m.dictation === dictating &amp;&amp; m.text !== undefined) liveNote = m.text;
+      }
       else if (m.changed === 'takes') takes.refetch();
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') recStatus.refetch();
@@ -80,6 +92,9 @@
     function commitNote(item) {
       const note = noteBuffer.trim();
       if (note === (item.note || '')) return;
+      // Only an edit deletes: leaving a field with an empty buffer you didn't
+      // type into never removes its note (dictation-robust).
+      if (note === '') { if (!noteEdited) return; }
       saveExportNote.execute({ name: item.name, where: item.where, note });
       exports.refetch();
     }
@@ -317,8 +332,8 @@
               onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
               <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
-                onGotFocus="noteBuffer = $item.note || ''"
-                onDidChange="(v) => noteBuffer = v"
+                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
             </Form>
           </HStack>
@@ -351,8 +366,8 @@
               onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
               <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
-                onGotFocus="noteBuffer = $item.note || ''"
-                onDidChange="(v) => noteBuffer = v"
+                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
             </Form>
           </HStack>
@@ -396,8 +411,8 @@
               onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
               <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
-                onGotFocus="noteBuffer = $item.note || ''"
-                onDidChange="(v) => noteBuffer = v"
+                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
               <Text variant="secondary" value="{$item.report}" />
             </Form>
