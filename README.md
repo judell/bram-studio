@@ -37,6 +37,9 @@ voice recorder uses AVFoundation).
   Callouts are drawn live over the video while you edit; **Apply** burns them into the
   take for export.
 - **Takes and export:** drag takes into order, then **Export** joins them into one video.
+- **After editing elsewhere:** if you cut the export in another editor, run
+  `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
+  the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.
 
 ## What you need
 
