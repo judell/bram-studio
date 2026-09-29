@@ -271,7 +271,11 @@ def transcribe_pcm(pcm, prompt=""):
     audio = buf.getvalue()
     if ensure_whisper_server():
         boundary = uuid.uuid4().hex
-        parts = [("response_format", "json"), ("temperature", "0")] + ([("prompt", prompt[-200:])] if prompt else [])
+        # temperature_inc 0 turns off whisper's temperature fallback, as Bram
+        # does: in a replay of real narration its retries froze partials
+        # mid-sentence ("…the XMLUI mark") while the window kept growing.
+        parts = ([("response_format", "json"), ("temperature", "0"), ("temperature_inc", "0.0")]
+                 + ([("prompt", prompt[-200:])] if prompt else []))
         body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
                         for k, v in parts)
         body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="w.wav"\r\n'
@@ -310,6 +314,10 @@ def join_note(*parts):
 
 def live_dictation(d):
     # The live loop for one dictation d (see start_dictation) until d["stop"].
+    # One "live:" log line per window (live-dictation-lag): when, where in the
+    # PCM it starts (odd = misaligned samples), its size, how many 100 ms
+    # chunks count as speech, whisper's latency and text, and any commit.
+    t0 = time.time()
     while not d["stop"].wait(LIVE_STEP):
         try:
             with open(d["pcm"], "rb") as f:
@@ -318,16 +326,24 @@ def live_dictation(d):
         except OSError:
             continue
         voiced = voiced_chunks(window)
+        head = (f"live: t={time.time() - t0:5.1f}s start={d['start']}{' ODD' if d['start'] % 2 else ''} "
+                f"window={len(window)}B voiced={sum(voiced)}/{len(voiced)}")
         if not any(voiced):
             if len(voiced) > 20:  # 2 s of nothing: don't let the window grow
                 d["start"] += len(window) - RATE  # keep the last 0.5 s
+                print(f"{head} silent: skip to start={d['start']}", flush=True)
+            else:
+                print(f"{head} silent", flush=True)
             continue
+        w0 = time.time()
         d["partial"] = transcribe_pcm(window, d["committed"])
+        print(f"{head} whisper={int((time.time() - w0) * 1000)}ms -> {d['partial']!r}", flush=True)
         paused = len(voiced) >= 5 and not any(voiced[-int(PAUSE_S * 10):])
         if paused or len(window) >= LIVE_CAP * RATE * 2:
             d["committed"] = join_note(d["committed"], d["partial"])
             d["partial"] = ""
             d["start"] += len(window)
+            print(f"live: commit ({'pause' if paused else 'cap'}) start={d['start']}", flush=True)
         push({"dictation": d["key"], "text": join_note(d["base"], d["committed"], d["partial"])})
 
 
@@ -723,8 +739,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(409, {"error": "already dictating"})
             pcm = os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
             proc = subprocess.Popen(
+                # -flush_packets 1: without it ffmpeg wrote the PCM in 256 KiB
+                # blocks (~8 s), so the live loop saw nothing for 10 s, then
+                # identical windows until the next block (live-dictation-lag).
                 ["ffmpeg", "-v", "error", "-y", "-f", "avfoundation", "-i", f":{NOTE_MIC}",
-                 "-ac", "1", "-ar", str(RATE), "-f", "s16le", pcm],
+                 "-ac", "1", "-ar", str(RATE), "-flush_packets", "1", "-f", "s16le", pcm],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             dictation.update(proc=proc, pcm=pcm, name=name, where=where,
                              key=f"{where}/{name}", base=str(body.get("base") or ""),
