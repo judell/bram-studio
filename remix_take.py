@@ -21,8 +21,9 @@ reload it. A take whose source is at or above the floor is left alone.
 Takes rendered before the voice gate kept the mic out where the source
 speaks (voicegate.py) have the source's own voice twice: in the source track
 and in the mic's recording of the speakers. --regate redoes such a take's
-voice from its raw mic slice (denoise, gate, level) and its mix, with
-record.sh's limiter. The audio is replaced the same way. A take cut or paused
+voice from its raw mic slice (denoise, gate, level), levels its source track
+again (one gain, where older takes had loudnorm riding it) and redoes the
+mix, with record.sh's limiter. The audio is replaced the same way. A take cut or paused
 since it was rendered has those edits (cutsAfterRender in its JSON) replayed
 on the new audio; one narrated over is refused, since that audio exists only
 in the take. An Undo still on offer for the take's last edit no longer
@@ -173,7 +174,9 @@ def regate(stamp, dry_run):
         os.remove(tmp_clean)
         return
     vlevel = level_filter(tmp_clean, VOICE_PRE)
-    slevel = meta.get("sourceLevel") or level_filter(src_wav, floor=SOURCE_FLOOR)
+    # The source's level again too: a take's stored sourceLevel may be the
+    # old loudnorm filter, which rode the gain (voicegate.level_filter).
+    slevel = level_filter(src_wav, floor=SOURCE_FLOOR)
     steps, out = edits
     print(f"{take}: voice {'silent' if vlevel == 'anull' else 'leveled'}, {len(steps)} edit"
           f"{'' if len(steps) == 1 else 's'} to replay ({', '.join(os.path.relpath(p, HERE) for p in targets)})")

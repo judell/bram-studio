@@ -11,7 +11,7 @@ past full scale (take-20261001-150809, heard as scratchiness). record.sh has
 always assumed the narrator doesn't talk over the source's sound; the Narrate
 row in the take editor is how to do that afterwards.
 
-level_filter() is the two-pass loudnorm both tracks get.
+level_filter() is the leveling both tracks get: one gain and a limiter.
 """
 import array
 import json
@@ -38,15 +38,26 @@ MIN_KEPT_S = 0.3
 # the source's voice scored 0.52-0.85 (21 segments), narration 0.00-0.12 (38).
 BLEED_R = 0.3
 MATCH_RATE = 4000
-# The take's leveled mix ends in this: two tracks leveled on their own can
-# sum past full scale. record.sh's mix has the same filter.
+# Each leveled track ends in this, and so does the take's leveled mix: two
+# tracks leveled on their own can sum past full scale. record.sh's mix has
+# the same filter.
 LIMITER = "alimiter=limit=0.841:attack=5:release=80:level=false"  # -1.5 dB
+MAX_LIMITING = 6.0  # dB a track's loudest peak may be pushed into the limiter
 
 
 def level_filter(path, pre=None, floor=None):
-    # Two-pass loudnorm to -16 LUFS / -1.5 dBTP: measure, then a filter that
-    # applies the measured values linearly. A silent track has no loudness to
-    # normalize (measured_I is -inf): anull. So does one below floor.
+    # The filter that levels a track: `pre`, one gain toward -16 LUFS, and the
+    # limiter. loudnorm only measures. It isn't used to apply the gain: asked
+    # for linear=true it still falls back to its dynamic mode when the track's
+    # loudness range is over its target or the gain would push the peak past
+    # the true-peak target, and by those conditions it did on every track of
+    # every take up to 2026-10-01. Riding the gain, it raised a source's quiet
+    # sibilants 18 dB and its loud words 5 (take-20261001-150809, heard as
+    # scratchiness), and raised the room between a narrator's words. The gain
+    # is capped so the loudest peak goes at most MAX_LIMITING dB into the
+    # limiter: a track with a wide range ends a few dB under -16 instead.
+    # A silent track has no loudness to set (measured I is -inf): anull. So
+    # does one below floor.
     chain = f"{pre}," if pre else ""
     m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", path, "-af",
                          f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
@@ -54,12 +65,14 @@ def level_filter(path, pre=None, floor=None):
     ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
     if "inf" in ln["input_i"]:
         return "anull"
-    if floor is not None and float(ln["input_i"]) < floor:
+    loud, peak = float(ln["input_i"]), float(ln["input_tp"])
+    if floor is not None and loud < floor:
         print(f"source level: {ln['input_i']} LUFS, below {floor}: not boosted")
         return "anull"
-    return (f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
-            f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:"
-            "linear=true")
+    gain = min(-16.0 - loud, -1.5 - peak + MAX_LIMITING)
+    print(f"level: {os.path.basename(path)} at {loud:.1f} LUFS, peak {peak:.1f} dB: {gain:+.1f} dB"
+          + ("" if gain == -16.0 - loud else f" (capped; {-16.0 - loud:+.1f} would reach -16)"))
+    return f"{chain}volume={gain:.2f}dB,{LIMITER}"
 
 
 def speech_segments(path):
