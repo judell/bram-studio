@@ -92,7 +92,10 @@ json="takes/$take.json"
 # holds). Each is leveled to -16 LUFS on its own (render.py's voiceLevel and
 # sourceLevel), so narration and source match whatever recorded the source.
 # normalize=0 keeps amix from halving them; the narrator doesn't talk over
-# the source's sound. The mix without leveling is kept beside it, unregistered,
+# the source's sound (render.py's gate drops the mic where the source speaks).
+# Two tracks leveled apart can still sum past full scale, so the leveled mix
+# ends in a -1.5 dB limiter (voicegate.py's LIMITER; remix_take.py uses the
+# same). The mix without leveling is kept beside it, unregistered,
 # as <take>-unleveled.mp4. (The registered file keeps its old "-raw" name.)
 vlevel=$(jq -r '.voiceLevel // "anull"' "$json")
 # The voice render.py leveled: denoised (takes/<take>-voice-clean.wav) unless
@@ -104,7 +107,7 @@ if [ -f "takes/$take-source.wav" ] && [ -n "$slevel" ]; then
     -filter_complex "[1:a]afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[v][2:a]amix=inputs=2:normalize=0[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -shortest "narrated/$take-unleveled.mp4"
   ffmpeg -v error -y -i "narrated/$take.mp4" -i "$vfile" -i "takes/$take-source.wav" \
-    -filter_complex "[1:a]$vlevel,aresample=48000,afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[2:a]$slevel,aresample=48000[s];[v][s]amix=inputs=2:normalize=0[a]" \
+    -filter_complex "[1:a]$vlevel,aresample=48000,afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];[2:a]$slevel,aresample=48000[s];[v][s]amix=inputs=2:normalize=0,alimiter=limit=0.841:attack=5:release=80:level=false[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 160k -shortest "narrated/$take-raw.mp4"
 else
   ffmpeg -v error -y -i "narrated/$take.mp4" -i "takes/$take.wav" -map 0:v -map 1:a -c:v copy \

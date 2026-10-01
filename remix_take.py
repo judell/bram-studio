@@ -15,6 +15,18 @@ copy in media/.clean/; the video is copied as-is, so burned-in callouts stay.
 The old files go to media/.trash/ first (<name>-before-remix-<stamp>). The
 take's JSON gets sourceLevel "anull", and its row's url a new ?v= so players
 reload it. A take whose source is at or above the floor is left alone.
+
+    python3 remix_take.py --regate [--dry-run] <take stamp> [...]
+
+Takes rendered before the voice gate kept the mic out where the source
+speaks (voicegate.py) have the source's own voice twice: in the source track
+and in the mic's recording of the speakers. --regate redoes such a take's
+voice from its raw mic slice (denoise, gate, level) and its mix, with
+record.sh's limiter. The audio is replaced the same way. A take cut or paused
+since it was rendered has those edits (cutsAfterRender in its JSON) replayed
+on the new audio; one narrated over is refused, since that audio exists only
+in the take. An Undo still on offer for the take's last edit no longer
+applies afterwards (the file has changed).
 """
 import json
 import os
@@ -23,10 +35,13 @@ import sqlite3
 import subprocess
 import sys
 import time
+import wave
+
+from voicegate import LIMITER, SOURCE_FLOOR, VOICE_PRE, gate_voice, level_filter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK, MEDIA = os.path.join(HERE, "work"), os.path.join(HERE, "media")
-SOURCE_FLOOR = -35.0  # render.py's
+FMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 
 
 def loudness(path):
@@ -78,15 +93,121 @@ def remix(stamp, dry_run):
     meta["sourceLevel"] = "anull"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=1)
+    bump_url(take)
+
+
+def bump_url(take):
     db = sqlite3.connect(os.path.join(HERE, "studio.db"))
     db.execute("UPDATE takes SET url = substr(url, 1, instr(url || '?', '?') - 1) || '?v=' || ? WHERE file = ?",
                (int(time.time()), f"{take}-raw.mp4"))
     db.commit()
 
 
+def replay_edits(edits, dur):
+    # The filter steps that make serve_media.py's cuts and pauses (its
+    # cut_take and pause_take, audio side) again on [m0], a mix `dur` seconds
+    # long, in the order they were made. Returns (steps, last label), or None
+    # for an edit that can't be replayed.
+    steps, n = [], 0
+    for e in edits:
+        kind, rec = ("cut", e) if isinstance(e, list) else next(iter(e.items()))
+        cur, n = f"[m{n}]", n + 1
+        if kind == "cut":
+            a, b = max(0.0, rec[0]), min(dur, rec[1])
+            head, tail = a > 0.02, dur - b > 0.02
+            if head and tail:
+                steps.append(f"{cur}asplit[h{n}][t{n}];"
+                             f"[h{n}]atrim=start=0:end={a:.3f},asetpts=PTS-STARTPTS,"
+                             f"afade=t=out:st={a - 0.01:.3f}:d=0.01[x{n}];"
+                             f"[t{n}]atrim=start={b:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.01[y{n}];"
+                             f"[x{n}][y{n}]concat=n=2:v=0:a=1[m{n}]")
+            elif head:
+                steps.append(f"{cur}atrim=start=0:end={a:.3f},asetpts=PTS-STARTPTS[m{n}]")
+            else:
+                steps.append(f"{cur}atrim=start={b:.3f},asetpts=PTS-STARTPTS[m{n}]")
+            dur -= b - a
+        elif kind == "pause":
+            at, secs = min(max(0.0, rec[0]), dur), rec[1]
+            quiet = f"anullsrc=r=48000:cl=stereo,atrim=duration={secs:.3f},{FMT}[q{n}];"
+            if at < 0.02:
+                steps.append(f"{quiet}{cur}afade=t=in:d=0.01[y{n}];[q{n}][y{n}]concat=n=2:v=0:a=1[m{n}]")
+            elif at > dur - 0.02:
+                steps.append(f"{quiet}{cur}afade=t=out:st={max(0, dur - 0.01):.3f}:d=0.01[x{n}];"
+                             f"[x{n}][q{n}]concat=n=2:v=0:a=1[m{n}]")
+            else:
+                steps.append(f"{quiet}{cur}asplit[h{n}][t{n}];"
+                             f"[h{n}]atrim=start=0:end={at:.3f},asetpts=PTS-STARTPTS,"
+                             f"afade=t=out:st={max(0, at - 0.01):.3f}:d=0.01[x{n}];"
+                             f"[t{n}]atrim=start={at:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.01[y{n}];"
+                             f"[x{n}][q{n}][y{n}]concat=n=3:v=0:a=1[m{n}]")
+            dur += secs
+        else:
+            return None
+    return steps, f"[m{n}]"
+
+
+def regate(stamp, dry_run):
+    take = f"take-{stamp}"
+    meta_path = os.path.join(WORK, "takes", f"{take}.json")
+    raw = os.path.join(WORK, "takes", f"{take}.wav")
+    src_wav = os.path.join(WORK, "takes", f"{take}-source.wav")
+    if not all(os.path.exists(p) for p in (meta_path, raw, src_wav)):
+        return print(f"{take}: no JSON, raw voice or source track in work/takes/; skipped")
+    meta = json.load(open(meta_path))
+    with wave.open(raw) as w:
+        dur = w.getnframes() / w.getframerate()
+    edits = replay_edits(meta.get("cutsAfterRender") or [], dur)
+    if edits is None:
+        return print(f"{take}: has an edit that can't be replayed ({meta['cutsAfterRender']}); not re-gated")
+    targets = [p for p in (os.path.join(MEDIA, f"{take}-raw.mp4"), os.path.join(MEDIA, ".clean", f"{take}-raw.mp4"))
+               if os.path.exists(p)]
+    if not targets:
+        return print(f"{take}: no take file in media/; skipped")
+    # The voice again as render.py makes it: denoise, gate, level.
+    clean = os.path.join(WORK, "takes", f"{take}-voice-clean.wav")
+    tmp_clean = clean[:-4] + ".regate.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", raw, "-af", "anlmdn=s=0.0005:p=0.002:r=0.006", tmp_clean],
+                   check=True)
+    print(f"{take}: ", end="", flush=True)
+    if not gate_voice(tmp_clean, src_wav, tmp_clean):
+        os.remove(tmp_clean)
+        return
+    vlevel = level_filter(tmp_clean, VOICE_PRE)
+    slevel = meta.get("sourceLevel") or level_filter(src_wav, floor=SOURCE_FLOOR)
+    steps, out = edits
+    print(f"{take}: voice {'silent' if vlevel == 'anull' else 'leveled'}, {len(steps)} edit"
+          f"{'' if len(steps) == 1 else 's'} to replay ({', '.join(os.path.relpath(p, HERE) for p in targets)})")
+    if dry_run:
+        os.remove(tmp_clean)
+        return
+    # record.sh's leveled mix, then the take's later edits.
+    mix = ";".join([f"[1:a]{vlevel},aresample=48000,afade=t=in:d=0.1,pan=stereo|c0=c0|c1=c0[v];"
+                    f"[2:a]{slevel},aresample=48000[s];[v][s]amix=inputs=2:normalize=0,{LIMITER},{FMT}[m0]", *steps])
+    trash = os.path.join(MEDIA, ".trash")
+    os.makedirs(trash, exist_ok=True)
+    when = time.strftime("%Y%m%d-%H%M%S")
+    tmps = []
+    for path in targets:
+        tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.remix.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-i", tmp_clean, "-i", src_wav,
+                        "-filter_complex", mix, "-map", "0:v", "-map", out, "-c:v", "copy",
+                        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-shortest", tmp], check=True)
+        tmps.append(tmp)
+    for path, tmp in zip(targets, tmps):
+        kind = "clean-" if os.sep + ".clean" + os.sep in path else ""
+        shutil.move(path, os.path.join(trash, f"{take}-raw-{kind}before-remix-{when}.mp4"))
+        os.replace(tmp, path)
+    os.replace(tmp_clean, clean)
+    meta.update(voiceFile=os.path.basename(clean), voiceLevel=vlevel, sourceLevel=slevel)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=1)
+    bump_url(take)
+
+
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--dry-run"]
+    flags = ("--dry-run", "--regate")
+    args = [a for a in sys.argv[1:] if a not in flags]
     if not args:
         sys.exit(__doc__.split("\n\n")[1])
     for stamp in args:
-        remix(stamp, "--dry-run" in sys.argv)
+        (regate if "--regate" in sys.argv else remix)(stamp, "--dry-run" in sys.argv)

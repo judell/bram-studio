@@ -26,10 +26,8 @@ import array
 import math
 import json
 import os
-import re
 import subprocess
 import sys
-import tempfile
 import wave
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
@@ -377,34 +375,12 @@ if strokes or shapes:
     print(f"ink: {len(strokes)} strokes, {len(shapes)} shapes, {drawn} frames drawn "
           f"({len(pointer)} pointer samples logged, not drawn)")
 
-# A source track quieter than this has no program, only its room: mixed as
-# recorded, not normalized. Leveling one to -16 LUFS turned up its rumble by
-# up to ~30 dB (takes measured -46.6 and -48.7 LUFS; a real source, -18.7).
-# remix_take.py uses the same floor.
-SOURCE_FLOOR = -35.0
-
-
-def level_filter(path, pre=None, floor=None):
-    # Two-pass loudnorm to -16 LUFS / -1.5 dBTP: measure, then a filter that
-    # applies the measured values linearly. A silent track has no loudness to
-    # normalize (measured_I is -inf): anull. So does one below floor.
-    chain = f"{pre}," if pre else ""
-    m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", path, "-af",
-                         f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
-                        capture_output=True, text=True).stderr
-    ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
-    if "inf" in ln["input_i"]:
-        return "anull"
-    if floor is not None and float(ln["input_i"]) < floor:
-        print(f"source level: {ln['input_i']} LUFS, below {floor}: not boosted")
-        return "anull"
-    return (f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
-            f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:"
-            "linear=true")
-
+# The gate and the leveling live in voicegate.py, which remix_take.py shares.
+from voicegate import SOURCE_FLOOR, VOICE_PRE, gate_voice, level_filter  # noqa: E402
 
 # The voice gets a highpass and gentle compression first; the source's audio
-# is already a finished mix, so only its loudness is set. record.sh applies
+# is already a finished mix, so only its loudness is set (and not at all when
+# it's below SOURCE_FLOOR: no program, only its room). record.sh applies
 # both (voiceLevel, sourceLevel in the take's JSON) when it mixes.
 voice_wav = wav
 if denoise.wait() == 0 and os.path.exists(clean_wav):
@@ -412,63 +388,15 @@ if denoise.wait() == 0 and os.path.exists(clean_wav):
 else:
     print("denoise failed; leveling the raw voice")
 
-# Keep the voice only where there's speech, whether the source is playing or
-# held: the mic otherwise records the room, which leveling would raise. Silero
-# VAD (whisper.cpp's whisper-vad-speech-segments) finds the speech; loudness
-# can't, since quiet words can be softer than a noisy room. Segments are
-# padded 250 ms so word edges survive, with 300 ms minimum silence so the gate
-# doesn't chatter, and 50 ms fades. Written to the clean file, so the raw voice
-# (the unleveled comparison) is untouched. No speech: a silent track, which
+# Keep the voice only where the narrator speaks, whether the source is playing
+# or held: the mic otherwise records the room, which leveling would raise, and
+# the source's own voice from the speakers, which would be in the take twice
+# (voicegate.gate_voice). Written to the clean file, so the raw voice (the
+# unleveled comparison) is untouched. No speech: a silent track, which
 # leveling leaves alone. No VAD: the voice isn't gated.
-VAD_MODEL = os.environ.get("VAD_MODEL", os.path.expanduser("~/.local/share/whisper-models/ggml-silero-v5.1.2.bin"))
-
-
-def speech_segments(path):
-    # [(start, end)] seconds of speech in a voice file, or None if the VAD
-    # can't run (tool or model missing, or it failed).
-    if not os.path.exists(VAD_MODEL):
-        return None
-    with tempfile.TemporaryDirectory() as tmp:
-        w16 = os.path.join(tmp, "v.wav")
-        try:
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-ac", "1", "-ar", "16000", w16], check=True)
-            r = subprocess.run(["whisper-vad-speech-segments", "-vm", VAD_MODEL, "-f", w16,
-                                "--vad-speech-pad-ms", "250", "--vad-min-silence-duration-ms", "300"],
-                               capture_output=True, text=True)
-        except (OSError, subprocess.CalledProcessError):
-            return None
-    if r.returncode:
-        return None
-    return [(float(a), float(b)) for a, b in
-            re.findall(r"VAD segment \d+: start = ([\d.]+), end = ([\d.]+)", r.stdout + r.stderr)]
-
-
-segs = speech_segments(voice_wav)
-with wave.open(voice_wav) as r:
-    vparams = r.getparams()
-    v = array.array("h", r.readframes(r.getnframes()))
-if segs is None:
-    print(f"voice gate: no VAD ({VAD_MODEL} or whisper-vad-speech-segments missing); voice not gated")
-elif vparams.nchannels == 1 and vparams.sampwidth == 2:
-    fr, gated, speech_s = vparams.framerate, array.array("h", bytes(2 * len(v))), 0.0
-    fade = int(0.05 * fr)
-    for a, b in segs:
-        i0, i1 = max(0, int(a * fr)), min(len(v), int(b * fr))
-        if i1 <= i0:
-            continue
-        gated[i0:i1] = v[i0:i1]
-        n = min(fade, (i1 - i0) // 2)
-        for k in range(n):
-            gated[i0 + k] = int(v[i0 + k] * k / n)
-            gated[i1 - 1 - k] = int(v[i1 - 1 - k] * k / n)
-        speech_s += (i1 - i0) / fr
-    with wave.open(clean_wav, "wb") as w:
-        w.setparams(vparams)
-        w.writeframes(gated.tobytes())
+if gate_voice(voice_wav, src_wav, clean_wav):
     voice_wav = clean_wav
-    print(f"voice gate: {len(segs)} speech segment{'s' if len(segs) != 1 else ''}, "
-          f"{speech_s:.1f}s kept of {len(v) / fr:.1f}s")
-level = level_filter(voice_wav,"highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
+level = level_filter(voice_wav, VOICE_PRE)
 source_level = level_filter(src_wav, floor=SOURCE_FLOOR) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", voice_wav, "-filter_complex",
