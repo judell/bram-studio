@@ -374,7 +374,10 @@
            row whose file an editor is still writing shows "writing… N MB" and
            waits to offer Level. -->
       <Theme size-Spinner="1em" paddingRight-content-ExpandableItem="0">
-      <ExpandableItem summary="Exports" iconPosition="start"
+      <!-- Hidden while a recording is set up or running, to leave the player
+           room; it comes back as it was left (the expanded state is read
+           from localStorage again). -->
+      <ExpandableItem summary="Exports" iconPosition="start" when="{!capturing}"
         initiallyExpanded="{readLocalStorage('studio.exportsExpanded', false)}"
         onExpandedChange="(open) => writeLocalStorage('studio.exportsExpanded', open)">
       <VStack>
@@ -604,7 +607,7 @@
           }"
           onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
           onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
-        <MediaPlayer id="sourcePlayer" maxHeight="65vh"
+        <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => sourceAspect = e.videoWidth / e.videoHeight"
           onPlay="(e) => { if (capturing) recEvents = [...recEvents, { event: 'play', currentTime: e.currentTime, wallMs: Date.now() }] }"
@@ -777,7 +780,7 @@
               calloutOut = calloutIn + 3;
             }
           }">
-          <MediaPlayer id="takePlayer" autoPlay="true" maxHeight="65vh"
+          <MediaPlayer id="takePlayer" autoPlay="true" maxHeight="55vh"
             muted="{!!narrating}" controls="{!narrating}"
             src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
             onLoadedMetadata="(e) => takeAspect = e.videoWidth / e.videoHeight"
