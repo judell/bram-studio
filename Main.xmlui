@@ -36,7 +36,7 @@
       }
       else if (m.changed === 'takes') { takes.refetch(); undoableCut.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
-      else if (m.changed === 'record') recStatus.refetch();
+      else if (m.changed === 'record') { recStatus.refetch(); undoableCut.refetch(); }
       else if (m.changed === 'exports') exports.refetch();
     }" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"

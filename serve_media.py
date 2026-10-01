@@ -163,6 +163,28 @@ EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
 # A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
 EDIT_SIDECAR = re.compile(r"-before-(cut|pause)-\d{8}-\d{6}\.json$")
+# Starting a recording ends the Undo offer for edits made before it: the time
+# is kept here (a file, so it holds across restarts) and GET /takes/last-cut
+# skips older sidecars. They stay in .trash, and /takes/uncut still takes one
+# by name.
+UNDO_FLOOR = os.path.join(ROOT, ".trash", ".undo-floor")
+
+
+def set_undo_floor():
+    try:
+        os.makedirs(os.path.dirname(UNDO_FLOOR), exist_ok=True)
+        with open(UNDO_FLOOR, "w") as f:
+            f.write(str(time.time()))
+    except OSError as e:
+        print(f"set_undo_floor: {e}", flush=True)
+
+
+def undo_floor():
+    try:
+        with open(UNDO_FLOOR) as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return 0.0
 
 # Which files in media/exports/ Studio wrote itself, so the lists can tell
 # them from an editor's output even when the editor reuses the name (ScreenPal
@@ -1403,10 +1425,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # name. The page asks this rather than remembering its own last edit,
         # so the line survives a reload. An edit is undoable while its take's
         # file is still the one that edit wrote; undoing a second edit makes
-        # the first one undoable again.
+        # the first one undoable again. Edits older than the last recording's
+        # start (UNDO_FLOOR) are no longer offered.
         trash = os.path.join(ROOT, ".trash")
+        floor = undo_floor()
         try:
-            names = sorted((n for n in os.listdir(trash) if EDIT_SIDECAR.search(n)),
+            names = sorted((n for n in os.listdir(trash) if EDIT_SIDECAR.search(n)
+                            and os.path.getmtime(os.path.join(trash, n)) >= floor),
                            key=lambda n: os.path.getmtime(os.path.join(trash, n)), reverse=True)
         except OSError:
             names = []
@@ -1480,6 +1505,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "the running take didn't stop in time"})
         if self.recording() or testing.locked():
             return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
+        set_undo_floor()  # a new recording: earlier take edits are settled work
         log = open(os.path.join(HERE, "record.log"), "a")
         recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), source_paths()[source]],
                                     cwd=HERE, stdin=subprocess.DEVNULL,
