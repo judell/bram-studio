@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -174,6 +174,12 @@
   <DataSource id="undoableCut" url="http://127.0.0.1:8765/takes/last-cut" />
   <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
     body="{{ id: $param.id, start: $param.start, end: $param.end }}"
+    invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <!-- Insert a pause: hold the frame at a point for some seconds, with silence
+       (serve_media.py's /takes/pause). Undone like a cut, by the same line. -->
+  <APICall id="pauseTake" method="post" url="http://127.0.0.1:8765/takes/pause"
+    body="{{ id: $param.id, at: $param.at, seconds: $param.seconds }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <APICall id="uncutTake" method="post" url="http://127.0.0.1:8765/takes/uncut"
@@ -815,6 +821,53 @@
             " />
           <Spinner when="{cutTake.inProgress}" />
         </HStack>
+        <!-- Insert a pause: one handle marks where (moving it seeks the player
+             to the frame that will be held), a NumberBox says how long. The
+             length is remembered in localStorage as the next default
+             (https://www.xmlui.org/docs/globals#local-storage-utilities). The
+             handle is placed from the playhead by re-seeding initialValue
+             (pauseSeed), as for the cut slider. -->
+        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
+          <Text variant="strong" value="Pause" />
+          <Slider id="pauseSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+            initialValue="{pauseSeed}"
+            valueFormat="{(v) => v.toFixed(2) + 's'}"
+            enabled="{!pauseTake.inProgress}"
+            onDidChange="(v) => {
+              cutPreview = null;
+              pauseAt = v;
+              takePlayer.seek(v);
+            }" />
+          <Button label="Set at playhead" size="xs" variant="outlined"
+            tooltip="Put the pause at the playhead"
+            onClick="
+              pauseSeed = takePlayer.getCurrentTime();
+              pauseAt = pauseSeed;
+            " />
+          <NumberBox width="110px" initialValue="{pauseSecs}" minValue="{0.5}" maxValue="{30}" step="{0.5}"
+            endText="s" tooltip="How long the pause lasts (remembered as the default)"
+            onDidChange="(v) => {
+              if (v >= 0.5 &amp;&amp; v &lt;= 30) {
+                pauseSecs = v;
+                writeLocalStorage('studio.pauseSeconds', v);
+              }
+            }" />
+          <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
+            tooltip="{'Hold the frame at ' + pauseAt.toFixed(2) + ' s for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
+            enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress}"
+            handlerTimeoutMs:onClick="0"
+            onClick="
+              cutPreview = null;
+              pauseTake.execute({ id: editTake, at: pauseAt, seconds: pauseSecs });
+              cutSeq = cutSeq + 1;
+              undoableCut.refetch();
+              takes.refetch();
+              callouts.refetch();
+              savedSprites.refetch();
+              applyState.refetch();
+            " />
+          <Spinner when="{pauseTake.inProgress}" />
+        </HStack>
         <Timer interval="40" enabled="{!!cutPreview}"
           onTick="
             const t = takePlayer.getCurrentTime();
@@ -948,9 +1001,9 @@
            the top (register.py). -->
       <HStack when="{!!undoableCut.value &amp;&amp; !!undoableCut.value.undo}"
         verticalAlignment="center">
-        <Text value="Cut {undoableCut.value.start}–{undoableCut.value.end} s from {undoableCut.value.name}." overflowMode="flow" />
+        <Text value="{undoableCut.value.what} {undoableCut.value.name}." overflowMode="flow" />
         <Button label="Undo" size="sm" variant="outlined" handlerTimeoutMs:onClick="0"
-          enabled="{!uncutTake.inProgress &amp;&amp; !cutTake.inProgress}"
+          enabled="{!uncutTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
           onClick="
             uncutTake.execute(undoableCut.value.undo);
             cutSeq = cutSeq + 1;
@@ -997,6 +1050,7 @@
                 playing = $item.url;
                 editTake = $item.id;
                 editFile = $item.file;
+                pauseAt = 0; pauseSeed = 0;
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 cutPreview = null;
               }

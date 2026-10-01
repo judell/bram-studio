@@ -18,8 +18,9 @@ POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row,
 keeping both in a .trash/<stem>.json that POST /undelete {undo} restores;
 POST /takes/cut {id, start, end} removes that stretch from a take (and from
-its clean copy, shifting its overlays), and POST /takes/uncut {undo} puts it
-back;
+its clean copy, shifting its overlays), POST /takes/pause {id, at, seconds}
+holds the frame there with silence, POST /takes/uncut {undo} undoes either,
+and GET /takes/last-cut names the latest edit still undoable;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
 POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
@@ -160,6 +161,8 @@ def watch_changes():
 
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
+# A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
+EDIT_SIDECAR = re.compile(r"-before-(cut|pause)-\d{8}-\d{6}\.json$")
 
 # Which files in media/exports/ Studio wrote itself, so the lists can tell
 # them from an editor's output even when the editor reuses the name (ScreenPal
@@ -670,6 +673,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.undelete_take()
         if self.path == "/takes/cut":
             return self.cut_take()
+        if self.path == "/takes/pause":
+            return self.pause_take()
         if self.path == "/takes/uncut":
             return self.uncut_take()
         if self.path == "/reorder":
@@ -1236,11 +1241,95 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS"
                       f"{''.join(',' + x for x in fades)}[a{i}];")
         chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
+        cut = end - start
+
+        def retime(t_in, t_out):
+            if t_out <= start:
+                return t_in, t_out
+            if t_in >= end:
+                return t_in - cut, t_out - cut
+            # overlaps the cut: keep what's left of it on either side
+            return min(t_in, start), (t_out - cut if t_out > end else start)
+
+        done = self.apply_take_edit(db, row, src, chain, "cut", [round(start, 3), round(end, 3)], retime)
+        if done:
+            self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "cut", "start": round(start, 2),
+                                 "end": round(end, 2), "duration": done[0], "undo": done[1]})
+
+    def pause_take(self):
+        # {id, at, seconds}: hold the frame at `at` for that long, with silence.
+        # Made like a cut (both files, same encoding, same undo). Overlays
+        # starting at or after `at` move later; one on the held frame is
+        # extended, so it stays up through the pause, as it does in the picture.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        src = os.path.join(ROOT, row["file"])
+        if not os.path.isfile(src):
+            return self.send_json(404, {"error": f"{row['file']} is missing"})
+        try:
+            at, secs = float(body.get("at")), float(body.get("seconds"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "at and seconds must be numbers"})
+        dur = float(probe(src, "format=duration") or 0)
+        at = min(max(0.0, at), dur)
+        if not 0.1 <= secs <= 60:
+            return self.send_json(400, {"error": "the pause must be between 0.1 and 60 s"})
+        fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+        quiet = f"anullsrc=r=48000:cl=stereo,atrim=duration={secs:.3f},{fmt}[as];"
+        if at < 0.02:  # hold the first frame
+            chain = (f"[0:v]tpad=start_mode=clone:start_duration={secs:.3f}[v];{quiet}"
+                     f"[0:a]{fmt},afade=t=in:d=0.01[a1];[as][a1]concat=n=2:v=0:a=1[a]")
+        elif at > dur - 0.02:  # hold the last frame
+            chain = (f"[0:v]tpad=stop_mode=clone:stop_duration={secs:.3f}[v];{quiet}"
+                     f"[0:a]{fmt},afade=t=out:st={max(0, dur - 0.01):.3f}:d=0.01[a0];[a0][as]concat=n=2:v=0:a=1[a]")
+        else:
+            chain = (f"[0:v]trim=start=0:end={at:.3f},setpts=PTS-STARTPTS,"
+                     f"tpad=stop_mode=clone:stop_duration={secs:.3f}[v0];"
+                     f"[0:v]trim=start={at:.3f},setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v];"
+                     f"[0:a]atrim=start=0:end={at:.3f},asetpts=PTS-STARTPTS,{fmt},"
+                     f"afade=t=out:st={max(0, at - 0.01):.3f}:d=0.01[a0];{quiet}"
+                     f"[0:a]atrim=start={at:.3f},asetpts=PTS-STARTPTS,{fmt},afade=t=in:d=0.01[a1];"
+                     "[a0][as][a1]concat=n=3:v=0:a=1[a]")
+
+        # The frame the pause holds: the last one before `at` (the first frame
+        # when the pause is at the very start). An overlay on that frame is in
+        # the held picture, so it must last through the pause: that includes
+        # one ending exactly at `at` (a shape running to the end of the take,
+        # or clipped there by a cut), which `t_out > at` used to miss, leaving
+        # the editor showing a bare frame while the burned take kept the shape.
+        held = 0.0 if at < 0.02 else at - 0.04
+        eps = 0.005
+
+        def retime(t_in, t_out):
+            if t_in <= held + eps and t_out > held + eps:
+                return t_in, t_out + secs
+            if t_in >= at - eps:
+                return t_in + secs, t_out + secs
+            return t_in, t_out
+
+        done = self.apply_take_edit(db, row, src, chain, "pause", [round(at, 3), round(secs, 3)], retime)
+        if done:
+            self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "pause", "at": round(at, 2),
+                                 "seconds": round(secs, 2), "duration": done[0], "undo": done[1]})
+
+    def apply_take_edit(self, db, row, src, chain, kind, record, retime):
+        # The part a cut and a pause share. Runs the ffmpeg filter `chain`
+        # (ending in [v] and [a]) on the take's MP4 and its clean copy, into
+        # hidden temp files first, so a failure changes nothing. Moves the
+        # originals to media/.trash/ with a sidecar (<stem>-before-<kind>-<when>
+        # .json: the take's row, its overlays, `record`), swaps the new files
+        # in, retimes the overlays with retime(t_in, t_out), and updates the
+        # take's row. Returns (new duration, sidecar name), or None after
+        # sending an error.
         clean = os.path.join(ROOT, ".clean", row["file"])
         targets = [src] + ([clean] if os.path.isfile(clean) else [])
         tmps = []
         for path in targets:
-            tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.cut.mp4")
+            tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.{kind}.mp4")
             r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-filter_complex", chain,
                                 "-map", "[v]", "-map", "[a]", *overlay.ENC,
                                 "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", tmp],
@@ -1250,29 +1339,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 for t in tmps:
                     if os.path.exists(t):
                         os.remove(t)
-                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["cut failed"])[-1]})
+                self.send_json(500, {"error": (r.stderr.strip().splitlines() or [f"{kind} failed"])[-1]})
+                return None
         trash = os.path.join(ROOT, ".trash")
         os.makedirs(trash, exist_ok=True)
         stem, when = row["file"][:-4], time.strftime("%Y%m%d-%H%M%S")
-        saved = {"take": dict(row), "cut": [round(start, 3), round(end, 3)], "files": {},
+        saved = {"take": dict(row), "edit": kind, kind: record, "files": {},
                  "overlays": [dict(r) for r in db.execute(
                      "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))]}
         was_applied = row["overlay_applied"] == db.execute(overlay.APPLIED_SQL, (row["id"],)).fetchone()[0]
         for path, tmp in zip(targets, tmps):
-            kind = "clean-" if path == clean else ""
-            trashed = f"{stem}-{kind}before-cut-{when}.mp4"
+            which = "clean-" if path == clean else ""
+            trashed = f"{stem}-{which}before-{kind}-{when}.mp4"
             shutil.move(path, os.path.join(trash, trashed))
             os.replace(tmp, path)
             saved["files"][os.path.relpath(path, ROOT)] = trashed
-        cut = end - start
         for o in saved["overlays"]:
-            t_in, t_out = o["t_in"], o["t_out"]
-            if t_out <= start:
+            new = retime(o["t_in"], o["t_out"])
+            if new == (o["t_in"], o["t_out"]):
                 continue
-            if t_in >= end:
-                new = (t_in - cut, t_out - cut)
-            else:  # overlaps the cut: keep what's left of it on either side
-                new = (min(t_in, start), t_out - cut if t_out > end else start)
             if new[1] - new[0] < 0.05:
                 db.execute("DELETE FROM overlays WHERE id = ?", (o["id"],))
             else:
@@ -1287,18 +1372,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db.commit()
         st = os.stat(src)
         saved["after"] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
-        undo = f"{stem}-before-cut-{when}.json"
+        undo = f"{stem}-before-{kind}-{when}.json"
         with open(os.path.join(trash, undo), "w") as f:
             json.dump(saved, f, indent=1)
-        # The take's separate tracks in work/takes/ aren't cut: note it in the
-        # take's JSON so remix_take.py refuses rather than mis-mixes.
-        self.mark_take_cut(row["file"], [round(start, 3), round(end, 3)])
-        self.send_json(200, {"id": row["id"], "name": row["name"], "start": round(start, 2),
-                             "end": round(end, 2), "duration": new_dur, "undo": undo})
+        # The take's separate tracks in work/takes/ aren't edited: note it in
+        # the take's JSON so remix_take.py refuses rather than mis-mixes.
+        self.mark_take_cut(row["file"], {kind: record})
+        return new_dur, undo
 
     @staticmethod
     def mark_take_cut(file, cut):
-        # cut = [start, end] to record one; None to take the last one back.
+        # cut = {"cut": [start, end]} or {"pause": [at, seconds]} to record an
+        # edit; None to take the last one back.
         meta_path = os.path.join(HERE, "work", "takes", file.replace("-raw.mp4", ".json"))
         try:
             with open(meta_path) as f:
@@ -1312,15 +1397,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             print(f"mark_take_cut: {e}", flush=True)
 
     def last_cut(self):
-        # GET /takes/last-cut: the most recent cut that /takes/uncut would still
-        # accept ({undo, id, name, start, end}), or {undo: null}. The page's
-        # Undo line asks this rather than remembering its own last cut, so it
-        # survives a reload. A cut is undoable while its take's file is still
-        # the one that cut wrote; undoing a second cut makes the first one
-        # undoable again.
+        # GET /takes/last-cut: the most recent take edit (a cut or a pause) that
+        # /takes/uncut would still accept ({undo, id, name, edit, what}), or
+        # {undo: null}. `what` is the Undo line's wording up to the take's
+        # name. The page asks this rather than remembering its own last edit,
+        # so the line survives a reload. An edit is undoable while its take's
+        # file is still the one that edit wrote; undoing a second edit makes
+        # the first one undoable again.
         trash = os.path.join(ROOT, ".trash")
         try:
-            names = sorted((n for n in os.listdir(trash) if "-before-cut-" in n and n.endswith(".json")),
+            names = sorted((n for n in os.listdir(trash) if EDIT_SIDECAR.search(n)),
                            key=lambda n: os.path.getmtime(os.path.join(trash, n)), reverse=True)
         except OSError:
             names = []
@@ -1335,21 +1421,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except (OSError, ValueError, KeyError):
                 continue
             if row and (st.st_size, st.st_mtime_ns) == (saved["after"]["size"], saved["after"]["mtime_ns"]):
+                if saved.get("edit") == "pause":
+                    what = f"Inserted a {saved['pause'][1]:g} s pause at {saved['pause'][0]:.2f} s in"
+                else:
+                    what = f"Cut {saved['cut'][0]:.2f}–{saved['cut'][1]:.2f} s from"
                 return self.send_json(200, {"undo": n, "id": take["id"], "name": row[0],
-                                            "start": round(saved["cut"][0], 2), "end": round(saved["cut"][1], 2)})
+                                            "edit": saved.get("edit", "cut"), "what": what})
         self.send_json(200, {"undo": None})
 
     def uncut_take(self):
-        # Undo a cut from its media/.trash/<stem>-before-cut-<when>.json: the
-        # original files back in place, the take's row and overlays as they
-        # were. Refused if the take's file has changed since that cut.
+        # Undo a take edit (a cut or a pause) from its sidecar in media/.trash/
+        # (<stem>-before-<kind>-<when>.json): the original files back in place,
+        # the take's row and overlays as they were. Refused if the take's file
+        # has changed since that edit.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         undo = str(body.get("undo", ""))
         trash = os.path.join(ROOT, ".trash")
         path = os.path.join(trash, undo)
-        if ("/" in undo or undo.startswith(".") or "-before-cut-" not in undo
-                or not undo.endswith(".json") or not os.path.isfile(path)):
-            return self.send_json(404, {"error": f"no cut to undo named {undo!r}"})
+        if "/" in undo or undo.startswith(".") or not EDIT_SIDECAR.search(undo) or not os.path.isfile(path):
+            return self.send_json(404, {"error": f"no edit to undo named {undo!r}"})
         with open(path) as f:
             saved = json.load(f)
         take = saved["take"]
@@ -1359,7 +1449,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "can't undo: the take is gone"})
         st = os.stat(src)
         if (st.st_size, st.st_mtime_ns) != (saved["after"]["size"], saved["after"]["mtime_ns"]):
-            return self.send_json(409, {"error": "can't undo: the take has changed since that cut"})
+            return self.send_json(409, {"error": "can't undo: the take has changed since that edit"})
         for orig, trashed in saved["files"].items():
             shutil.move(os.path.join(trash, trashed), os.path.join(ROOT, orig))
         url = take["url"].split("?")[0] + f"?v={int(time.time())}"
