@@ -377,16 +377,26 @@ if strokes or shapes:
     print(f"ink: {len(strokes)} strokes, {len(shapes)} shapes, {drawn} frames drawn "
           f"({len(pointer)} pointer samples logged, not drawn)")
 
-def level_filter(path, pre=None):
+# A source track quieter than this has no program, only its room: mixed as
+# recorded, not normalized. Leveling one to -16 LUFS turned up its rumble by
+# up to ~30 dB (takes measured -46.6 and -48.7 LUFS; a real source, -18.7).
+# remix_take.py uses the same floor.
+SOURCE_FLOOR = -35.0
+
+
+def level_filter(path, pre=None, floor=None):
     # Two-pass loudnorm to -16 LUFS / -1.5 dBTP: measure, then a filter that
     # applies the measured values linearly. A silent track has no loudness to
-    # normalize (measured_I is -inf): anull.
+    # normalize (measured_I is -inf): anull. So does one below floor.
     chain = f"{pre}," if pre else ""
     m1 = subprocess.run(["ffmpeg", "-v", "info", "-i", path, "-af",
                          f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
                         capture_output=True, text=True).stderr
     ln = json.loads(m1[m1.rindex("{"):m1.rindex("}") + 1])
     if "inf" in ln["input_i"]:
+        return "anull"
+    if floor is not None and float(ln["input_i"]) < floor:
+        print(f"source level: {ln['input_i']} LUFS, below {floor}: not boosted")
         return "anull"
     return (f"{chain}loudnorm=I=-16:TP=-1.5:LRA=11:measured_I={ln['input_i']}:measured_TP={ln['input_tp']}:"
             f"measured_LRA={ln['input_lra']}:measured_thresh={ln['input_thresh']}:offset={ln['target_offset']}:"
@@ -459,7 +469,7 @@ elif vparams.nchannels == 1 and vparams.sampwidth == 2:
     print(f"voice gate: {len(segs)} speech segment{'s' if len(segs) != 1 else ''}, "
           f"{speech_s:.1f}s kept of {len(v) / fr:.1f}s")
 level = level_filter(voice_wav,"highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
-source_level = level_filter(src_wav) if os.path.exists(src_wav) else None
+source_level = level_filter(src_wav, floor=SOURCE_FLOOR) if os.path.exists(src_wav) else None
 final = os.path.join(HERE, "narrated", f"{name}.mp4")
 subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", silent, "-i", voice_wav, "-filter_complex",
                 f"[1:a]{level},afade=t=in:d=0.1,aresample=48000[a]", "-map", "0:v", "-map", "[a]",
