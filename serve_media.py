@@ -17,6 +17,9 @@ record.sh logs to record.log. GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row,
 keeping both in a .trash/<stem>.json that POST /undelete {undo} restores;
+POST /takes/cut {id, start, end} removes that stretch from a take (and from
+its clean copy, shifting its overlays), and POST /takes/uncut {undo} puts it
+back;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
 POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
@@ -616,6 +619,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, list_exports())
         if self.path == "/dictation/status":
             return self.dictation_status()
+        if self.path == "/takes/last-cut":
+            return self.last_cut()
         if self.path == "/events":
             return self.stream_events()
         super().do_GET()
@@ -663,6 +668,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_take()
         if self.path == "/undelete":
             return self.undelete_take()
+        if self.path == "/takes/cut":
+            return self.cut_take()
+        if self.path == "/takes/uncut":
+            return self.uncut_take()
         if self.path == "/reorder":
             return self.reorder_takes()
         if self.path == "/export":
@@ -1190,6 +1199,179 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db.commit()
         os.remove(path)
         self.send_json(200, {"restored": take_id, "name": take["name"], "overlays": len(saved["overlays"])})
+
+    def cut_take(self):
+        # {id, start, end}: remove that stretch from a take. The same cut is
+        # made to the take's MP4 and to its clean copy (so burned-in callouts
+        # need no re-apply), re-encoded with the takes' own settings so Export
+        # can still join by stream copy. Overlays after the cut shift earlier,
+        # ones overlapping it are clipped, ones inside it go. The originals and
+        # a sidecar (the take's row, its overlays) go to media/.trash/ first,
+        # for /takes/uncut.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        src = os.path.join(ROOT, row["file"])
+        if not os.path.isfile(src):
+            return self.send_json(404, {"error": f"{row['file']} is missing"})
+        try:
+            start, end = float(body.get("start")), float(body.get("end"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "start and end must be numbers"})
+        dur = float(probe(src, "format=duration") or 0)
+        start, end = max(0.0, start), min(dur, end)
+        if end - start < 0.1:
+            return self.send_json(400, {"error": "the cut must be at least 0.1 s"})
+        if dur - (end - start) < 0.5:
+            return self.send_json(400, {"error": "the cut would leave less than 0.5 s of the take"})
+        segs = [s for s in ((0.0, start), (end, dur)) if s[1] - s[0] > 0.02]
+        chain = ""
+        for i, (a, b) in enumerate(segs):
+            fades = ([f"afade=t=out:st={b - a - 0.01:.3f}:d=0.01"] if i < len(segs) - 1 else []) + \
+                    (["afade=t=in:d=0.01"] if i > 0 else [])
+            chain += (f"[0:v]trim=start={a:.3f}:end={b:.3f},setpts=PTS-STARTPTS[v{i}];"
+                      f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS"
+                      f"{''.join(',' + x for x in fades)}[a{i}];")
+        chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
+        clean = os.path.join(ROOT, ".clean", row["file"])
+        targets = [src] + ([clean] if os.path.isfile(clean) else [])
+        tmps = []
+        for path in targets:
+            tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.cut.mp4")
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-filter_complex", chain,
+                                "-map", "[v]", "-map", "[a]", *overlay.ENC,
+                                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", tmp],
+                               capture_output=True, text=True)
+            tmps.append(tmp)
+            if r.returncode:
+                for t in tmps:
+                    if os.path.exists(t):
+                        os.remove(t)
+                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["cut failed"])[-1]})
+        trash = os.path.join(ROOT, ".trash")
+        os.makedirs(trash, exist_ok=True)
+        stem, when = row["file"][:-4], time.strftime("%Y%m%d-%H%M%S")
+        saved = {"take": dict(row), "cut": [round(start, 3), round(end, 3)], "files": {},
+                 "overlays": [dict(r) for r in db.execute(
+                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))]}
+        was_applied = row["overlay_applied"] == db.execute(overlay.APPLIED_SQL, (row["id"],)).fetchone()[0]
+        for path, tmp in zip(targets, tmps):
+            kind = "clean-" if path == clean else ""
+            trashed = f"{stem}-{kind}before-cut-{when}.mp4"
+            shutil.move(path, os.path.join(trash, trashed))
+            os.replace(tmp, path)
+            saved["files"][os.path.relpath(path, ROOT)] = trashed
+        cut = end - start
+        for o in saved["overlays"]:
+            t_in, t_out = o["t_in"], o["t_out"]
+            if t_out <= start:
+                continue
+            if t_in >= end:
+                new = (t_in - cut, t_out - cut)
+            else:  # overlaps the cut: keep what's left of it on either side
+                new = (min(t_in, start), t_out - cut if t_out > end else start)
+            if new[1] - new[0] < 0.05:
+                db.execute("DELETE FROM overlays WHERE id = ?", (o["id"],))
+            else:
+                db.execute("UPDATE overlays SET t_in = ?, t_out = ? WHERE id = ?",
+                           (round(new[0], 3), round(new[1], 3), o["id"]))
+        new_dur = round(float(probe(src, "format=duration") or 0), 1)
+        url = row["url"].split("?")[0] + f"?v={int(time.time())}"
+        db.execute("UPDATE takes SET duration_s = ?, url = ? WHERE id = ?", (new_dur, url, row["id"]))
+        if was_applied:
+            db.execute(f"UPDATE takes SET overlay_applied = ({overlay.APPLIED_SQL}) WHERE id = ?",
+                       (row["id"], row["id"]))
+        db.commit()
+        st = os.stat(src)
+        saved["after"] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        undo = f"{stem}-before-cut-{when}.json"
+        with open(os.path.join(trash, undo), "w") as f:
+            json.dump(saved, f, indent=1)
+        # The take's separate tracks in work/takes/ aren't cut: note it in the
+        # take's JSON so remix_take.py refuses rather than mis-mixes.
+        self.mark_take_cut(row["file"], [round(start, 3), round(end, 3)])
+        self.send_json(200, {"id": row["id"], "name": row["name"], "start": round(start, 2),
+                             "end": round(end, 2), "duration": new_dur, "undo": undo})
+
+    @staticmethod
+    def mark_take_cut(file, cut):
+        # cut = [start, end] to record one; None to take the last one back.
+        meta_path = os.path.join(HERE, "work", "takes", file.replace("-raw.mp4", ".json"))
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            cuts = meta.get("cutsAfterRender", [])
+            cuts = cuts + [cut] if cut else cuts[:-1]
+            meta["cutsAfterRender"] = cuts
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=1)
+        except (OSError, ValueError) as e:
+            print(f"mark_take_cut: {e}", flush=True)
+
+    def last_cut(self):
+        # GET /takes/last-cut: the most recent cut that /takes/uncut would still
+        # accept ({undo, id, name, start, end}), or {undo: null}. The page's
+        # Undo line asks this rather than remembering its own last cut, so it
+        # survives a reload. A cut is undoable while its take's file is still
+        # the one that cut wrote; undoing a second cut makes the first one
+        # undoable again.
+        trash = os.path.join(ROOT, ".trash")
+        try:
+            names = sorted((n for n in os.listdir(trash) if "-before-cut-" in n and n.endswith(".json")),
+                           key=lambda n: os.path.getmtime(os.path.join(trash, n)), reverse=True)
+        except OSError:
+            names = []
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        for n in names:
+            try:
+                with open(os.path.join(trash, n)) as f:
+                    saved = json.load(f)
+                take = saved["take"]
+                st = os.stat(os.path.join(ROOT, take["file"]))
+                row = db.execute("SELECT name FROM takes WHERE id = ?", (take["id"],)).fetchone()
+            except (OSError, ValueError, KeyError):
+                continue
+            if row and (st.st_size, st.st_mtime_ns) == (saved["after"]["size"], saved["after"]["mtime_ns"]):
+                return self.send_json(200, {"undo": n, "id": take["id"], "name": row[0],
+                                            "start": round(saved["cut"][0], 2), "end": round(saved["cut"][1], 2)})
+        self.send_json(200, {"undo": None})
+
+    def uncut_take(self):
+        # Undo a cut from its media/.trash/<stem>-before-cut-<when>.json: the
+        # original files back in place, the take's row and overlays as they
+        # were. Refused if the take's file has changed since that cut.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        undo = str(body.get("undo", ""))
+        trash = os.path.join(ROOT, ".trash")
+        path = os.path.join(trash, undo)
+        if ("/" in undo or undo.startswith(".") or "-before-cut-" not in undo
+                or not undo.endswith(".json") or not os.path.isfile(path)):
+            return self.send_json(404, {"error": f"no cut to undo named {undo!r}"})
+        with open(path) as f:
+            saved = json.load(f)
+        take = saved["take"]
+        src = os.path.join(ROOT, take["file"])
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take["id"],)).fetchone() or not os.path.isfile(src):
+            return self.send_json(409, {"error": "can't undo: the take is gone"})
+        st = os.stat(src)
+        if (st.st_size, st.st_mtime_ns) != (saved["after"]["size"], saved["after"]["mtime_ns"]):
+            return self.send_json(409, {"error": "can't undo: the take has changed since that cut"})
+        for orig, trashed in saved["files"].items():
+            shutil.move(os.path.join(trash, trashed), os.path.join(ROOT, orig))
+        url = take["url"].split("?")[0] + f"?v={int(time.time())}"
+        db.execute("UPDATE takes SET duration_s = ?, url = ?, overlay_applied = ? WHERE id = ?",
+                   (take["duration_s"], url, take["overlay_applied"], take["id"]))
+        db.execute("DELETE FROM overlays WHERE take_id = ?", (take["id"],))
+        for o in saved["overlays"]:
+            db.execute(f"INSERT INTO overlays ({', '.join(o)}) VALUES ({', '.join('?' * len(o))})", list(o.values()))
+        db.commit()
+        os.remove(path)
+        self.mark_take_cut(take["file"], None)
+        self.send_json(200, {"restored": take["id"], "name": take["name"], "overlays": len(saved["overlays"])})
 
     def recording(self):
         return recorder is not None and recorder.poll() is None

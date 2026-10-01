@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -34,7 +34,7 @@
         if (m.error &amp;&amp; m.dictation === dictating) { dictating = ''; toast.error('Dictation stopped: ' + m.error); }
         else if (m.dictation === dictating &amp;&amp; m.text !== undefined) liveNote = m.text;
       }
-      else if (m.changed === 'takes') takes.refetch();
+      else if (m.changed === 'takes') { takes.refetch(); undoableCut.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') recStatus.refetch();
       else if (m.changed === 'exports') exports.refetch();
@@ -162,6 +162,22 @@
     errorNotificationMessage="{$error.message}" />
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
     body="{{ id: $param }}"
+    invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
+       its clean copy, callouts shifted), and undo it from the sidecar the cut
+       left in media/.trash/. No onSuccess (xmlui-org/xmlui#3924). The Undo line
+       asks the server which cut can still be undone (undoableCut, GET
+       /takes/last-cut), so it survives a reload; it is refetched after each
+       cut and undo and whenever the takes change. cutSeq goes into the take
+       player's src so it reloads the changed video. -->
+  <DataSource id="undoableCut" url="http://127.0.0.1:8765/takes/last-cut" />
+  <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
+    body="{{ id: $param.id, start: $param.start, end: $param.end }}"
+    invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <APICall id="uncutTake" method="post" url="http://127.0.0.1:8765/takes/uncut"
+    body="{{ undo: $param }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Undo the last delete: serve_media.py restores the take, its files and its
@@ -636,6 +652,7 @@
            pointer); an arrow gets two handles at its ends (a: tail, b: tip), a
            pointer none (it only moves). -->
       <VStack when="{playing &amp;&amp; !capturing}"
+        var.editDur="{((takes.value || []).find((t) => t.id === editTake) || { duration_s: 0 }).duration_s}"
         var.editSprite="{calloutSprite.value || lastSprite}"
         var.calloutKey="{calloutBox ? [annotKind, calloutText.value, calloutBox.x1, calloutBox.y1, calloutBox.x2, calloutBox.y2, calloutIn, calloutOut, calloutTail.value].join('|') : ''}"
         var.handleBox="{calloutBox &amp;&amp; annotKind === 'callout' &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : calloutBox}"
@@ -718,7 +735,7 @@
             }
           }">
           <MediaPlayer id="takePlayer" autoPlay="true" maxHeight="65vh"
-            src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) : playing}"
+            src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
             onLoadedMetadata="(e) => takeAspect = e.videoWidth / e.videoHeight"
             onTimeUpdate="(e) => playerTime = e.currentTime"
             onSeeked="(e) => playerTime = e.currentTime" />
@@ -726,6 +743,83 @@
             <Image src="{$item.url}" width="100%" />
           </property>
         </PointerLayer>
+        <!-- Cut a stretch out of the take: the slider's two handles mark its
+             start and end (https://www.xmlui.org/docs/reference/components/Slider),
+             in one-frame steps; moving a handle seeks the player to it (lastCut
+             tells which one moved). While Preview is on, playback skips the
+             stretch, with a 40 ms Timer watching the playhead (the player's
+             timeUpdate is too coarse); nothing changes on disk until Cut. A cut
+             re-encodes two files, so its click has no handler timeout
+             (https://www.xmlui.org/docs/managed-react/cooperative-concurrency). -->
+        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
+          <Text variant="strong" value="Cut" />
+          <!-- valueFormat is a sync callback: one arrow expression, in braces
+               (https://www.xmlui.org/docs/howto/keep-sync-callbacks-to-one-expression).
+               The handles are placed by re-seeding through initialValue
+               (cutSeed), which fires no events, not by setValue
+               (https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain);
+               lastCut follows them, from didChange and alongside each re-seed. -->
+          <Slider id="cutSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+            initialValue="{cutSeed}" minStepsBetweenThumbs="{3}"
+            valueFormat="{(v) => v.toFixed(2) + 's'}"
+            enabled="{!cutTake.inProgress}"
+            onDidChange="(v) => {
+              cutPreview = null;
+              takePlayer.seek(v[0] !== lastCut[0] ? v[0] : v[1]);
+              lastCut = v;
+            }" />
+          <Button label="Set start" size="xs" variant="outlined"
+            tooltip="Move the cut's start to the playhead"
+            onClick="
+              cutSeed = [Math.min(takePlayer.getCurrentTime(), lastCut[1] - 0.12), lastCut[1]];
+              lastCut = cutSeed;
+            " />
+          <Button label="Set end" size="xs" variant="outlined"
+            tooltip="Move the cut's end to the playhead"
+            onClick="
+              cutSeed = [lastCut[0], Math.max(takePlayer.getCurrentTime(), lastCut[0] + 0.12)];
+              lastCut = cutSeed;
+            " />
+          <!-- Preview is a mode: while it's on (the button reads Previewing),
+               playback skips the marked stretch and otherwise just plays. It
+               starts from the playhead, or from 2 s before the cut when the
+               playhead is already in or past it. Off again: the button, moving
+               a handle, Cut, or choosing another take. -->
+          <Button label="{cutPreview ? 'Previewing' : 'Preview'}" size="xs"
+            variant="{cutPreview ? 'solid' : 'outlined'}"
+            tooltip="{cutPreview ? 'Stop skipping the marked stretch' : 'Play from the playhead, skipping the marked stretch. Nothing is changed.'}"
+            onClick="
+              if (cutPreview) {
+                cutPreview = null;
+                takePlayer.pause();
+              } else {
+                cutPreview = lastCut;
+                if (takePlayer.getCurrentTime() >= lastCut[0]) takePlayer.seek(Math.max(0, lastCut[0] - 2));
+                takePlayer.play();
+              }
+            " />
+          <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
+            tooltip="Remove this stretch from the take (Undo brings it back)"
+            enabled="{!cutTake.inProgress}"
+            handlerTimeoutMs:onClick="0"
+            onClick="
+              cutPreview = null;
+              cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
+              cutSeq = cutSeq + 1;
+              lastCut = [0, 1]; cutSeed = [0, 1];
+              undoableCut.refetch();
+              takes.refetch();
+              callouts.refetch();
+              savedSprites.refetch();
+              applyState.refetch();
+            " />
+          <Spinner when="{cutTake.inProgress}" />
+        </HStack>
+        <Timer interval="40" enabled="{!!cutPreview}"
+          onTick="
+            const t = takePlayer.getCurrentTime();
+            if (t >= cutPreview[0] &amp;&amp; t &lt; cutPreview[1]) takePlayer.seek(cutPreview[1]);
+          " />
         <!-- What to place: a callout, or a shape drawn like recording ink.
              Fixed while a saved one is being edited; switching drops an
              unsaved new one. -->
@@ -852,6 +946,22 @@
            Bram's queue uses): only the grip drags, so the row's buttons stay live.
            The order is saved to takes.position via POST /reorder. New takes go to
            the top (register.py). -->
+      <HStack when="{!!undoableCut.value &amp;&amp; !!undoableCut.value.undo}"
+        verticalAlignment="center">
+        <Text value="Cut {undoableCut.value.start}–{undoableCut.value.end} s from {undoableCut.value.name}." overflowMode="flow" />
+        <Button label="Undo" size="sm" variant="outlined" handlerTimeoutMs:onClick="0"
+          enabled="{!uncutTake.inProgress &amp;&amp; !cutTake.inProgress}"
+          onClick="
+            uncutTake.execute(undoableCut.value.undo);
+            cutSeq = cutSeq + 1;
+            lastCut = [0, 1]; cutSeed = [0, 1];
+            undoableCut.refetch();
+            takes.refetch();
+            callouts.refetch();
+            savedSprites.refetch();
+            applyState.refetch();
+          " />
+      </HStack>
       <HStack when="{deleteTake.lastResult &amp;&amp; deleteTake.lastResult.undo !== dismissedUndo}"
         verticalAlignment="center">
         <Text value="Deleted {deleteTake.lastResult.name}." />
@@ -887,6 +997,8 @@
                 playing = $item.url;
                 editTake = $item.id;
                 editFile = $item.file;
+                lastCut = [0, 1]; cutSeed = [0, 1];
+                cutPreview = null;
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"

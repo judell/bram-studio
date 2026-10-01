@@ -44,6 +44,10 @@ def remix(stamp, dry_run):
     if not os.path.exists(meta_path) or not os.path.exists(src_wav):
         return print(f"{take}: no JSON or no source track in work/takes/; skipped")
     meta = json.load(open(meta_path))
+    if meta.get("cutsAfterRender"):
+        # serve_media.py's /takes/cut shortens the take's MP4s, not these tracks.
+        return print(f"{take}: has been cut since it was rendered ({meta['cutsAfterRender']}); "
+                     "its tracks in work/takes/ no longer line up, so not re-mixed. Undo the cut first.")
     voice = os.path.join(WORK, "takes", meta.get("voiceFile") or f"{take}.wav")
     vlevel = meta.get("voiceLevel") or "anull"
     level = loudness(src_wav)
