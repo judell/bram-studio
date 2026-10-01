@@ -209,7 +209,7 @@ def studio_kind(name, st, files):
 
 # A free-text note per listed file, saying what it is ("edit of the 22:09
 # export, intro cut"), since names can't: {key: note}, key = the name in
-# media/exports/ or "desktop/<name>" for a Desktop edited-*.mp4.
+# media/exports/.
 NOTES = os.path.join(ROOT, "exports", ".notes.json")
 NOTES_LOCK = threading.Lock()
 
@@ -358,7 +358,8 @@ def live_dictation(d):
 
 
 def note_key(name, where):
-    return f"desktop/{name}" if where == "desktop" else name
+    # where is always "exports" now (the Desktop is no longer listed).
+    return name
 
 
 def export_notes():
@@ -460,8 +461,7 @@ def exports_fingerprint():
             out.append((n, st.st_size, is_writing(st)))
         return tuple(out)
     exports = os.path.join(ROOT, "exports")
-    return (files(exports, lambda n: n.endswith(".mp4") and not n.startswith(".")),
-            files(DESKTOP, lambda n: n.startswith("edited-") and n.endswith(".mp4")))
+    return files(exports, lambda n: n.endswith(".mp4") and not n.startswith("."))
 
 
 def level_report(outdir, name):
@@ -476,15 +476,14 @@ def level_report(outdir, name):
 
 
 def list_exports():
-    # Three stages of the finishing workflow, each newest first:
-    #   exports: files Export wrote (recorded in STUDIO_FILES);
+    # The two lists of media/exports/, each newest first:
     #   leveled: files Level wrote (recorded in STUDIO_FILES);
-    #   edited:  any other .mp4 in media/exports/, whatever its name (an
-    #            editor may reuse an export's), plus edited-*.mp4 at the top of
-    #            the Desktop (served there via /sources/<name>).
+    #   exports: every other .mp4 there. One that isn't exactly what Export
+    #            wrote (saved over in place by an editor, or saved beside it
+    #            under any name) is marked edited, and dated by its mtime.
     # Hidden names (.<name>.part.mp4 while being written) are skipped.
     outdir = os.path.join(ROOT, "exports")
-    lists = {"exports": [], "edited": [], "leveled": []}
+    lists = {"exports": [], "leveled": []}
     files = studio_files()
     for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
         path = os.path.join(outdir, name)
@@ -493,18 +492,12 @@ def list_exports():
         kind = studio_kind(name, os.stat(path), files)
         entry = export_entry(path, f"http://127.0.0.1:{PORT}/exports/{name}", "exports",
                              from_name=kind == "export")
-        if kind == "export":
-            lists["exports"].append(entry)
-        elif kind == "leveled":
+        if kind == "leveled":
             entry["report"] = level_report(outdir, name)
             lists["leveled"].append(entry)
         else:
-            lists["edited"].append(entry)
-    for name in os.listdir(DESKTOP) if os.path.isdir(DESKTOP) else []:
-        path = os.path.join(DESKTOP, name)
-        if name.startswith("edited-") and name.endswith(".mp4") and os.path.isfile(path):
-            lists["edited"].append(export_entry(
-                path, f"http://127.0.0.1:{PORT}/sources/{urllib.parse.quote(name)}", "desktop"))
+            entry["edited"] = kind != "export"
+            lists["exports"].append(entry)
     notes = export_notes()
     for entries in lists.values():
         for e in entries:
@@ -705,14 +698,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def listed_export(name, where):
         # The file a {name, where} from the exports lists names, or None: plain
-        # .mp4 names only; on the Desktop, only edited-*.mp4 at the top level.
-        if "/" in name or name.startswith(".") or not name.endswith(".mp4"):
+        # .mp4 names in media/exports/ only (where is always "exports").
+        if "/" in name or name.startswith(".") or not name.endswith(".mp4") or where == "desktop":
             return None
-        if where == "desktop":
-            path = os.path.join(DESKTOP, name) if name.startswith("edited-") else None
-        else:
-            path = os.path.join(ROOT, "exports", name)
-        return path if path and os.path.isfile(path) else None
+        path = os.path.join(ROOT, "exports", name)
+        return path if os.path.isfile(path) else None
 
     def delete_export(self):
         # Move one listed file to media/.trash/ (like a deleted take), with a
@@ -729,8 +719,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             stem, ext = os.path.splitext(name)
             dest = os.path.join(trash, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}{ext}")
         shutil.move(src, dest)
-        if body.get("where") != "desktop":
-            forget_studio_file(name)
+        forget_studio_file(name)
         set_export_note(note_key(name, body.get("where")), "")
         report = os.path.join(os.path.dirname(src), f".{name}.json")
         if os.path.exists(report):
@@ -844,8 +833,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name = str(body.get("name", ""))
         src = self.listed_export(name, body.get("where"))
-        if not src or (body.get("where") != "desktop"
-                       and studio_kind(name, os.stat(src), studio_files()) == "leveled"):
+        if not src or studio_kind(name, os.stat(src), studio_files()) == "leveled":
             return self.send_json(404, {"error": f"no export to level named {name!r}"})
         outdir = os.path.join(ROOT, "exports")
         os.makedirs(outdir, exist_ok=True)
