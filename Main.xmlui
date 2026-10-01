@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -134,6 +134,43 @@
     function submitNote(item) {
       if (dictating === noteKey(item)) stopDictation(item);
       else commitNote(item);
+    }
+    // Narrate over a stretch of the take being edited (serve_media.py's
+    // /narrate/*). The server answers /narrate/start once the mic is live;
+    // then the muted player starts from the clip's start and /narrate/go tells
+    // the server that moment, so the words land where they were spoken.
+    // narrating holds the clip while the mic is open: it mutes the player,
+    // hides its controls and runs the Timer that calls stopNarration at the
+    // clip's end. /narrate/stop writes the take (both files), so narrBusy
+    // shows a spinner until it answers.
+    function startNarration() {
+      try {
+        cutPreview = null;
+        takePlayer.pause();
+        takePlayer.seek(narrClip[0]);
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
+                          body: { id: editTake, start: narrClip[0], end: narrClip[1] } });
+        narrating = narrClip;
+        takePlayer.play();
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/go', method: 'post' });
+      } catch (e) {
+        narrating = null;
+        toast.error(e.message);
+      }
+    }
+    function stopNarration() {
+      takePlayer.pause();
+      narrating = null;
+      narrBusy = true;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post' });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      narrBusy = false;
+      cutSeq = cutSeq + 1;
+      undoableCut.refetch();
+      takes.refetch();
     }
   </script>
   <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
@@ -741,6 +778,7 @@
             }
           }">
           <MediaPlayer id="takePlayer" autoPlay="true" maxHeight="65vh"
+            muted="{!!narrating}" controls="{!narrating}"
             src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
             onLoadedMetadata="(e) => takeAspect = e.videoWidth / e.videoHeight"
             onTimeUpdate="(e) => playerTime = e.currentTime"
@@ -806,7 +844,7 @@
             " />
           <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
             tooltip="Remove this stretch from the take (Undo brings it back)"
-            enabled="{!cutTake.inProgress}"
+            enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
               cutPreview = null;
@@ -854,7 +892,7 @@
             }" />
           <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
             tooltip="{'Hold the frame at ' + pauseAt.toFixed(2) + ' s for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
-            enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress}"
+            enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
               cutPreview = null;
@@ -868,6 +906,51 @@
             " />
           <Spinner when="{pauseTake.inProgress}" />
         </HStack>
+        <!-- Narrate over a stretch: two handles mark the clip, as on the Cut
+             row (narrSeed re-seeds them, narrClip follows them). Narrate plays
+             the clip muted, without the player's own controls, while the mic
+             records; the Timer below stops it at the clip's end (a Timer
+             waits for its handler before ticking again:
+             https://www.xmlui.org/docs/reference/components/Timer), or Stop
+             does earlier. The take's audio there is then replaced; the same
+             Undo line takes it back. -->
+        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
+          <Text variant="strong" value="Narrate" />
+          <Slider id="narrSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+            initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
+            valueFormat="{(v) => v.toFixed(2) + 's'}"
+            enabled="{!narrating &amp;&amp; !narrBusy}"
+            onDidChange="(v) => {
+              cutPreview = null;
+              takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
+              narrClip = v;
+            }" />
+          <Button label="Set start" size="xs" variant="outlined"
+            tooltip="Move the clip's start to the playhead"
+            enabled="{!narrating &amp;&amp; !narrBusy}"
+            onClick="
+              narrSeed = [Math.min(takePlayer.getCurrentTime(), narrClip[1] - 0.52), narrClip[1]];
+              narrClip = narrSeed;
+            " />
+          <Button label="Set end" size="xs" variant="outlined"
+            tooltip="Move the clip's end to the playhead"
+            enabled="{!narrating &amp;&amp; !narrBusy}"
+            onClick="
+              narrSeed = [narrClip[0], Math.max(takePlayer.getCurrentTime(), narrClip[0] + 0.52)];
+              narrClip = narrSeed;
+            " />
+          <Button label="{narrating ? '⏹ Stop recording' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+            size="xs" themeColor="attention"
+            tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this clip muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
+            enabled="{!narrBusy &amp;&amp; !capturing &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
+            handlerTimeoutMs:onClick="0"
+            onClick="narrating ? stopNarration() : startNarration();" />
+          <Spinner when="{narrBusy}" />
+        </HStack>
+        <Timer interval="40" enabled="{!!narrating}"
+          onTick="
+            if (narrating &amp;&amp; takePlayer.getCurrentTime() >= Math.min(narrating[1], takePlayer.duration || narrating[1]) - 0.05) stopNarration();
+          " />
         <Timer interval="40" enabled="{!!cutPreview}"
           onTick="
             const t = takePlayer.getCurrentTime();
@@ -1039,7 +1122,7 @@
           <Text value="{$item.duration_s + 's'}" width="70px" />
           <Text value="{$item.source}" width="160px" />
           <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
-          <Button variant="ghost" enabled="{!capturing}"
+          <Button variant="ghost" enabled="{!capturing &amp;&amp; !narrating}"
             icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
             tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
             aria-label="Play or pause take"
@@ -1052,6 +1135,7 @@
                 editFile = $item.file;
                 pauseAt = 0; pauseSeed = 0;
                 lastCut = [0, 1]; cutSeed = [0, 1];
+                narrClip = [0, 1]; narrSeed = [0, 1];
                 cutPreview = null;
               }
             " />

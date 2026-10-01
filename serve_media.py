@@ -21,6 +21,10 @@ POST /takes/cut {id, start, end} removes that stretch from a take (and from
 its clean copy, shifting its overlays), POST /takes/pause {id, at, seconds}
 holds the frame there with silence, POST /takes/uncut {undo} undoes either,
 and GET /takes/last-cut names the latest edit still undoable;
+POST /narrate/start {id, start, end} opens the mic to narrate over that
+stretch of a take, /narrate/go marks the moment the page starts playing it,
+and /narrate/stop replaces the take's audio there with what was said (undone
+by /takes/uncut too);
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
 POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
@@ -162,7 +166,7 @@ def watch_changes():
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
 # A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
-EDIT_SIDECAR = re.compile(r"-before-(cut|pause)-\d{8}-\d{6}\.json$")
+EDIT_SIDECAR = re.compile(r"-before-(cut|pause|narrate)-\d{8}-\d{6}\.json$")
 # Starting a recording ends the Undo offer for edits made before it: the time
 # is kept here (a file, so it holds across restarts) and GET /takes/last-cut
 # skips older sidecars. They stay in .trash, and /takes/uncut still takes one
@@ -260,6 +264,47 @@ LIVE_STEP, LIVE_CAP, PAUSE_S = 0.7, 12.0, 0.5
 VOICED_DB = -45.0  # a 100 ms chunk louder than this is speech; room here is ~-55
 WHISPER_PORT = 8767
 whisper_server = {"proc": None}
+
+# Narrating over a stretch of a take (/narrate/start, /go, /stop): the one
+# narration in progress, guarded by DICTATION_LOCK since it owns the mic like
+# a dictation does. Recorded with record.sh's native recorder, not ffmpeg's
+# capture, which drops ~10% of samples (see voicetest.py).
+narration = {"current": None}
+NATIVE_SRC = os.path.join(HERE, "record_native.swift")
+NATIVE_BIN = os.path.expanduser("~/.cache/bram-studio/record_native")
+# A take's voice chain (render.py): the denoise, then highpass and compression.
+NARRATE_AF = ("anlmdn=s=0.0005:p=0.002:r=0.006,highpass=f=80,"
+              "acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
+NARRATE_FLOOR = -45.0  # LUFS: a recording quieter than this has no speech in it
+NARRATE_GRACE = 30  # s past the clip's length before an unstopped narration is abandoned
+
+
+def end_narration(n, keep=False):
+    # Stop n's recorder (SIGTERM: the writer finalizes the WAV) and, unless
+    # keep, remove its files.
+    if n["proc"].poll() is None:
+        n["proc"].terminate()
+        try:
+            n["proc"].wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            n["proc"].kill()
+    n["out"].close()
+    for path in (n["out"].name,) + (() if keep else (n["wav"],)):
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def watch_narration(n):
+    # The page ends a narration (/narrate/stop). If it never does (reloaded,
+    # closed), don't leave the mic open: abandon it, changing nothing.
+    if n["done"].wait(n["end"] - n["start"] + NARRATE_GRACE):
+        return
+    with DICTATION_LOCK:
+        if narration["current"] is not n:
+            return
+        narration["current"] = None
+    end_narration(n)
+    print(f"narrate: abandoned take {n['id']} (never stopped)", flush=True)
 
 
 def ensure_whisper_server():
@@ -646,6 +691,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.dictation_status()
         if self.path == "/takes/last-cut":
             return self.last_cut()
+        if self.path == "/narrate/status":
+            with DICTATION_LOCK:
+                n = narration["current"]
+            return self.send_json(200, {"id": n["id"] if n else None})
         if self.path == "/events":
             return self.stream_events()
         super().do_GET()
@@ -699,6 +748,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.pause_take()
         if self.path == "/takes/uncut":
             return self.uncut_take()
+        if self.path == "/narrate/start":
+            return self.narrate_start()
+        if self.path == "/narrate/go":
+            return self.narrate_go()
+        if self.path == "/narrate/stop":
+            return self.narrate_stop()
         if self.path == "/reorder":
             return self.reorder_takes()
         if self.path == "/export":
@@ -774,7 +829,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(409, {"error": "a take is recording"})
             if dictation["current"]:
                 return self.send_json(409, {"error": "already dictating"})
-            pcm = os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
+            if narration["current"]:
+                return self.send_json(409, {"error": "a narration is recording"})
+            pcm =os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
             if os.path.exists(pcm):
                 os.remove(pcm)
             proc = subprocess.Popen(
@@ -1338,10 +1395,163 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "pause", "at": round(at, 2),
                                  "seconds": round(secs, 2), "duration": done[0], "undo": done[1]})
 
-    def apply_take_edit(self, db, row, src, chain, kind, record, retime):
-        # The part a cut and a pause share. Runs the ffmpeg filter `chain`
-        # (ending in [v] and [a]) on the take's MP4 and its clean copy, into
-        # hidden temp files first, so a failure changes nothing. Moves the
+    def narrate_start(self):
+        # {id, start, end}: open the mic to narrate over that stretch of a take.
+        # Answers once samples are flowing; the page then starts the (muted)
+        # player and posts /narrate/go, and /narrate/stop when the clip ends.
+        # One at a time, and never while a take records, a note is dictated or
+        # a voice test runs.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        src = os.path.join(ROOT, row["file"])
+        if not os.path.isfile(src):
+            return self.send_json(404, {"error": f"{row['file']} is missing"})
+        try:
+            start, end = float(body.get("start")), float(body.get("end"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "start and end must be numbers"})
+        dur = float(probe(src, "format=duration") or 0)
+        start, end = max(0.0, start), min(dur, end)
+        if end - start < 0.5:
+            return self.send_json(400, {"error": "the clip to narrate over must be at least 0.5 s"})
+        if not os.path.exists(NATIVE_BIN) or os.path.getmtime(NATIVE_BIN) < os.path.getmtime(NATIVE_SRC):
+            os.makedirs(os.path.dirname(NATIVE_BIN), exist_ok=True)
+            r = subprocess.run(["swiftc", "-O", "-o", NATIVE_BIN, NATIVE_SRC], capture_output=True, text=True)
+            if r.returncode:
+                return self.send_json(500, {"error": "couldn't build the recorder (record_native.swift)"})
+        with DICTATION_LOCK:
+            if self.recording() or testing.locked():
+                return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
+            if dictation["current"]:
+                return self.send_json(409, {"error": "a note is being dictated"})
+            if narration["current"]:
+                return self.send_json(409, {"error": "already narrating"})
+            base = os.path.join(tempfile.gettempdir(), f"studio-narrate-{os.getpid()}")
+            out = open(base + ".out", "w+")
+            proc = subprocess.Popen([NATIVE_BIN, NOTE_MIC, base + ".wav", "0"],
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.PIPE)
+            n = {"id": row["id"], "start": start, "end": end, "proc": proc, "wav": base + ".wav", "out": out,
+                 "t0": None, "go": None, "done": threading.Event()}
+            # The recorder prints "started <epoch>" when samples begin: the
+            # narration's time zero, as record.sh's t0 is a take's.
+            deadline = time.time() + 5
+            while time.time() < deadline and proc.poll() is None and n["t0"] is None:
+                with open(out.name) as f:
+                    m = re.search(r"^started (\S+)", f.read(), re.M)
+                if m:
+                    n["t0"] = float(m.group(1))
+                else:
+                    time.sleep(0.05)
+            if n["t0"] is None:
+                if proc.poll() is None:
+                    proc.kill()
+                err = (proc.stderr.read().decode(errors="replace").strip().splitlines() or ["no audio"])[-1]
+                end_narration(n)
+                print(f"narrate: start failed: {err}", flush=True)
+                return self.send_json(500, {"error": f"couldn't open the microphone: {err}"})
+            narration["current"] = n
+        threading.Thread(target=watch_narration, args=(n,), daemon=True).start()
+        print(f"narrate: start take {n['id']} {start:.2f}-{end:.2f}s", flush=True)
+        self.send_json(200, {"narrating": n["id"], "start": round(start, 2), "end": round(end, 2)})
+
+    def narrate_go(self):
+        # The page has just started playing the clip: what's recorded from now
+        # on belongs at the clip's start.
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        with DICTATION_LOCK:
+            n = narration["current"]
+            if n and n["go"] is None:
+                n["go"] = time.time()
+        if not n:
+            return self.send_json(409, {"error": "not narrating"})
+        self.send_json(200, {"go": round(n["go"] - n["t0"], 3)})
+
+    def narrate_stop(self):
+        # Stop the mic and replace the take's audio over the stretch with what
+        # was said since /narrate/go: denoised, high-passed and compressed as a
+        # take's voice is, then one gain to -16 LUFS (no loudnorm: on a few
+        # seconds it falls back to its dynamic mode) and a -1.5 dB limiter,
+        # with 10 ms fades at the joins. Stopped early, the rest of the stretch
+        # is silent. The picture is stream-copied. Nothing said, or stopped
+        # before playback began: the take is left alone. {discard: true} drops
+        # the recording. Always clears the state and always answers.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        stopped = time.time()
+        with DICTATION_LOCK:
+            n, narration["current"] = narration["current"], None
+        if not n:
+            return self.send_json(200, {"idle": True})
+        n["done"].set()
+        voice = n["wav"][:-4] + "-voice.wav"
+        try:
+            end_narration(n, keep=True)
+            if body.get("discard") or n["go"] is None:
+                print(f"narrate: discarded take {n['id']}", flush=True)
+                return self.send_json(200, {"discarded": True})
+            clip = n["end"] - n["start"]
+            offset, said = max(0.0, n["go"] - n["t0"]), min(clip, stopped - n["go"])
+            if said < 0.3:
+                return self.send_json(400, {"error": "stopped too soon: nothing was recorded"})
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{offset:.3f}", "-t", f"{said:.3f}",
+                                "-i", n["wav"], "-af", NARRATE_AF, "-ar", "48000", "-ac", "1", voice],
+                               capture_output=True, text=True)
+            if r.returncode:
+                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["narration failed"])[-1]})
+            m = subprocess.run(["ffmpeg", "-v", "info", "-i", voice, "-af", "loudnorm=print_format=json",
+                                "-f", "null", "-"], capture_output=True, text=True).stderr
+            ln = json.loads(m[m.rindex("{"):m.rindex("}") + 1])
+            loud = float("-inf") if "inf" in ln["input_i"] else float(ln["input_i"])
+            print(f"narrate: take {n['id']} offset={offset:.3f}s said={said:.2f}s of {clip:.2f}s "
+                  f"measured {ln['input_i']} LUFS, peak {ln['input_tp']} dBTP", flush=True)
+            if loud < NARRATE_FLOOR:
+                return self.send_json(400, {"error": "no speech was heard, so the take is unchanged"})
+            gain = -16.0 - loud
+            db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT * FROM takes WHERE id = ?", (n["id"],)).fetchone()
+            src = os.path.join(ROOT, row["file"]) if row else ""
+            if not os.path.isfile(src):
+                return self.send_json(409, {"error": "the take is gone"})
+            dur = float(probe(src, "format=duration") or 0)
+            start, end = n["start"], n["end"]
+            fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+            parts, chain = [], ""
+            if start > 0.02:
+                chain += (f"[0:a]atrim=start=0:end={start:.3f},asetpts=PTS-STARTPTS,{fmt},"
+                          f"afade=t=out:st={start - 0.01:.3f}:d=0.01[a0];")
+                parts.append("[a0]")
+            chain += (f"[1:a]volume={gain:.2f}dB,alimiter=limit=0.841:attack=5:release=80:level=false,"
+                      f"afade=t=in:d=0.01,afade=t=out:st={said - 0.01:.3f}:d=0.01,{fmt},"
+                      f"apad=whole_dur={clip:.3f},atrim=duration={clip:.3f}[a1];")
+            parts.append("[a1]")
+            if end < dur - 0.02:
+                chain += f"[0:a]atrim=start={end:.3f},asetpts=PTS-STARTPTS,{fmt},afade=t=in:d=0.01[a2];"
+                parts.append("[a2]")
+            chain += f"{''.join(parts)}concat=n={len(parts)}:v=0:a=1[a]"
+            done = self.apply_take_edit(db, row, src, chain, "narrate", [round(start, 3), round(end, 3)],
+                                        lambda t_in, t_out: (t_in, t_out), extra=[voice], copy_video=True)
+            if done:
+                self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "narrate",
+                                     "start": round(start, 2), "end": round(end, 2), "said": round(said, 2),
+                                     "measured": loud, "gain": round(gain, 1), "duration": done[0], "undo": done[1]})
+        except Exception:
+            print(f"narrate: stop failed\n{traceback.format_exc()}", flush=True)
+            self.send_json(500, {"error": "narration failed (see serve_media.log)"})
+        finally:
+            for path in (n["wav"], voice):
+                if os.path.exists(path):
+                    os.remove(path)
+
+    def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False):
+        # The part a cut, a pause and a narration share. Runs the ffmpeg filter
+        # `chain` (ending in [v] and [a]) on the take's MP4 and its clean copy, into
+        # hidden temp files first, so a failure changes nothing. `extra` are
+        # further input files (inputs 1…); with copy_video the chain ends in
+        # [a] only and the picture is stream-copied, not re-encoded. Moves the
         # originals to media/.trash/ with a sidecar (<stem>-before-<kind>-<when>
         # .json: the take's row, its overlays, `record`), swaps the new files
         # in, retimes the overlays with retime(t_in, t_out), and updates the
@@ -1352,8 +1562,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tmps = []
         for path in targets:
             tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.{kind}.mp4")
-            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-filter_complex", chain,
-                                "-map", "[v]", "-map", "[a]", *overlay.ENC,
+            inputs = [a for p in (path, *extra) for a in ("-i", p)]
+            video = ["-map", "0:v", "-c:v", "copy"] if copy_video else ["-map", "[v]", *overlay.ENC]
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", chain,
+                                *video, "-map", "[a]",
                                 "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", tmp],
                                capture_output=True, text=True)
             tmps.append(tmp)
@@ -1446,8 +1658,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except (OSError, ValueError, KeyError):
                 continue
             if row and (st.st_size, st.st_mtime_ns) == (saved["after"]["size"], saved["after"]["mtime_ns"]):
-                if saved.get("edit") == "pause":
-                    what = f"Inserted a {saved['pause'][1]:g} s pause at {saved['pause'][0]:.2f} s in"
+                if saved.get("edit") == "narrate":
+                    what = f"Narrated over {saved['narrate'][0]:.2f}–{saved['narrate'][1]:.2f} s in"
+                elif saved.get("edit") == "pause":
+                    what =f"Inserted a {saved['pause'][1]:g} s pause at {saved['pause'][0]:.2f} s in"
                 else:
                     what = f"Cut {saved['cut'][0]:.2f}–{saved['cut'][1]:.2f} s from"
                 return self.send_json(200, {"undo": n, "id": take["id"], "name": row[0],
@@ -1503,8 +1717,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": f"no source movie named {source!r} in sources/ or on the Desktop"})
         if restart and self.recording() and not cancel_recording():
             return self.send_json(409, {"error": "the running take didn't stop in time"})
-        if self.recording() or testing.locked():
-            return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
+        if self.recording() or testing.locked() or narration["current"]:
+            return self.send_json(409, {"error": "the mic is busy (recording, narrating or testing)"})
         set_undo_floor()  # a new recording: earlier take edits are settled work
         log = open(os.path.join(HERE, "record.log"), "a")
         recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), source_paths()[source]],
