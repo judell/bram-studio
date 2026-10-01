@@ -350,7 +350,16 @@
               enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
               onClick="clearNote($item)" />
           </HStack>
-          <Stack width="100px" />
+          <!-- An export that needs no editing can be leveled directly. -->
+          <HStack width="100px" horizontalAlignment="end">
+            <Button label="Level" variant="outlined" size="sm"
+              enabled="{!levelExport.inProgress &amp;&amp; !$item.writing}"
+              tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
+              onClick="
+                levelExport.execute($item);
+                exports.refetch();
+              " />
+          </HStack>
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete export" tooltip="Delete this export (moves it to media/.trash)"
             onClick="
@@ -410,7 +419,7 @@
       </HStack>
       <Text variant="strong" value="Leveled exports" />
       <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
-        value="Click Level on an edited export." />
+        value="Click Level on an export or an edited export." />
       <Items data="{exports.value ? exports.value.leveled : []}">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />

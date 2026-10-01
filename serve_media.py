@@ -836,16 +836,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"name": name, "note": export_notes().get(note_key(name, where), "")})
 
     def level_export(self):
-        # Run level_edit.py on an edited file (any listed .mp4 that isn't an
-        # Export or already leveled) into media/exports/leveled-<name>.mp4, an
+        # Run level_edit.py on an export or an edited file (any listed .mp4
+        # that isn't already leveled) into media/exports/leveled-<name>.mp4, an
         # edited- prefix dropped (written hidden, then renamed, like Export),
         # keeping its before/after loudness in .leveled-<name>.mp4.json for the
         # list. Leveling again replaces the earlier result.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name = str(body.get("name", ""))
         src = self.listed_export(name, body.get("where"))
-        if not src or (body.get("where") != "desktop" and studio_kind(name, os.stat(src), studio_files())):
-            return self.send_json(404, {"error": f"no edited export named {name!r}"})
+        if not src or (body.get("where") != "desktop"
+                       and studio_kind(name, os.stat(src), studio_files()) == "leveled"):
+            return self.send_json(404, {"error": f"no export to level named {name!r}"})
         outdir = os.path.join(ROOT, "exports")
         os.makedirs(outdir, exist_ok=True)
         leveled = "leveled-" + (name[len("edited-"):] if name.startswith("edited-") else name)
