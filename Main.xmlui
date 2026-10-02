@@ -790,6 +790,18 @@
             <Image src="{$item.url}" width="100%" />
           </property>
         </PointerLayer>
+        <!-- The take's edits, one per tab (https://www.xmlui.org/docs/reference/components/Tabs):
+             in each, the slider at full width, then its controls on a second
+             row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a
+             slider mounted again would show its last seed (initialValue), not
+             where its handles were dragged, while lastCut / pauseAt / narrClip
+             still held the dragged values. Switching tabs ends Preview, whose
+             button would be out of sight. The Theme makes the tab strip
+             compact. The two Timers stay outside: Tabs shows only TabItems. -->
+        <Theme paddingVertical-trigger-Tabs="$space-1" paddingHorizontal-trigger-Tabs="$space-3"
+          paddingTop-TabItem="$space-2">
+        <Tabs keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
+          onDidChange="cutPreview = null">
         <!-- Cut a stretch out of the take: the slider's two handles mark its
              start and end (https://www.xmlui.org/docs/reference/components/Slider),
              in one-frame steps; moving a handle seeks the player to it (lastCut
@@ -798,15 +810,15 @@
              timeUpdate is too coarse); nothing changes on disk until Cut. A cut
              re-encodes two files, so its click has no handler timeout
              (https://www.xmlui.org/docs/managed-react/cooperative-concurrency). -->
-        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
-          <Text variant="strong" value="Cut" />
+        <TabItem label="Cut">
+        <VStack>
           <!-- valueFormat is a sync callback: one arrow expression, in braces
                (https://www.xmlui.org/docs/howto/keep-sync-callbacks-to-one-expression).
                The handles are placed by re-seeding through initialValue
                (cutSeed), which fires no events, not by setValue
                (https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain);
                lastCut follows them, from didChange and alongside each re-seed. -->
-          <Slider id="cutSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+          <Slider id="cutSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
             initialValue="{cutSeed}" minStepsBetweenThumbs="{3}"
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!cutTake.inProgress}"
@@ -815,6 +827,7 @@
               takePlayer.seek(v[0] !== lastCut[0] ? v[0] : v[1]);
               lastCut = v;
             }" />
+          <HStack verticalAlignment="center">
           <Button label="Set start" size="xs" variant="outlined"
             tooltip="Move the cut's start to the playhead"
             onClick="
@@ -861,16 +874,18 @@
               applyState.refetch();
             " />
           <Spinner when="{cutTake.inProgress}" />
-        </HStack>
+          </HStack>
+        </VStack>
+        </TabItem>
         <!-- Insert a pause: one handle marks where (moving it seeks the player
              to the frame that will be held), a NumberBox says how long. The
              length is remembered in localStorage as the next default
              (https://www.xmlui.org/docs/globals#local-storage-utilities). The
              handle is placed from the playhead by re-seeding initialValue
              (pauseSeed), as for the cut slider. -->
-        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
-          <Text variant="strong" value="Pause" />
-          <Slider id="pauseSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+        <TabItem label="Pause">
+        <VStack>
+          <Slider id="pauseSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
             initialValue="{pauseSeed}"
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!pauseTake.inProgress}"
@@ -879,6 +894,7 @@
               pauseAt = v;
               takePlayer.seek(v);
             }" />
+          <HStack verticalAlignment="center">
           <Button label="Set at playhead" size="xs" variant="outlined"
             tooltip="Put the pause at the playhead"
             onClick="
@@ -908,7 +924,9 @@
               applyState.refetch();
             " />
           <Spinner when="{pauseTake.inProgress}" />
-        </HStack>
+          </HStack>
+        </VStack>
+        </TabItem>
         <!-- Narrate over a stretch: two handles mark the clip, as on the Cut
              row (narrSeed re-seeds them, narrClip follows them). Narrate plays
              the clip muted, without the player's own controls, while the mic
@@ -917,9 +935,9 @@
              https://www.xmlui.org/docs/reference/components/Timer), or Stop
              does earlier. The take's audio there is then replaced; the same
              Undo line takes it back. -->
-        <HStack verticalAlignment="center" when="{!!editTake &amp;&amp; editDur > 0}">
-          <Text variant="strong" value="Narrate" />
-          <Slider id="narrSlider" width="*" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+        <TabItem label="Narrate">
+        <VStack>
+          <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
             initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!narrating &amp;&amp; !narrBusy}"
@@ -928,6 +946,7 @@
               takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
               narrClip = v;
             }" />
+          <HStack verticalAlignment="center">
           <Button label="Set start" size="xs" variant="outlined"
             tooltip="Move the clip's start to the playhead"
             enabled="{!narrating &amp;&amp; !narrBusy}"
@@ -949,7 +968,11 @@
             handlerTimeoutMs:onClick="0"
             onClick="narrating ? stopNarration() : startNarration();" />
           <Spinner when="{narrBusy}" />
-        </HStack>
+          </HStack>
+        </VStack>
+        </TabItem>
+        </Tabs>
+        </Theme>
         <Timer interval="40" enabled="{!!narrating}"
           onTick="
             if (narrating &amp;&amp; takePlayer.getCurrentTime() >= Math.min(narrating[1], takePlayer.duration || narrating[1]) - 0.05) stopNarration();
