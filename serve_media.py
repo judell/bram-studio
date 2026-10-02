@@ -20,12 +20,13 @@ POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row,
 keeping both in a .trash/<stem>.json that POST /undelete {undo} restores;
 POST /takes/cut {id, start, end} removes that stretch from a take (and from
 its clean copy, shifting its overlays), POST /takes/pause {id, at, seconds}
-holds the frame there with silence, POST /takes/uncut {undo} undoes either,
-and GET /takes/last-cut names the latest edit still undoable;
+holds the frame there with silence; GET /takes/edits?id= lists a take's
+edits, and POST /takes/undo {id} and /takes/redo {id} step back and forth
+through them;
 POST /narrate/start {id, start, end} opens the mic to narrate over that
 stretch of a take, /narrate/go marks the moment the page starts playing it,
-and /narrate/stop replaces the take's audio there with what was said (undone
-by /takes/uncut too); POST /narrate/remove {id} takes a narration back out
+and /narrate/stop replaces the take's audio there with what was said (an
+edit like the others); POST /narrate/remove {id} takes a narration back out
 at any time, from the audio it replaced;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
@@ -185,28 +186,103 @@ NARRATIONS_SQL = """CREATE TABLE IF NOT EXISTS narrations (
 )"""
 NARRATED = os.path.join(ROOT, ".narrated")
 NARR_EDGE = 0.04  # one frame: an edit this close to a narration's end isn't inside it
-# Starting a recording ends the Undo offer for edits made before it: the time
-# is kept here (a file, so it holds across restarts) and GET /takes/last-cut
-# skips older sidecars. They stay in .trash, and /takes/uncut still takes one
-# by name.
-UNDO_FLOOR = os.path.join(ROOT, ".trash", ".undo-floor")
+TRASH = os.path.join(ROOT, ".trash")
+EDIT_LOCK = threading.Lock()  # one undo, redo or history read at a time
 
 
-def set_undo_floor():
+# A take's edit history (the History tab): every edit leaves a sidecar in
+# media/.trash/ (<stem>-before-<kind>-<when>.json, written by apply_take_edit)
+# with the take's row, items and narrations as they were before it, and its
+# files from before it beside it. The sidecars of one take file, in time
+# order, are its stack. An undone edit keeps its sidecar, marked "undone",
+# with the take as it was after the edit (files as <stem>-after-…, rows in
+# the mark), so it can be redone. The edit in effect most recently is the
+# cursor: the one Undo takes back. A new edit discards the undone ones.
+def take_edits(file):
+    # [(sidecar name, its contents)] for one take file, oldest first.
+    stem, out = file[:-4], []
     try:
-        os.makedirs(os.path.dirname(UNDO_FLOOR), exist_ok=True)
-        with open(UNDO_FLOOR, "w") as f:
-            f.write(str(time.time()))
-    except OSError as e:
-        print(f"set_undo_floor: {e}", flush=True)
+        names = os.listdir(TRASH)
+    except OSError:
+        names = []
+    for n in sorted(names, key=lambda n: n[-20:]):
+        m = EDIT_SIDECAR.search(n)
+        if not m or n[:m.start()] != stem:
+            continue
+        try:
+            with open(os.path.join(TRASH, n)) as f:
+                out.append((n, json.load(f)))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
-def undo_floor():
+def edit_kind(name, saved):
+    return saved.get("edit") or EDIT_SIDECAR.search(name).group(1)
+
+
+def edit_what(name, saved):
+    kind = edit_kind(name, saved)
+    rec = saved.get(kind) or [0, 0]
+    if kind == "unnarrate":
+        return f"Removed the narration at {rec[0]:.2f}–{rec[1]:.2f} s"
+    if kind == "narrate":
+        return f"Narrated over {rec[0]:.2f}–{rec[1]:.2f} s"
+    if kind == "pause":
+        return f"Inserted a {rec[1]:g} s pause at {rec[0]:.2f} s"
+    return f"Cut {rec[0]:.2f}–{rec[1]:.2f} s"
+
+
+def file_stat(path):
+    st = os.stat(path)
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def history_state(file):
+    # (edits, cursor index or None, redo index or None, why not) for a take
+    # file. The cursor is the newest edit not undone; it can be undone only
+    # while the take's file is still the one that edit left (a file replaced
+    # some other way, as remix_take.py does, ends that). The redo candidate
+    # is the oldest undone edit, redoable while the file is the one its undo
+    # restored.
+    edits = take_edits(file)
+    done = [i for i, (_, s) in enumerate(edits) if not s.get("undone")]
+    undone = [i for i, (_, s) in enumerate(edits) if s.get("undone")]
+    cursor, redo, why = (done[-1] if done else None), (undone[0] if undone else None), ""
     try:
-        with open(UNDO_FLOOR) as f:
-            return float(f.read().strip())
-    except (OSError, ValueError):
-        return 0.0
+        live = file_stat(os.path.join(ROOT, file))
+    except OSError:
+        return edits, None, None, "The take's file is missing."
+    if cursor is not None and edits[cursor][1].get("after") != live:
+        cursor, why = None, "This take's file has changed since its last edit, so that edit can't be undone."
+    if redo is not None and edits[redo][1]["undone"].get("stat") != live:
+        redo = None
+    return edits, cursor, redo, why
+
+
+def resync_history(file, was):
+    # The take's file was rewritten without being an edit (Apply burns the
+    # items in): where the history described the file as it was (`was`, its
+    # size and mtime before), point it at the file as it is now.
+    with EDIT_LOCK:
+        edits = take_edits(file)
+        done = [e for e in edits if not e[1].get("undone")]
+        undone = [e for e in edits if e[1].get("undone")]
+        try:
+            live = file_stat(os.path.join(ROOT, file))
+        except OSError:
+            return
+        for name, saved in (done[-1:] + undone[:1]):
+            if saved.get("undone"):
+                if saved["undone"].get("stat") != was:
+                    continue
+                saved["undone"]["stat"] = live
+            else:
+                if saved.get("after") != was:
+                    continue
+                saved["after"] = live
+            with open(os.path.join(TRASH, name), "w") as f:
+                json.dump(saved, f, indent=1)
 
 # Which files in media/exports/ Studio wrote itself, so the lists can tell
 # them from an editor's output even when the editor reuses the name (ScreenPal
@@ -735,8 +811,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, list_exports())
         if self.path == "/dictation/status":
             return self.dictation_status()
-        if self.path == "/takes/last-cut":
-            return self.last_cut()
+        if self.path.startswith("/takes/edits"):
+            return self.list_edits()
         if self.path == "/narrate/status":
             with DICTATION_LOCK:
                 n = narration["current"]
@@ -794,8 +870,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.cut_take()
         if self.path == "/takes/pause":
             return self.pause_take()
-        if self.path == "/takes/uncut":
-            return self.uncut_take()
+        if self.path == "/takes/undo":
+            return self.undo_take()
+        if self.path == "/takes/redo":
+            return self.redo_take()
         if self.path == "/narrate/start":
             return self.narrate_start()
         if self.path == "/narrate/go":
@@ -1244,6 +1322,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "id must be a take id"})
         if not overlaying.acquire(blocking=False):
             return self.send_json(409, {"error": "a take is already being rendered"})
+        # Apply rewrites the take's file without being an edit: keep the
+        # take's edit history pointing at it (resync_history).
+        row = sqlite3.connect(os.path.join(HERE, "studio.db")).execute(
+            "SELECT file FROM takes WHERE id = ?", (body["id"],)).fetchone()
+        try:
+            was = file_stat(os.path.join(ROOT, row[0])) if row else None
+        except OSError:
+            was = None
         try:
             r = subprocess.run(["python3", os.path.join(HERE, "overlay.py"), "render", str(body["id"])],
                                cwd=HERE, capture_output=True, text=True)
@@ -1251,6 +1337,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             overlaying.release()
         if r.returncode:
             return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["render failed"])[-1]})
+        if was:
+            resync_history(row[0], was)
         self.send_json(200, json.loads(r.stdout.strip().splitlines()[-1]))
 
     def reorder_takes(self):
@@ -1350,7 +1438,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # can still join by stream copy. Overlays after the cut shift earlier,
         # ones overlapping it are clipped, ones inside it go. The originals and
         # a sidecar (the take's row, its overlays) go to media/.trash/ first,
-        # for /takes/uncut.
+        # for Undo (undo_take).
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
         db.row_factory = sqlite3.Row
@@ -1705,6 +1793,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return None
         trash = os.path.join(ROOT, ".trash")
         os.makedirs(trash, exist_ok=True)
+        # A new edit ends the chance to redo: the undone edits above the
+        # cursor go, with the files kept for redoing them.
+        with EDIT_LOCK:
+            for name, old in take_edits(row["file"]):
+                if old.get("undone"):
+                    for f in list(old["undone"].get("files", {}).values()) + [name]:
+                        if os.path.exists(os.path.join(trash, f)):
+                            os.remove(os.path.join(trash, f))
         stem, when = row["file"][:-4], time.strftime("%Y%m%d-%H%M%S")
         saved = {"take": dict(row), "edit": kind, kind: record, "files": {},
                  "overlays": [dict(r) for r in db.execute(
@@ -1770,87 +1866,132 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (OSError, ValueError) as e:
             print(f"mark_take_cut: {e}", flush=True)
 
-    def last_cut(self):
-        # GET /takes/last-cut: the most recent take edit (a cut or a pause) that
-        # /takes/uncut would still accept ({undo, id, name, edit, what}), or
-        # {undo: null}. `what` is the Undo line's wording up to the take's
-        # name. The page asks this rather than remembering its own last edit,
-        # so the line survives a reload. An edit is undoable while its take's
-        # file is still the one that edit wrote; undoing a second edit makes
-        # the first one undoable again. Edits older than the last recording's
-        # start (UNDO_FLOOR) are no longer offered.
-        trash = os.path.join(ROOT, ".trash")
-        floor = undo_floor()
-        try:
-            names = sorted((n for n in os.listdir(trash) if EDIT_SIDECAR.search(n)
-                            and os.path.getmtime(os.path.join(trash, n)) >= floor),
-                           key=lambda n: os.path.getmtime(os.path.join(trash, n)), reverse=True)
-        except OSError:
-            names = []
+    def take_row(self, take_id):
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-        for n in names:
-            try:
-                with open(os.path.join(trash, n)) as f:
-                    saved = json.load(f)
-                take = saved["take"]
-                st = os.stat(os.path.join(ROOT, take["file"]))
-                row = db.execute("SELECT name FROM takes WHERE id = ?", (take["id"],)).fetchone()
-            except (OSError, ValueError, KeyError):
-                continue
-            if row and (st.st_size, st.st_mtime_ns) == (saved["after"]["size"], saved["after"]["mtime_ns"]):
-                if saved.get("edit") == "unnarrate":
-                    what = (f"Removed the narration at {saved['unnarrate'][0]:.2f}–{saved['unnarrate'][1]:.2f} s "
-                            "from")
-                elif saved.get("edit") == "narrate":
-                    what = f"Narrated over {saved['narrate'][0]:.2f}–{saved['narrate'][1]:.2f} s in"
-                elif saved.get("edit") == "pause":
-                    what =f"Inserted a {saved['pause'][1]:g} s pause at {saved['pause'][0]:.2f} s in"
-                else:
-                    what = f"Cut {saved['cut'][0]:.2f}–{saved['cut'][1]:.2f} s from"
-                return self.send_json(200, {"undo": n, "id": take["id"], "name": row[0],
-                                            "edit": saved.get("edit", "cut"), "what": what})
-        self.send_json(200, {"undo": None})
+        db.row_factory = sqlite3.Row
+        return db, db.execute("SELECT * FROM takes WHERE id = ?", (take_id,)).fetchone()
 
-    def uncut_take(self):
-        # Undo a take edit (a cut or a pause) from its sidecar in media/.trash/
-        # (<stem>-before-<kind>-<when>.json): the original files back in place,
-        # the take's row and overlays as they were. Refused if the take's file
-        # has changed since that edit.
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        undo = str(body.get("undo", ""))
-        trash = os.path.join(ROOT, ".trash")
-        path = os.path.join(trash, undo)
-        if "/" in undo or undo.startswith(".") or not EDIT_SIDECAR.search(undo) or not os.path.isfile(path):
-            return self.send_json(404, {"error": f"no edit to undo named {undo!r}"})
-        with open(path) as f:
-            saved = json.load(f)
-        take = saved["take"]
-        src = os.path.join(ROOT, take["file"])
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-        if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take["id"],)).fetchone() or not os.path.isfile(src):
-            return self.send_json(409, {"error": "can't undo: the take is gone"})
-        st = os.stat(src)
-        if (st.st_size, st.st_mtime_ns) != (saved["after"]["size"], saved["after"]["mtime_ns"]):
-            return self.send_json(409, {"error": "can't undo: the take has changed since that edit"})
-        for orig, trashed in saved["files"].items():
-            shutil.move(os.path.join(trash, trashed), os.path.join(ROOT, orig))
+    def list_edits(self):
+        # GET /takes/edits?id=<take>: the take's edit history for the History
+        # tab, newest first: {edits: [{name, kind, what, when, undone,
+        # current}], canUndo, canRedo, note}. `current` marks the edit Undo
+        # would take back; `note` says why an edit can't be undone, when the
+        # take's file no longer matches its history.
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            take_id = int(query.get("id", [""])[0])
+        except ValueError:
+            return self.send_json(200, {"edits": [], "canUndo": False, "canRedo": False, "note": ""})
+        _, row = self.take_row(take_id)
+        if not row:
+            return self.send_json(200, {"edits": [], "canUndo": False, "canRedo": False, "note": ""})
+        with EDIT_LOCK:
+            edits, cursor, redo, why = history_state(row["file"])
+        out = []
+        for i, (name, saved) in enumerate(edits):
+            when = time.strptime(name[-20:-5], "%Y%m%d-%H%M%S")
+            out.append({"name": name, "kind": edit_kind(name, saved), "what": edit_what(name, saved),
+                        "when": time.strftime("%b %-d, %H:%M:%S", when), "undone": bool(saved.get("undone")),
+                        "current": i == cursor})
+        self.send_json(200, {"edits": out[::-1], "canUndo": cursor is not None, "canRedo": redo is not None,
+                             "note": why})
+
+    @staticmethod
+    def restore_rows(db, take_id, snap):
+        # Put a take's row, items and narrations back as a snapshot has them.
+        take = snap["take"]
         url = take["url"].split("?")[0] + f"?v={int(time.time())}"
         db.execute("UPDATE takes SET duration_s = ?, url = ?, overlay_applied = ? WHERE id = ?",
-                   (take["duration_s"], url, take["overlay_applied"], take["id"]))
-        db.execute("DELETE FROM overlays WHERE take_id = ?", (take["id"],))
-        for o in saved["overlays"]:
-            db.execute(f"INSERT INTO overlays ({', '.join(o)}) VALUES ({', '.join('?' * len(o))})", list(o.values()))
-        # The narrations as they were before the edit (sidecars written before
-        # narrations had rows have none, and leave the rows alone).
-        if "narrations" in saved:
-            db.execute("DELETE FROM narrations WHERE take_id = ?", (take["id"],))
-            for n in saved["narrations"]:
-                db.execute(f"INSERT INTO narrations ({', '.join(n)}) VALUES ({', '.join('?' * len(n))})",
-                           list(n.values()))
-        db.commit()
-        os.remove(path)
-        self.mark_take_cut(take["file"], None)
-        self.send_json(200, {"restored": take["id"], "name": take["name"], "overlays": len(saved["overlays"])})
+                   (take["duration_s"], url, take["overlay_applied"], take_id))
+        def put(table, r):
+            # With its old id where that is still free (another take's row may
+            # have taken it since), else as a new row.
+            r = {**r, "take_id": take_id}
+            try:
+                db.execute(f"INSERT INTO {table} ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})",
+                           list(r.values()))
+            except sqlite3.IntegrityError:
+                r.pop("id", None)
+                db.execute(f"INSERT INTO {table} ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})",
+                           list(r.values()))
+
+        db.execute("DELETE FROM overlays WHERE take_id = ?", (take_id,))
+        for o in snap["overlays"]:
+            put("overlays", o)
+        # Sidecars written before narrations had rows have none, and leave them alone.
+        if "narrations" in snap:
+            db.execute("DELETE FROM narrations WHERE take_id = ?", (take_id,))
+            for n in snap["narrations"]:
+                put("narrations", n)
+
+    def undo_take(self):
+        # POST /takes/undo {id}: take back the take's current edit. The take
+        # as it is now (its files, to media/.trash/ as <stem>-after-…; its
+        # row, items and narrations, into the sidecar's "undone" mark) is kept
+        # for Redo, and the files and rows from before the edit come back.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db, row = self.take_row(body.get("id"))
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        with EDIT_LOCK:
+            edits, cursor, _, why = history_state(row["file"])
+            if cursor is None:
+                return self.send_json(409, {"error": why or "nothing to undo"})
+            name, saved = edits[cursor]
+            src = os.path.join(ROOT, row["file"])
+            clean = os.path.join(ROOT, ".clean", row["file"])
+            after = {"take": dict(row), "files": {},
+                     "overlays": [dict(r) for r in db.execute(
+                         "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))],
+                     "narrations": [dict(r) for r in db.execute(
+                         "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))]}
+            # Everything the take has now steps aside (a clean copy made since
+            # the edit too), then the files from before the edit come back.
+            for path in [src] + ([clean] if os.path.isfile(clean) else []):
+                rel = os.path.relpath(path, ROOT)
+                kept = name[:-5].replace("-before-", "-clean-after-" if path == clean else "-after-") + ".mp4"
+                shutil.move(path, os.path.join(TRASH, kept))
+                after["files"][rel] = kept
+            for orig, trashed in saved["files"].items():
+                shutil.move(os.path.join(TRASH, trashed), os.path.join(ROOT, orig))
+            self.restore_rows(db, row["id"], saved)
+            db.commit()
+            after["stat"] = file_stat(src)
+            saved["undone"] = after
+            with open(os.path.join(TRASH, name), "w") as f:
+                json.dump(saved, f, indent=1)
+            self.mark_take_cut(row["file"], None)
+        self.send_json(200, {"id": row["id"], "undone": edit_what(name, saved)})
+
+    def redo_take(self):
+        # POST /takes/redo {id}: put back the edit just above the cursor: the
+        # files from before it return to media/.trash/ and the take as it was
+        # after the edit, kept by undo_take, comes back.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db, row = self.take_row(body.get("id"))
+        if not row:
+            return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        with EDIT_LOCK:
+            edits, _, redo, _ = history_state(row["file"])
+            if redo is None:
+                return self.send_json(409, {"error": "nothing to redo"})
+            name, saved = edits[redo]
+            after = saved["undone"]
+            src = os.path.join(ROOT, row["file"])
+            for orig, trashed in saved["files"].items():
+                shutil.move(os.path.join(ROOT, orig), os.path.join(TRASH, trashed))
+            for orig, kept in after["files"].items():
+                os.makedirs(os.path.dirname(os.path.join(ROOT, orig)), exist_ok=True)
+                shutil.move(os.path.join(TRASH, kept), os.path.join(ROOT, orig))
+            self.restore_rows(db, row["id"], after)
+            db.commit()
+            del saved["undone"]
+            saved["after"] = file_stat(src)
+            with open(os.path.join(TRASH, name), "w") as f:
+                json.dump(saved, f, indent=1)
+            kind = edit_kind(name, saved)
+            self.mark_take_cut(row["file"], {kind: saved.get(kind)})
+        self.send_json(200, {"id": row["id"], "redone": edit_what(name, saved)})
 
     def recording(self):
         return recorder is not None and recorder.poll() is None
@@ -1869,7 +2010,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "the running take didn't stop in time"})
         if self.recording() or testing.locked() or narration["current"]:
             return self.send_json(409, {"error": "the mic is busy (recording, narrating or testing)"})
-        set_undo_floor()  # a new recording: earlier take edits are settled work
         with EVENTS_LOCK:
             pending_events.clear()
         log = open(os.path.join(HERE, "record.log"), "a")

@@ -34,9 +34,9 @@
         if (m.error &amp;&amp; m.dictation === dictating) { dictating = ''; toast.error('Dictation stopped: ' + m.error); }
         else if (m.dictation === dictating &amp;&amp; m.text !== undefined) liveNote = m.text;
       }
-      else if (m.changed === 'takes') { takes.refetch(); undoableCut.refetch(); narrs.refetch(); }
+      else if (m.changed === 'takes') { takes.refetch(); edits.refetch(); narrs.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
-      else if (m.changed === 'record') { recStatus.refetch(); undoableCut.refetch(); }
+      else if (m.changed === 'record') { recStatus.refetch(); edits.refetch(); }
       else if (m.changed === 'exports') exports.refetch();
     }" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
@@ -184,7 +184,7 @@
       }
       narrBusy = false;
       cutSeq = cutSeq + 1;
-      undoableCut.refetch();
+      edits.refetch();
       narrs.refetch();
       takes.refetch();
     }
@@ -225,25 +225,28 @@
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
-       its clean copy, callouts shifted), and undo it from the sidecar the cut
-       left in media/.trash/. No onSuccess (xmlui-org/xmlui#3924). The Undo line
-       asks the server which cut can still be undone (undoableCut, GET
-       /takes/last-cut), so it survives a reload; it is refetched after each
-       cut and undo and whenever the takes change. cutSeq goes into the take
-       player's src so it reloads the changed video. -->
-  <DataSource id="undoableCut" url="http://127.0.0.1:8765/takes/last-cut" />
+       its clean copy, callouts shifted). No onSuccess (xmlui-org/xmlui#3924).
+       cutSeq goes into the take player's src so it reloads the changed video.
+       edits is the edited take's history for the History tab (GET
+       /takes/edits: its edits newest first, which one Undo would take back,
+       and whether Undo and Redo are possible); it is refetched after every
+       edit, undo and redo and whenever the takes change. undoEdit and
+       redoEdit step back and forth through it. -->
+  <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + (editTake || 0)}" />
+  <APICall id="undoEdit" method="post" url="http://127.0.0.1:8765/takes/undo"
+    body="{{ id: $param }}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
+  <APICall id="redoEdit" method="post" url="http://127.0.0.1:8765/takes/redo"
+    body="{{ id: $param }}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
     body="{{ id: $param.id, start: $param.start, end: $param.end }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Insert a pause: hold the frame at a point for some seconds, with silence
-       (serve_media.py's /takes/pause). Undone like a cut, by the same line. -->
+       (serve_media.py's /takes/pause). An edit like a cut. -->
   <APICall id="pauseTake" method="post" url="http://127.0.0.1:8765/takes/pause"
     body="{{ id: $param.id, at: $param.at, seconds: $param.seconds }}"
-    invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="uncutTake" method="post" url="http://127.0.0.1:8765/takes/uncut"
-    body="{{ undo: $param }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Undo the last delete: serve_media.py restores the take, its files and its
@@ -928,7 +931,7 @@
                     removeNarration.execute($item.nid);
                     cutSeq = cutSeq + 1;
                     narrs.refetch();
-                    undoableCut.refetch();
+                    edits.refetch();
                     takes.refetch();
                   } else {
                     deleteCallout.execute($item.id);
@@ -1052,7 +1055,7 @@
               cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
               cutSeq = cutSeq + 1;
               lastCut = [0, 1]; cutSeed = [0, 1];
-              undoableCut.refetch();
+              edits.refetch();
               narrs.refetch();
               takes.refetch();
               callouts.refetch();
@@ -1113,7 +1116,7 @@
               calloutText.setValue(''); calloutTail.setValue('none');
               pauseTake.execute({ id: editTake, at: pauseAt, seconds: pauseSecs });
               cutSeq = cutSeq + 1;
-              undoableCut.refetch();
+              edits.refetch();
               narrs.refetch();
               takes.refetch();
               callouts.refetch();
@@ -1134,8 +1137,8 @@
              records; the Timer below stops it at the clip's end (a Timer
              waits for its handler before ticking again:
              https://www.xmlui.org/docs/reference/components/Timer), or Stop
-             does earlier. The take's audio there is then replaced; the same
-             Undo line takes it back. While narrating, a row under the slider
+             does earlier. The take's audio there is then replaced; Undo, on
+             the History tab, takes it back. While narrating, a row under the slider
              shows the clip's start and end with a ProgressBar between them
              (value 0 to 1:
              https://www.xmlui.org/docs/reference/components/ProgressBar)
@@ -1183,6 +1186,80 @@
           </HStack>
         </VStack>
         </TabItem>
+        <!-- History: the take's edits (cut, pause, narrate, a narration
+             removed), newest first, with when each was made. The tinted row
+             is the edit Undo takes back: the most recent one still in effect.
+             Undo moves the tint down a row and leaves the undone edit above
+             it, dimmed; Redo puts the edit just above the tint back. A new
+             edit discards the undone ones. The table is plain rows, not a
+             Table: Table has no per-row style, and tinting each cell from its
+             row (https://www.xmlui.org/docs/howto/highlight-rows-conditionally)
+             left the tint as separate blocks with gaps between them.
+             Both buttons let go of the current item first, as a cut does:
+             the take's items are swapped with its files. -->
+        <TabItem label="History">
+        <VStack>
+          <HStack verticalAlignment="center">
+            <Button label="Undo" size="xs" variant="outlined"
+              tooltip="Take back the tinted edit"
+              enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
+              handlerTimeoutMs:onClick="0"
+              onClick="
+                cutPreview = null;
+                editCallout = null; calloutBox = null; lastSprite = null;
+                curShape = null; curText = ''; curTail = 'none';
+                calloutText.setValue(''); calloutTail.setValue('none');
+                undoEdit.execute(editTake);
+                cutSeq = cutSeq + 1;
+                lastCut = [0, 1]; cutSeed = [0, 1];
+                edits.refetch();
+                narrs.refetch();
+                takes.refetch();
+                callouts.refetch();
+                savedSprites.refetch();
+                applyState.refetch();
+              " />
+            <Button label="Redo" size="xs" variant="outlined"
+              tooltip="Put back the edit just above the tinted one"
+              enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
+              handlerTimeoutMs:onClick="0"
+              onClick="
+                cutPreview = null;
+                editCallout = null; calloutBox = null; lastSprite = null;
+                curShape = null; curText = ''; curTail = 'none';
+                calloutText.setValue(''); calloutTail.setValue('none');
+                redoEdit.execute(editTake);
+                cutSeq = cutSeq + 1;
+                lastCut = [0, 1]; cutSeed = [0, 1];
+                edits.refetch();
+                narrs.refetch();
+                takes.refetch();
+                callouts.refetch();
+                savedSprites.refetch();
+                applyState.refetch();
+              " />
+            <Spinner when="{undoEdit.inProgress || redoEdit.inProgress}" />
+            <Text variant="secondary" when="{!!edits.value &amp;&amp; !!edits.value.note}" value="{edits.value.note}" />
+          </HStack>
+          <Text variant="secondary" when="{!!edits.value &amp;&amp; edits.value.edits.length === 0}"
+            value="No edits to this take yet." />
+          <VStack gap="0" when="{!!edits.value &amp;&amp; edits.value.edits.length > 0}">
+            <HStack paddingHorizontal="$space-2" paddingVertical="$space-1">
+              <Text variant="secondary" width="200px" value="When" />
+              <Text variant="secondary" value="Edit" />
+            </HStack>
+            <Items data="{edits.value ? edits.value.edits : []}">
+              <HStack verticalAlignment="center" paddingHorizontal="$space-2" paddingVertical="$space-1"
+                backgroundColor="{$item.current ? '$color-primary-100' : 'transparent'}">
+                <Text width="200px" when="{!$item.undone}" value="{$item.when}" />
+                <Text width="200px" when="{$item.undone}" variant="secondary" value="{$item.when}" />
+                <Text when="{!$item.undone}" value="{$item.what}" />
+                <Text when="{$item.undone}" variant="secondary" value="{$item.what + ' (undone)'}" />
+              </HStack>
+            </Items>
+          </VStack>
+        </VStack>
+        </TabItem>
         </Tabs>
         </Theme>
         <Timer interval="40" enabled="{!!narrating}"
@@ -1205,25 +1282,6 @@
            Bram's queue uses): only the grip drags, so the row's buttons stay live.
            The order is saved to takes.position via POST /reorder. New takes go to
            the top (register.py). -->
-      <HStack when="{!!undoableCut.value &amp;&amp; !!undoableCut.value.undo}"
-        verticalAlignment="center">
-        <Text value="{undoableCut.value.what} {undoableCut.value.name}." overflowMode="flow" />
-        <Button label="Undo" size="sm" variant="outlined" handlerTimeoutMs:onClick="0"
-          enabled="{!uncutTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
-          onClick="
-            editCallout = null; calloutBox = null; lastSprite = null;
-            curShape = null; curText = ''; curTail = 'none';
-            uncutTake.execute(undoableCut.value.undo);
-            cutSeq = cutSeq + 1;
-            lastCut = [0, 1]; cutSeed = [0, 1];
-            undoableCut.refetch();
-            narrs.refetch();
-            takes.refetch();
-            callouts.refetch();
-            savedSprites.refetch();
-            applyState.refetch();
-          " />
-      </HStack>
       <HStack when="{deleteTake.lastResult &amp;&amp; deleteTake.lastResult.undo !== dismissedUndo}"
         verticalAlignment="center">
         <Text value="Deleted {deleteTake.lastResult.name}." />
