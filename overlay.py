@@ -27,8 +27,8 @@ import sys
 import tempfile
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-MEDIA = os.path.join(HERE, "media")
+from studio_paths import DB, MEDIA, WORK
+
 FONT, FONT_INDEX = "/System/Library/Fonts/HelveticaNeue.ttc", 10  # Helvetica Neue Medium
 FADE_S = 0.2
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage", "-pix_fmt", "yuv420p"]
@@ -391,7 +391,7 @@ def render(db, take_id):
         LAYOUTS = [layout(it, W, H) for it in items]
         # Frames with the same items at the same opacity share one PNG: only
         # fades need their own, so steady captions cost one image each.
-        work = tempfile.mkdtemp(prefix="overlay-", dir=os.path.join(HERE, "work"))
+        work = tempfile.mkdtemp(prefix="overlay-", dir=WORK)
         drawn, jobs = {}, []
         for i in range(frames):
             t = i / fps
@@ -417,7 +417,7 @@ def render(db, take_id):
 def main():
     cmd, take_id = sys.argv[1], int(sys.argv[2])
     t0 = time.time()
-    db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+    db = sqlite3.connect(DB)
     ensure_schema(db)
     if cmd == "preview":
         preview(db, take_id, json.load(open(sys.argv[3])), sys.argv[4])

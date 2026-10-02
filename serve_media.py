@@ -62,13 +62,17 @@ import urllib.parse
 import urllib.request
 
 import overlay
+import studio_paths
 import voicetest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.join(HERE, "media")
+HERE = studio_paths.REPO  # the scripts, record.log
+# The open project (studio_paths.py): its takes and exports, its database and
+# its render ingredients. The scripts launched from here inherit it.
+ROOT, DB, WORK = studio_paths.MEDIA, studio_paths.DB, studio_paths.WORK
+os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
 recorder = None  # the running record.sh, if any
 testing = threading.Lock()  # held while voicetest.py has the mic
-SOURCES = os.path.join(HERE, "sources")  # source movies, usually symlinks
+SOURCES = studio_paths.SOURCES  # source movies, usually symlinks
 DESKTOP = os.path.expanduser("~/Desktop")  # where recordings usually land
 
 
@@ -141,7 +145,7 @@ def fingerprints():
         except OSError:
             return None
     return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
-            "takes": mtime(os.path.join(HERE, "studio.db")),
+            "takes": mtime(DB),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
             "exports": exports_fingerprint()}
 
@@ -976,7 +980,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not exporting.acquire(blocking=False):
             return self.send_json(409, {"error": "an export is already running"})
         try:
-            db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+            db = sqlite3.connect(DB)
             names = [f for (f,) in db.execute("SELECT file FROM takes ORDER BY position, created_at DESC")]
             files = [os.path.join(ROOT, f) for f in names if os.path.isfile(os.path.join(ROOT, f))]
             if not files:
@@ -1058,7 +1062,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": err})
         take_id, text, box, t_in, t_out, tail, shape = fields
         kind = "shape" if shape else "callout"
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take_id,)).fetchone():
             return self.send_json(404, {"error": f"no take with id {take_id}"})
         if update:
@@ -1086,7 +1090,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         take_id, text, box, _, _, tail, shape = fields
         item = {"text": text, "x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3], "tail": tail,
                 "shape": shape, "frame": bool(body.get("frame")) and not shape}
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         try:
             # id: the saved item this is, echoed so the page can tell a sprite
             # that has just loaded from the previously selected item's.
@@ -1154,7 +1158,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         take_id = body.get("take_id")
         if not isinstance(take_id, int):
             return self.send_json(400, {"error": "take_id must be a take id"})
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         rows = db.execute("SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays "
                           "WHERE take_id = ? AND kind IN ('callout', 'shape') ORDER BY t_in", (take_id,)).fetchall()
         out = []
@@ -1199,7 +1203,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def delete_callout(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         n = db.execute("DELETE FROM overlays WHERE id = ? AND kind IN ('callout', 'shape')", (body.get("id"),)).rowcount
         db.commit()
         self.send_json(200 if n else 404, {"deleted": body.get("id")} if n else {"error": "no such callout"})
@@ -1213,7 +1217,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "a take is already being rendered"})
         # Apply rewrites the take's file without being an edit: keep the
         # take's edit history pointing at it (resync_history).
-        row = sqlite3.connect(os.path.join(HERE, "studio.db")).execute(
+        row = sqlite3.connect(DB).execute(
             "SELECT file FROM takes WHERE id = ?", (body["id"],)).fetchone()
         try:
             was = file_stat(os.path.join(ROOT, row[0])) if row else None
@@ -1234,7 +1238,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # The takes list's drag order: each id's index becomes its position.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         ids = [i for i in body.get("ids", []) if isinstance(i, int)]
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.executemany("UPDATE takes SET position = ? WHERE id = ?", [(pos, tid) for pos, tid in enumerate(ids)])
         db.commit()
         self.send_json(200, {"reordered": len(ids)})
@@ -1243,7 +1247,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Move the take's MP4 to media/.trash/ first; drop the row only if that worked.
         # Beside it, <name>.json keeps the take's row and its overlays for /undelete.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
@@ -1300,7 +1304,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         for orig, trashed in files.items():
             os.makedirs(os.path.dirname(os.path.join(ROOT, orig)), exist_ok=True)
             shutil.move(os.path.join(trash, trashed), os.path.join(ROOT, orig))
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         take = dict(saved["take"])
         if db.execute("SELECT 1 FROM takes WHERE id = ?", (take["id"],)).fetchone():
             del take["id"]
@@ -1329,7 +1333,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # a sidecar (the take's row, its overlays) go to media/.trash/ first,
         # for Undo (undo_take).
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
@@ -1383,7 +1387,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # starting at or after `at` move later; one on the held frame is
         # extended, so it stays up through the pause, as it does in the picture.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
@@ -1450,7 +1454,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # One at a time, and never while a take records, a note is dictated or
         # a voice test runs.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
@@ -1558,7 +1562,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if loud < NARRATE_FLOOR:
                 return self.send_json(400, {"error": "no speech was heard, so the take is unchanged"})
             gain = -16.0 - loud
-            db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+            db = sqlite3.connect(DB)
             db.row_factory = sqlite3.Row
             row = db.execute("SELECT * FROM takes WHERE id = ?", (n["id"],)).fetchone()
             src = os.path.join(ROOT, row["file"]) if row else ""
@@ -1624,7 +1628,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # clean copy, the picture stream-copied. An edit like the others, so
         # the Undo line offers to put the narration back.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         n = db.execute("SELECT * FROM narrations WHERE id = ?", (body.get("id"),)).fetchone()
         if not n:
@@ -1743,7 +1747,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def mark_take_cut(file, cut):
         # cut = {"cut": [start, end]} or {"pause": [at, seconds]} to record an
         # edit; None to take the last one back.
-        meta_path = os.path.join(HERE, "work", "takes", file.replace("-raw.mp4", ".json"))
+        meta_path = os.path.join(WORK, "takes",file.replace("-raw.mp4", ".json"))
         try:
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -1756,7 +1760,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             print(f"mark_take_cut: {e}", flush=True)
 
     def take_row(self, take_id):
-        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         return db, db.execute("SELECT * FROM takes WHERE id = ?", (take_id,)).fetchone()
 
@@ -2026,7 +2030,7 @@ def adopt_running_take():
 
 
 # The callouts query reads overlays, so it must exist before the page asks.
-with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
+with sqlite3.connect(DB) as _db:
     overlay.ensure_schema(_db)
     _db.execute(NARRATIONS_SQL)
 recorder = adopt_running_take()

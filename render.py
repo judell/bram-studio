@@ -6,8 +6,8 @@
 
 Descended from an earlier take.py (QuickTime + a polled playhead log). The
 playhead path comes from the studio's MediaPlayer events (start/play/pause/
-seeked/ended, each with currentTime and wallMs). It works in the repo's work/
-folder: sessions/<stamp>/, takes/ and narrated/ live there, and the take is
+seeked/ended, each with currentTime and wallMs). It works in the project's work/
+folder (studio_paths.py): sessions/<stamp>/, takes/ and narrated/ live there, and the take is
 named take-<stamp> after its session, so names never repeat.
 
 The take runs from just after "go" to just before "stop" (GAP trimmed on
@@ -30,7 +30,9 @@ import subprocess
 import sys
 import wave
 
-HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
+import studio_paths
+
+HERE = studio_paths.WORK  # everything this script touches is under work/
 RATE, GAP, FPS = 48000, 0.2, 25
 ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage",
        "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]

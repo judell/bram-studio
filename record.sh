@@ -13,17 +13,18 @@
 # slice, since its leveling sounds worse.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Sessions, voice slices and renders live in work/ (gitignored).
-WORK="$HERE/work"
+# The open project's folders (studio_paths.py): MEDIA, and WORK for sessions,
+# voice slices and renders (gitignored). SOURCES is shared by all projects.
+eval "$(python3 "$HERE/studio_paths.py")"
 MIC="${MIC:-MacBook Air Microphone}"
 NATIVE="$HOME/.cache/bram-studio/record_native"
 # The phase serve_media.py reports at /record/status, for the app's spinner.
-STATE="$HERE/media/.record-state"
+STATE="$MEDIA/.record-state"
 phase() { echo "$1" > "$STATE"; }
-SESSION_FILE="$HERE/media/.record-session"
-STOP="$HERE/media/.record-stop"
+SESSION_FILE="$MEDIA/.record-session"
+STOP="$MEDIA/.record-stop"
 # Restart / Discard (POST /record/restart, /record/cancel): end without a take.
-CANCEL="$HERE/media/.record-cancel"
+CANCEL="$MEDIA/.record-cancel"
 trap 'rm -f "$STATE" "$SESSION_FILE" "$STOP" "$CANCEL"' EXIT
 rm -f "$STOP" "$CANCEL"
 phase starting
@@ -31,8 +32,8 @@ if [ -n "$1" ]; then
   SRC="$1"
 else
   shopt -s nullglob
-  srcs=("$HERE"/sources/*.mp4 "$HERE"/sources/*.mov "$HERE"/sources/*.m4v)
-  if [ ${#srcs[@]} -ne 1 ]; then echo "pass a source: ${#srcs[@]} movies in $HERE/sources"; exit 1; fi
+  srcs=("$SOURCES"/*.mp4 "$SOURCES"/*.mov "$SOURCES"/*.m4v)
+  if [ ${#srcs[@]} -ne 1 ]; then echo "pass a source: ${#srcs[@]} movies in $SOURCES"; exit 1; fi
   SRC="${srcs[0]}"
 fi
 SRC=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$SRC")

@@ -24,8 +24,8 @@ import tempfile
 from datetime import datetime
 
 import overlay
+from studio_paths import DB, MEDIA
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("WHISPER_MODEL", os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
 NAME_WORDS, NOTE_WORDS, MIN_WORDS, LISTEN_S = 24, 40, 3, 600
 
@@ -56,7 +56,7 @@ src_end = sys.argv[4] if len(sys.argv) > 4 else None
 source = sys.argv[5] if len(sys.argv) > 5 else None
 warning = (sys.argv[6] if len(sys.argv) > 6 else "") or None
 fname = os.path.basename(src)
-dest = os.path.join(HERE, "media", fname)
+dest = os.path.join(MEDIA, fname)
 if os.path.abspath(src) != dest:
     shutil.copy2(src, dest)
 notes = None
@@ -66,7 +66,7 @@ if name == "-":
     notes = " ".join(words[:NOTE_WORDS]) or None
 dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", dest],
                            capture_output=True, text=True).stdout.strip() or 0)
-db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+db = sqlite3.connect(DB)
 # Databases made before takes had these columns get them.
 columns = [c[1] for c in db.execute("PRAGMA table_info(takes)")]
 for col in ("source", "warning"):

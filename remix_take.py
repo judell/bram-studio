@@ -38,10 +38,9 @@ import sys
 import time
 import wave
 
+from studio_paths import DB, MEDIA, PROJECT, WORK
 from voicegate import LIMITER, SOURCE_FLOOR, VOICE_PRE, gate_voice, level_filter
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-WORK, MEDIA = os.path.join(HERE, "work"), os.path.join(HERE, "media")
 FMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 
 
@@ -74,7 +73,7 @@ def remix(stamp, dry_run):
     targets = [p for p in (os.path.join(MEDIA, f"{take}-raw.mp4"), os.path.join(MEDIA, ".clean", f"{take}-raw.mp4"))
                if os.path.exists(p)]
     print(f"{take}: source at {level:.1f} LUFS, below {SOURCE_FLOOR}: re-mixing without boost "
-          f"({', '.join(os.path.relpath(p, HERE) for p in targets)})")
+          f"({', '.join(os.path.relpath(p, PROJECT) for p in targets)})")
     if dry_run or not targets:
         return
     # record.sh's mix, with the source track as recorded (anull).
@@ -98,7 +97,7 @@ def remix(stamp, dry_run):
 
 
 def bump_url(take):
-    db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+    db = sqlite3.connect(DB)
     db.execute("UPDATE takes SET url = substr(url, 1, instr(url || '?', '?') - 1) || '?v=' || ? WHERE file = ?",
                (int(time.time()), f"{take}-raw.mp4"))
     db.commit()
@@ -179,7 +178,7 @@ def regate(stamp, dry_run):
     slevel = level_filter(src_wav, floor=SOURCE_FLOOR)
     steps, out = edits
     print(f"{take}: voice {'silent' if vlevel == 'anull' else 'leveled'}, {len(steps)} edit"
-          f"{'' if len(steps) == 1 else 's'} to replay ({', '.join(os.path.relpath(p, HERE) for p in targets)})")
+          f"{'' if len(steps) == 1 else 's'} to replay ({', '.join(os.path.relpath(p, PROJECT) for p in targets)})")
     if dry_run:
         os.remove(tmp_clean)
         return
