@@ -1516,7 +1516,15 @@
               ...(takes.value || []).map(t => ({ label: 'Take: ' + t.name.slice(0, 60), value: t.url })),
               ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
             ]}"
-            onDidChange="audioLog = []; audioDuration = ''" />
+            onDidChange="audioLog = []; audioDuration = ''">
+            <!-- A take's name is long enough to wrap, and a Select's wrapped
+                 value centers by default (its face is a button). The
+                 template's width and textAlign make it wrap from the left
+                 (https://www.xmlui.org/docs/howto/customize-a-selects-selected-value). -->
+            <property name="valueTemplate">
+              <Text width="100%" textAlign="start" value="{$item.label}" />
+            </property>
+          </Select>
           <Button label="Clear log" variant="outlined" onClick="audioLog = []" />
         </HStack>
         <MediaPlayer kind="audio" when="{audioChoice.value}" src="{audioChoice.value}"
