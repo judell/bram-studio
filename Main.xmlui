@@ -1297,14 +1297,17 @@
       </HStack>
       <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
         value="Nothing exported yet." />
-      <!-- Every row, in both sections, uses the same columns so the notes
-           line up: time 110px, length 150px, name 340px, mic + note (*, a
-           leveled row's loudness beneath it),
-           trailing column 100px (Level), delete.
+      <!-- Each export takes two lines, in both sections. First: time 110px,
+           length 150px, the name. Second: mic, the note (all the width
+           that's left; a leveled row's loudness beneath it), its ✕, Level
+           (unleveled only) and delete, which ends the line in both sections,
+           so the trash cans line up. On one line the fixed columns left the
+           note a third of a wide window and almost nothing of a narrow one.
            Exports holds every file here that isn't leveled. One that isn't
            exactly what Export wrote (an editor saved over it, or beside it)
            carries an "edited" tag; the note says what was done. -->
       <Items data="{exports.value ? exports.value.exports : []}">
+        <VStack gap="$space-1" paddingBottom="$space-3">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
           <HStack width="150px" verticalAlignment="center" gap="$space-1">
@@ -1312,10 +1315,12 @@
             <Spinner when="{$item.writing}" />
             <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
           </HStack>
-          <HStack width="340px" verticalAlignment="center" gap="$space-2">
+          <HStack width="*" verticalAlignment="center" gap="$space-2">
             <Link to="{$item.url}" target="_blank" label="{$item.name}" />
             <Text variant="secondary" when="{$item.edited}" value="edited" />
           </HStack>
+        </HStack>
+        <HStack verticalAlignment="center">
           <HStack width="*" verticalAlignment="center" gap="$space-1">
             <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
               tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
@@ -1348,6 +1353,7 @@
               exports.refetch();
             " />
         </HStack>
+        </VStack>
       </Items>
       <HStack verticalAlignment="center" when="{levelExport.inProgress}">
         <Spinner />
@@ -1356,7 +1362,11 @@
       <H2>Leveled exports</H2>
       <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
         value="Click Level on an export." />
+      <!-- A leveled row's second line is aligned to its top: the loudness
+           report under the note makes the note's column taller than the
+           buttons beside it. -->
       <Items data="{exports.value ? exports.value.leveled : []}">
+        <VStack gap="$space-1" paddingBottom="$space-3">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
           <HStack width="150px" verticalAlignment="center" gap="$space-1">
@@ -1364,8 +1374,10 @@
             <Spinner when="{$item.writing}" />
             <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
           </HStack>
-          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="340px" />
-          <HStack width="*" verticalAlignment="center" gap="$space-1">
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="*" />
+        </HStack>
+        <HStack verticalAlignment="start">
+          <HStack width="*" verticalAlignment="start" gap="$space-1">
             <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
               tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
               enabled="{!dictating || dictating === noteKey($item)}"
@@ -1389,6 +1401,7 @@
               exports.refetch();
             " />
         </HStack>
+        </VStack>
       </Items>
       </Theme>
     </Page>
