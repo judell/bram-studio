@@ -10,7 +10,9 @@ it (and couldn't seek). This fills that gap until Bram does it itself.
 The open project (studio_paths.py) is fixed at startup: its media/ is what
 is served, and POST /query {sql, params} answers the pages' read-only
 queries from its studio.db. /tests/<name> serves the Audio bench's shared
-recordings.
+recordings. GET /projects lists the project folders; POST /projects/open
+{slug} and /projects/new {name} switch to one, by starting this server over
+on it (refused while a take, narration, render, export or edit is under way).
 
 GET /sources lists the movies in sources/ and on the Desktop (newest first)
 and /sources/<name> streams one;
@@ -87,6 +89,9 @@ PHASES = {"starting": "Starting the recorder…",
           "naming": "Naming the take from its narration…"}
 
 
+# POSTs in flight, and whether the server is about to start over on another
+# project (Handler.open_project): from then on new POSTs are turned away.
+POSTS, POSTS_LOCK = {"n": 0, "restarting": False}, threading.Lock()
 exporting = threading.Lock()  # one export at a time
 overlaying = threading.Lock()  # one overlay.py render at a time
 SPRITE_WHERE = {}  # recording sprite tag -> where it goes (0-1 picture box)
@@ -138,6 +143,53 @@ def push(message):
     with EVENT_LOCK:
         for q in EVENT_QUEUES:
             q.put(message)
+
+
+def project_info(slug):
+    # One row of the Projects page, or None for a folder that isn't a project
+    # (no project.json). Its takes are counted from its own database.
+    folder = os.path.join(studio_paths.PROJECTS, slug)
+    try:
+        with open(os.path.join(folder, "project.json")) as f:
+            name = json.load(f).get("name") or slug
+    except (OSError, ValueError):
+        return None
+    takes, seconds, changed, db_path = 0, 0.0, None, os.path.join(folder, "studio.db")
+    try:
+        changed = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(db_path)))
+        db = sqlite3.connect(f"file:{urllib.parse.quote(db_path)}?mode=ro", uri=True)
+        try:
+            takes, seconds = db.execute("SELECT count(*), coalesce(sum(duration_s), 0) FROM takes").fetchone()
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        pass
+    return {"slug": slug, "name": name, "takes": takes, "seconds": round(seconds, 1), "changed": changed,
+            "open": folder == studio_paths.PROJECT}
+
+
+def list_projects():
+    # {open, name, projects}: every project folder, by name, and which one
+    # this server has open (none, in a Studio from before projects).
+    try:
+        slugs = [s for s in os.listdir(studio_paths.PROJECTS) if not s.startswith(".")]
+    except OSError:
+        slugs = []
+    projects = sorted(filter(None, map(project_info, slugs)), key=lambda p: p["name"].lower())
+    current = next((p for p in projects if p["open"]), None)
+    return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects}
+
+
+def restart():
+    # Opening another project starts the server over on it. Every path here
+    # was worked out once, at startup (ROOT, DB, WORK and what is built from
+    # them), so starting over can't leave one pointing at the old project,
+    # where looking each up at the moment of use could miss a site. Nothing
+    # else is running: open_project checked, and new POSTs are turned away.
+    time.sleep(0.3)  # the response to the click goes out first
+    os.environ.pop("STUDIO_PROJECT", None)  # projects/.open decides now
+    print(f"restarting to open {open(studio_paths.OPEN).read().strip()}", flush=True)
+    os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), *sys.argv[1:]])
 
 
 def fingerprints():
@@ -740,6 +792,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, [{"name": n} for n in sources()])
         if self.path == "/exports":
             return self.send_json(200, list_exports())
+        if self.path == "/projects":
+            return self.send_json(200, list_projects())
         if self.path == "/dictation/status":
             return self.dictation_status()
         if self.path == "/dictation/engine":
@@ -781,8 +835,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 EVENT_QUEUES.discard(q)
 
     def do_POST(self):
+        # Counted, so opening another project (which restarts the server) can
+        # tell that no other request is in the middle of changing something.
+        # The pages' queries change nothing, so they are neither counted nor
+        # turned away.
         if self.path == "/query":
             return self.query()
+        with POSTS_LOCK:
+            if POSTS["restarting"]:
+                return self.send_json(503, {"error": "Studio is opening another project; try again in a moment"})
+            POSTS["n"] += 1
+        try:
+            self.route_post()
+        finally:
+            with POSTS_LOCK:
+                POSTS["n"] -= 1
+
+    def route_post(self):
+        if self.path == "/projects/open":
+            return self.open_project()
+        if self.path == "/projects/new":
+            return self.new_project()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -1994,6 +2067,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["voicetest failed"])[-1]})
         self.send_json(200, json.loads(r.stdout))
 
+    def busy(self):
+        # What a restart would interrupt, or None. This request is one POST.
+        if self.recording():
+            return "a take is being recorded"
+        if narration["current"]:
+            return "a narration is being recorded"
+        if dictation["current"]:
+            return dictating_where()
+        if testing.locked() or exporting.locked() or overlaying.locked() or POSTS["n"] > 1:
+            return "Studio is busy (rendering, exporting or saving an edit)"
+        return None
+
+    def open_project(self, slug=None):
+        # {slug}: make that project the open one. projects/.open is written
+        # and the server starts over on it (restart); the pages' event stream
+        # reconnects and they refetch. Refused while anything is under way.
+        if slug is None:
+            slug = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}").get("slug")
+        folder = os.path.join(studio_paths.PROJECTS, str(slug))
+        if (not isinstance(slug, str) or not slug or os.path.basename(slug) != slug or slug.startswith(".")
+                or not os.path.isfile(os.path.join(folder, "project.json"))):
+            return self.send_json(404, {"error": f"no project named {slug!r}"})
+        if folder == studio_paths.PROJECT:
+            return self.send_json(200, {"opened": slug, "restarting": False})
+        why = self.busy()
+        if why:
+            return self.send_json(409, {"error": f"Can't open another project now: {why}"})
+        with POSTS_LOCK:
+            POSTS["restarting"] = True
+        with open(studio_paths.OPEN, "w") as f:
+            f.write(slug + "\n")
+        self.send_json(200, {"opened": slug, "restarting": True})
+        threading.Thread(target=restart).start()
+
+    def new_project(self):
+        # {name}: a new, empty project folder (studio_paths.py), then open it.
+        # The folder is named from the name: lowercase, dashes for the rest.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name = str(body.get("name") or "").strip()
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if not slug:
+            return self.send_json(400, {"error": "Give the project a name with a letter or digit in it"})
+        folder = os.path.join(studio_paths.PROJECTS, slug)
+        if os.path.exists(folder):
+            return self.send_json(409, {"error": f"There is already a project folder named {slug}"})
+        why = self.busy()
+        if why:
+            return self.send_json(409, {"error": f"Can't open a new project now: {why}"})
+        os.makedirs(os.path.join(folder, "media"))
+        os.makedirs(os.path.join(folder, "work"))
+        with open(os.path.join(folder, "project.json"), "w") as f:
+            json.dump({"name": name}, f, indent=1)
+        with sqlite3.connect(os.path.join(folder, "studio.db")) as db:
+            db.executescript(open(os.path.join(HERE, "schema.sql")).read())
+        self.open_project(slug)
+
     def query(self):
         # The pages' DataSource dataType="sql" requests, answered from the
         # open project's database: {sql, params} (or bare SQL) in, a JSON
@@ -2071,6 +2200,7 @@ def adopt_running_take():
     return AdoptedRecorder(ppid)
 
 
+os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
     overlay.ensure_schema(_db)

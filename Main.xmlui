@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -16,6 +16,10 @@
        log, record.sh renders from it, and the take appears when it
        registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
+  <!-- The project folders and which one is open ({open, name, projects};
+       list_projects() in serve_media.py), for the Projects page and the name
+       at the top of the nav panel. -->
+  <DataSource id="projects" url="http://127.0.0.1:8765/projects" />
   <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
     pollIntervalInSeconds="60" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
@@ -27,8 +31,15 @@
        tells the server whether this page is dictating, and into which row,
        so a reload can't leave the server holding the mic for a dictation
        that no longer exists. -->
+  <!-- A reconnect also follows the server starting over on another project
+       (Open or Create on the Projects page), so onOpen refetches every list;
+       when this page asked for the switch (`opening`), it then shows Takes. -->
   <EventSource url="http://127.0.0.1:8765/events"
-    onOpen="() => { dictating = window.studioDictationSync(); }"
+    onOpen="() => {
+      dictating = window.studioDictationSync();
+      projects.refetch(); takes.refetch(); exports.refetch(); recStatus.refetch(); edits.refetch(); narrs.refetch();
+      if (opening) { opening = ''; navigate('/'); }
+    }"
     onMessage="(m) => {
       if (m.changed === 'takes') { takes.refetch(); edits.refetch(); narrs.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
@@ -190,6 +201,33 @@
       narrs.refetch();
       takes.refetch();
     }
+    // Open and New project (the Projects page). The server writes which
+    // project is open and starts itself over on it, so the page doesn't
+    // refetch here: the event stream drops and reconnects, and its onOpen
+    // (above) refetches every list, clears `opening` and shows Takes. The
+    // player closes first, since its take belongs to the project being left.
+    // A refusal (a take being recorded, an export running) arrives as an
+    // error (https://www.xmlui.org/docs/reference/components/APICall, "Error
+    // handling in try/catch blocks"). invalidates: [] (Actions.callApi,
+    // https://www.xmlui.org/docs/globals) stops the refetch of every list
+    // that would otherwise follow the call and land while the server is
+    // starting over, each failing with a toast.
+    function switchProject(path, body, label) {
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/' + path, method: 'post', body: body, invalidates: [] });
+        if (r.restarting) {
+          playing = '';
+          editTake = null;
+          opening = label;
+        } else {
+          projects.refetch();
+        }
+        return true;
+      } catch (e) {
+        toast.error(e.message);
+        return false;
+      }
+    }
   </script>
   <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
   <APICall id="exportTakes" method="post" url="http://127.0.0.1:8765/export"
@@ -277,6 +315,10 @@
   <AppHeader>
     <HStack verticalAlignment="center" width="100%">
       <H3>Bram Studio</H3>
+      <!-- The open project, so it is always clear which one a recording
+           will land in. It is here, not in the nav panel: the panel's logo
+           slot doesn't wrap, and clipped a long name at both ends. -->
+      <Text variant="secondary" value="{projects.value ? projects.value.name : ''}" />
       <SpaceFiller />
       <!-- XMLUI trace viewer. The studio carries its own xs-diff.html and the
            xmlui-parser.es.js it imports (vendor/), as it carries its own engine;
@@ -291,11 +333,50 @@
     <property name="footerTemplate">
       <Fragment/>
     </property>
+    <NavLink label="Projects" to="/projects" />
     <NavLink label="Takes" to="/" />
     <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
   </NavPanel>
   <Pages fallbackPath="/">
+    <!-- Projects: a screencast each, a folder under projects/ (studio_paths.py).
+         Open switches Studio to one; Create makes an empty one and opens it.
+         Both go through switchProject (above). Rows are laid out like the
+         Exports page's. -->
+    <Page url="/projects">
+      <H2>Projects</H2>
+      <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
+        value="No projects yet: this Studio keeps its takes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
+      <Items data="{projects.value ? projects.value.projects : []}">
+        <HStack verticalAlignment="center" paddingBottom="$space-2">
+          <Text value="{$item.name}" width="*" variant="{$item.open ? 'strong' : 'inherit'}" />
+          <Text value="{$item.takes + ($item.takes === 1 ? ' take' : ' takes')}" width="90px" />
+          <Text value="{$item.seconds + 's'}" width="90px" />
+          <Text variant="secondary" value="{$item.changed ? 'changed ' + $item.changed.substring(5) : ''}" width="170px" />
+          <HStack width="90px" horizontalAlignment="end">
+            <Text when="{$item.open}" variant="secondary" value="open" />
+            <Button when="{!$item.open}" label="Open" variant="outlined" size="sm"
+              enabled="{!opening &amp;&amp; !capturing}"
+              tooltip="Switch Studio to this project"
+              onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
+          </HStack>
+        </HStack>
+      </Items>
+      <HStack verticalAlignment="center" when="{!!opening}">
+        <Spinner />
+        <Text value="{'Opening ' + opening + '…'}" />
+      </HStack>
+      <H2>New project</H2>
+      <HStack verticalAlignment="center">
+        <TextBox id="newProjectName" placeholder="Name" width="260px" />
+        <Button label="Create"
+          enabled="{!!newProjectName.value &amp;&amp; !!newProjectName.value.trim() &amp;&amp; !opening &amp;&amp; !capturing}"
+          tooltip="Make an empty project with this name and open it"
+          onClick="
+            if (switchProject('new', { name: newProjectName.value.trim() }, newProjectName.value.trim())) newProjectName.setValue('');
+          " />
+      </HStack>
+    </Page>
     <Page url="/">
       <HStack verticalAlignment="center">
         <H2>Sources</H2>
