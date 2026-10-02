@@ -25,8 +25,9 @@ voice recorder uses AVFoundation).
 - **Recording:** Record opens the source off the air, so you can set up; Start recording
   goes on the air; Pause recording cuts everything until you resume; Restart discards and
   begins again.
-- **Ink:** hold ⌘ and drag over the picture to draw: line, arrow, rectangle, oval, point
-  (an arrow at the spot you click) or freehand. Ink is drawn into the take and fades.
+- **Annotations:** hold ⌘ and drag over the picture to place a callout, box, oval, arrow
+  or line, or ⌘-click for a pointer (an arrow at the spot you click). Each stays up for 3 s
+  on the air unless you Keep it, and becomes an editable item on the take.
 - **Sound:** the take has your narration and the source's own audio, in sync. Each is
   leveled to -16 LUFS so they match; your voice is denoised; and a speech detector keeps
   your voice only while you're talking, whether the source is playing or held, so room

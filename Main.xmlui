@@ -519,7 +519,7 @@
            items on the take (their on-air spans, last positions winning).
            liveAnnots: the items up now; liveCur: the current one (last placed
            or clicked), whose handles resize it and whose text and tail the row
-           below edits. Freehand stays plain ink. Sprites come from
+           below edits. Sprites come from
            /annotations/sprites (sized from the source), the last set kept
            while the next loads so a dragged anchor never vanishes. -->
       <VStack when="{capturing}"
@@ -547,13 +547,15 @@
           when="{liveAnnots.length > 0}"
           body="{{ source: sourceChoice.value, items: liveAnnots.map((a) => ({ cid: a.cid, shape: a.shape, text: a.text, tail: a.tail, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, frame: a.cid === liveCur })) }}"
           onLoaded="(d) => { lastLiveSprites = d; liveDrag = null; }" />
-        <!-- What Command-drag places: a callout or shape (kept, editable), or
-             Freehand ink. The selected one is solid. -->
+        <!-- What Command-drag places: a callout or a shape, each an editable
+             item. The selected tool is solid. (Freehand ink, which wasn't an
+             item, was dropped 2026-10-01; render.py still draws the strokes
+             of sessions recorded before then.) -->
         <HStack verticalAlignment="center">
-          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer'], ['freehand', 'Freehand']]}">
+          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
             <Button label="{$item[1]}" size="xs"
               variant="{inkTool === $item[0] ? 'solid' : 'outlined'}"
-              tooltip="Hold Command (⌘) and drag to place (click, for Pointer). Items stay until removed; Freehand is ink that fades."
+              tooltip="Hold Command (⌘) and drag to place (click, for Pointer). An item stays 3 s on the air unless you Keep it."
               onClick="inkTool = $item[0]" />
           </Items>
         </HStack>
@@ -608,7 +610,7 @@
             liveFrom = null;
           }"
           onShapeEnd="(e) => {
-            if (capturing &amp;&amp; inkTool !== 'freehand') {
+            if (capturing) {
               const cid = liveSeq + 1;
               const pt = inkTool === 'pointer';
               const a = { cid: cid, shape: inkTool === 'callout' ? null : inkTool, text: '', tail: 'none', x1: e.x1, y1: e.y1, x2: pt ? e.x1 : e.x2, y2: pt ? e.y1 : e.y2, left: 3, kept: false };
@@ -620,7 +622,6 @@
               logEvents([{ event: 'annotAdd', cid: cid, shape: a.shape, text: '', tail: 'none', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, wallMs: Date.now() }]);
             }
           }"
-          onStrokeEnd="(e) => { if (capturing) recEvents = [...recEvents, { event: 'stroke', points: e.points, color: e.color, width: e.width, wallMs: e.time }] }"
           onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
@@ -724,11 +725,16 @@
            or dragging an item on the picture, or its name in the list, makes
            it current. annotKind is only the tool: what the next Command-drag
            places. A cut, a pause or Undo retimes items on the server, so
-           each of those lets go of the current item. -->
+           each of those lets go of the current item. curShown: paused, the
+           current item is always on the picture, with its handles, so it can
+           be edited from any playhead position; playing, it obeys its In and
+           Out like the rest, so Play always previews the take as it will be.
+           Clicking the current item's name in the list again lets go of it. -->
       <VStack when="{playing &amp;&amp; !capturing}"
         var.editDur="{((takes.value || []).find((t) => t.id === editTake) || { duration_s: 0 }).duration_s}"
         var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
-        var.handleBox="{editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (editCallout ? calloutBox : null)}"
+        var.curShown="{!!editCallout &amp;&amp; (takePlayer.paused || (playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut))}"
+        var.handleBox="{curShown &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (curShown ? calloutBox : null)}"
         var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
         <!-- The tools, above the player as when recording, and the player's
              close box at the end of the row. A tool can be switched at any
@@ -780,7 +786,7 @@
              dragPos, it is cleared there. -->
         <PointerLayer id="calloutLayer" contentAspect="{takeAspect}" anchorDrag="true" pointerShape="arrow"
           tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
-          anchors="{(savedSprites.value || []).filter((a) => a.id === editCallout || (playerTime >= a.t_in &amp;&amp; playerTime &lt;= a.t_out)).map((a) => a.id !== editCallout ? a : { id: a.id, url: (editSprite || a).url, x: dragPos ? dragPos.x : (editSprite || a).x, y: dragPos ? dragPos.y : (editSprite || a).y, width: (editSprite || a).width, height: (editSprite || a).height }).concat(editCallout &amp;&amp; editSprite &amp;&amp; !(savedSprites.value || []).some((a) => a.id === editCallout) ? [{ id: editCallout, url: editSprite.url, x: dragPos ? dragPos.x : editSprite.x, y: dragPos ? dragPos.y : editSprite.y, width: editSprite.width, height: editSprite.height }] : []).concat(calloutHandles)}"
+          anchors="{(savedSprites.value || []).filter((a) => a.id === editCallout ? curShown : (playerTime >= a.t_in &amp;&amp; playerTime &lt;= a.t_out)).map((a) => a.id !== editCallout ? a : { id: a.id, url: (editSprite || a).url, x: dragPos ? dragPos.x : (editSprite || a).x, y: dragPos ? dragPos.y : (editSprite || a).y, width: (editSprite || a).width, height: (editSprite || a).height }).concat(curShown &amp;&amp; editSprite &amp;&amp; !(savedSprites.value || []).some((a) => a.id === editCallout) ? [{ id: editCallout, url: editSprite.url, x: dragPos ? dragPos.x : editSprite.x, y: dragPos ? dragPos.y : editSprite.y, width: editSprite.width, height: editSprite.height }] : []).concat(calloutHandles)}"
           onAnchorDragStart="(e) => {
             const edges = { nw: 1, n: 1, ne: 1, e: 1, se: 1, s: 1, sw: 1, w: 1, a: 1, b: 1 }[e.id];
             if (edges) {
@@ -994,18 +1000,31 @@
               <Button size="xs" variant="{$item.id === editCallout ? 'solid' : 'ghost'}"
                 label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + ' s'}"
                 onClick="
-                  editCallout = $item.id;
-                  curShape = $item.shape || null;
-                  curText = $item.text;
-                  curTail = $item.tail || 'none';
-                  calloutBox = { x1: $item.x1, y1: $item.y1, x2: $item.x2, y2: $item.y2 };
-                  calloutIn = $item.t_in;
-                  calloutOut = $item.t_out;
-                  lastSprite = null;
-                  dragPos = null;
-                  calloutText.setValue($item.text);
-                  calloutTail.setValue($item.tail || 'none');
-                  takePlayer.seek($item.t_in);
+                  if ($item.id === editCallout) {
+                    editCallout = null;
+                    calloutBox = null;
+                    lastSprite = null;
+                    curShape = null;
+                    curText = '';
+                    curTail = 'none';
+                    calloutIn = 0;
+                    calloutOut = 3;
+                    calloutText.setValue('');
+                    calloutTail.setValue('none');
+                  } else {
+                    editCallout = $item.id;
+                    curShape = $item.shape || null;
+                    curText = $item.text;
+                    curTail = $item.tail || 'none';
+                    calloutBox = { x1: $item.x1, y1: $item.y1, x2: $item.x2, y2: $item.y2 };
+                    calloutIn = $item.t_in;
+                    calloutOut = $item.t_out;
+                    lastSprite = null;
+                    dragPos = null;
+                    calloutText.setValue($item.text);
+                    calloutTail.setValue($item.tail || 'none');
+                    takePlayer.seek($item.t_in);
+                  }
                 " />
               <Button icon="close" size="xs" variant="ghost" aria-label="Remove this item"
                 onClick="
@@ -1211,6 +1230,12 @@
           onTick="
             if (narrating &amp;&amp; takePlayer.getCurrentTime() >= Math.min(narrating[1], takePlayer.duration || narrating[1]) - 0.05) stopNarration();
           " />
+        <!-- While the take plays, playerTime follows the player every 40 ms.
+             The player's timeUpdate arrives about four times a second, which
+             showed items a third of a second late (measured 2026-10-01: an
+             item set to 2.0-5.0 s was on screen 2.32-5.37 s). -->
+        <Timer interval="40" enabled="{!takePlayer.paused}"
+          onTick="playerTime = takePlayer.getCurrentTime()" />
         <Timer interval="40" enabled="{!!cutPreview}"
           onTick="
             const t = takePlayer.getCurrentTime();
