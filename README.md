@@ -55,6 +55,14 @@ empty one; the open project's name shows at the top of the nav panel. Switching 
 `serve_media.py` over on that project, so it waits until no take, narration, render or
 export is under way.
 
+Each project is one line; expand it to see what its disk space is for: takes, re-mix ingredients,
+exports, undo history, deleted takes and exports, discarded recordings. Anything in a
+project's folder that Studio didn't put there is listed as **stray**, with a count on the
+project's line: an editor's project folder saved beside an export, say.
+In the exports folder an `.mp4` is expected whoever wrote it; anything else is stray.
+**Delete** asks first, then moves the item to the macOS Trash. **Refresh** works the
+sizes out again.
+
 A Studio from before projects keeps working from the repo's own `studio.db`, `media/`
 and `work/`. To move it into a project, stop `serve_media.py` and run
 `python3 migrate_project.py <folder-name> "<Name>"`.

@@ -10,7 +10,10 @@ it (and couldn't seek). This fills that gap until Bram does it itself.
 The open project (studio_paths.py) is fixed at startup: its media/ is what
 is served, and POST /query {sql, params} answers the pages' read-only
 queries from its studio.db. /tests/<name> serves the Audio bench's shared
-recordings. GET /projects lists the project folders; POST /projects/open
+recordings. GET /projects lists the project folders, with what each one's
+disk space is for and what in it isn't Studio's (project_usage);
+POST /projects/stray/delete {slug, path} moves such a stray item to the
+macOS Trash; POST /projects/open
 {slug} and /projects/new {name} switch to one, by starting this server over
 on it (refused while a take, narration, render, export or edit is under way).
 
@@ -145,6 +148,172 @@ def push(message):
             q.put(message)
 
 
+# What a project's disk space is for (the Projects page): key, label, what it
+# is. project_usage() puts every file in exactly one.
+USAGE = (("takes", "Takes", "the takes, their clean copies, replaced narration audio, previews"),
+         ("remix", "Re-mix ingredients", "sessions and tracks of the takes in the list"),
+         ("exports", "Exports", "everything on the Exports page"),
+         ("undo", "Undo history", "what the History tab can still restore"),
+         ("deleted", "Deleted", "deleted takes and exports, and those takes' recordings"),
+         ("discarded", "Discarded recordings", "sessions of takes no longer in the list, and render leftovers"),
+         ("stray", "Stray", "not Studio's: listed below"))
+MOVIES = (".mp4", ".mov", ".m4v")
+# In media/.trash/: a step of a take's edit history (apply_take_edit, remix_take.py).
+HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|pause|narrate|unnarrate|remix)-\d{8}-\d{6}\.\w+$")
+
+
+def tree_size(path):
+    # (bytes on disk, files) under a file or a folder; links aren't followed.
+    if os.path.islink(path) or not os.path.isdir(path):
+        return os.lstat(path).st_blocks * 512, 1
+    size = files = 0
+    for root, _, names in os.walk(path):
+        for n in names:
+            try:
+                size += os.lstat(os.path.join(root, n)).st_blocks * 512
+                files += 1
+            except OSError:
+                pass
+    return size, files
+
+
+def take_keys(folder, files):
+    # For take files (take-<stamp>-raw.mp4): their stems in media/, their
+    # names in work/takes/ and work/narrated/, and their session folders.
+    media, work, sessions = set(), set(), set()
+    for f in files:
+        stem = os.path.splitext(f)[0]
+        name = stem[:-len("-raw")] if stem.endswith("-raw") else stem
+        media.add(stem)
+        work.add(name)
+        try:
+            with open(os.path.join(folder, "work", "takes", name + ".json")) as fh:
+                sessions.add(os.path.basename(json.load(fh)["session"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            sessions.add(name[len("take-"):] if name.startswith("take-") else name)
+    return media, work, sessions
+
+
+def of_take(name, takes):
+    # Is this work/ file one of those takes'? take-<stamp>.json, -source.wav...
+    return any(name.startswith(t) and name[len(t):len(t) + 1] in (".", "-", "") for t in takes)
+
+
+def project_usage(folder):
+    # {bytes, categories: [{key, label, about, bytes, files}], stray: [{path,
+    # bytes, folder}]} for a project folder. Everything Studio puts there is
+    # accounted for by name; what is left is stray: an editor's project
+    # folder, a file dropped in. In exports/ an .mp4 is expected whoever
+    # wrote it (an edited export is saved there); anything else is stray.
+    live_files, deleted_files = set(), set()
+    try:
+        db = sqlite3.connect(f"file:{urllib.parse.quote(os.path.join(folder, 'studio.db'))}?mode=ro", uri=True)
+        try:
+            live_files = {f for (f,) in db.execute("SELECT file FROM takes")}
+        finally:
+            db.close()
+    except sqlite3.Error:
+        pass
+    media, work = os.path.join(folder, "media"), os.path.join(folder, "work")
+    trash = os.path.join(media, ".trash")
+
+    def entries(path):
+        try:
+            return sorted(n for n in os.listdir(path) if n != ".DS_Store")
+        except OSError:
+            return []
+
+    # Deleted takes that can still be restored: their sidecars in .trash.
+    for n in entries(trash):
+        if n.endswith(".json") and not n.startswith(".") and not HISTORY_FILE.match(n):
+            try:
+                with open(os.path.join(trash, n)) as fh:
+                    deleted_files.add(json.load(fh)["take"]["file"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+    live_media, live_work, live_sessions = take_keys(folder, live_files)
+    _, deleted_work, deleted_sessions = take_keys(folder, deleted_files - live_files)
+    size, count, stray = collections.Counter(), collections.Counter(), []
+
+    def add(kind, path):
+        b, n = tree_size(path)
+        size[kind] += b
+        count[kind] += n
+        if kind == "stray":
+            stray.append({"path": os.path.relpath(path, folder), "bytes": b,
+                          "folder": os.path.isdir(path) and not os.path.islink(path)})
+
+    for n in entries(folder):
+        if n in ("media", "work"):
+            continue
+        add("takes" if n == "project.json" or n.startswith("studio.db") else "stray", os.path.join(folder, n))
+    for n in entries(media):
+        p = os.path.join(media, n)
+        if n in live_files or n in (".narrated", ".preview") or n.startswith(".record-"):
+            add("takes", p)
+        elif n == ".clean":
+            for c in entries(p):
+                add("takes" if c in live_files else "stray", os.path.join(p, c))
+        elif n == ".trash":
+            for c in entries(p):
+                m = HISTORY_FILE.match(c)
+                add("undo" if c == ".undo-floor" or (m and m.group(1) in live_media) else "deleted", os.path.join(p, c))
+        elif n == "exports":
+            for c in entries(p):
+                cp = os.path.join(p, c)
+                ours = os.path.isfile(cp) and (c.startswith(".") or c.lower().endswith(".mp4"))
+                add("exports" if ours else "stray", cp)
+        else:
+            add("stray", p)
+    for n in entries(work):
+        p = os.path.join(work, n)
+        if n == "sessions":
+            for c in entries(p):
+                add("remix" if c in live_sessions else "deleted" if c in deleted_sessions else "discarded",
+                    os.path.join(p, c))
+        elif n == "takes":
+            for c in entries(p):
+                add("remix" if of_take(c, live_work) else "deleted" if of_take(c, deleted_work) else "discarded",
+                    os.path.join(p, c))
+        elif n == "narrated" or n.startswith("overlay-"):
+            # Renders on their way to media/ and overlay.py's scratch folders:
+            # nothing reads them once the take is registered.
+            add("discarded", p)
+        else:
+            add("stray", p)
+    return {"bytes": sum(size.values()),
+            "categories": [{"key": k, "label": label, "about": about, "bytes": size[k], "files": count[k]}
+                           for k, label, about in USAGE],
+            "stray": stray}
+
+
+def shared_stray():
+    # Stray items in what projects share: anything in sources/ that isn't a
+    # movie or a link to one, and, once Studio's own takes have moved into a
+    # project, anything in the repo's media/ but the Audio bench's tests/.
+    found = []
+
+    def add(path):
+        found.append({"path": os.path.relpath(path, HERE), "bytes": tree_size(path)[0],
+                      "folder": os.path.isdir(path) and not os.path.islink(path)})
+
+    try:
+        for n in sorted(os.listdir(SOURCES)):
+            p = os.path.join(SOURCES, n)
+            if n != ".DS_Store" and not (n.lower().endswith(MOVIES) and not os.path.isdir(p)):
+                add(p)
+    except OSError:
+        pass
+    if studio_paths.PROJECT != HERE:
+        try:
+            for n in sorted(os.listdir(os.path.join(HERE, "media"))):
+                if n not in ("tests", ".DS_Store"):
+                    add(os.path.join(HERE, "media", n))
+        except OSError:
+            pass
+    return found
+
+
 def project_info(slug):
     # One row of the Projects page, or None for a folder that isn't a project
     # (no project.json). Its takes are counted from its own database.
@@ -164,20 +333,27 @@ def project_info(slug):
             db.close()
     except (OSError, sqlite3.Error):
         pass
+    usage = project_usage(folder)
+    for s in usage["stray"]:
+        s["slug"] = slug  # each row of the page's list says whose it is
     return {"slug": slug, "name": name, "takes": takes, "seconds": round(seconds, 1), "changed": changed,
-            "open": folder == studio_paths.PROJECT}
+            "open": folder == studio_paths.PROJECT, **usage}
 
 
 def list_projects():
-    # {open, name, projects}: every project folder, by name, and which one
-    # this server has open (none, in a Studio from before projects).
+    # {open, name, projects, shared_stray, stray_count}: every project folder,
+    # by name, with what its disk space is for (project_usage), and which one
+    # this server has open (none, in a Studio from before projects). Sizes
+    # are worked out per request: about 0.2 s for 16,000 files.
     try:
         slugs = [s for s in os.listdir(studio_paths.PROJECTS) if not s.startswith(".")]
     except OSError:
         slugs = []
     projects = sorted(filter(None, map(project_info, slugs)), key=lambda p: p["name"].lower())
     current = next((p for p in projects if p["open"]), None)
-    return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects}
+    shared = [{**s, "slug": ""} for s in shared_stray()]
+    return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
+            "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects)}
 
 
 def restart():
@@ -856,6 +1032,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.open_project()
         if self.path == "/projects/new":
             return self.new_project()
+        if self.path == "/projects/stray/delete":
+            return self.delete_stray()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -2100,6 +2278,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             f.write(slug + "\n")
         self.send_json(200, {"opened": slug, "restarting": True})
         threading.Thread(target=restart).start()
+
+    def delete_stray(self):
+        # {slug, path}: move one stray item (a project's, or with slug "" a
+        # shared folder's) to the macOS Trash. Only something the listing
+        # calls stray right now, so nothing of Studio's can be named. A move
+        # within the disk is instant whatever the size, and a wrong click is
+        # recoverable until the Trash is emptied; the name gets the time, so
+        # it can't land on something already there.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        slug, path = body.get("slug") or "", body.get("path")
+        base = os.path.join(studio_paths.PROJECTS, slug) if slug else HERE
+        if slug and (os.path.basename(slug) != slug or slug.startswith(".")
+                     or not os.path.isfile(os.path.join(base, "project.json"))):
+            return self.send_json(404, {"error": f"no project named {slug!r}"})
+        item = next((s for s in (project_usage(base)["stray"] if slug else shared_stray()) if s["path"] == path), None)
+        if not item:
+            return self.send_json(404, {"error": f"{path} isn't a stray item (it may already be gone)"})
+        stem, ext = os.path.splitext(os.path.basename(path))
+        dest = os.path.expanduser(f"~/.Trash/{stem} {time.strftime('%Y-%m-%d %H.%M.%S')}{ext}")
+        try:
+            os.rename(os.path.join(base, path), dest)
+        except OSError as e:
+            return self.send_json(500, {"error": f"Couldn't move {path} to the Trash: {e}"})
+        print(f"stray: moved {os.path.join(base, path)} to {dest}", flush=True)
+        self.send_json(200, {"trashed": path, "bytes": item["bytes"], "as": os.path.basename(dest)})
 
     def new_project(self):
         # {name}: a new, empty project folder (studio_paths.py), then open it.

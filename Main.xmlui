@@ -212,6 +212,21 @@
     // https://www.xmlui.org/docs/globals) stops the refetch of every list
     // that would otherwise follow the call and land while the server is
     // starting over, each failing with a toast.
+    // A stray item's Delete (the Projects page): the question the click asks
+    // first, and the move to the macOS Trash once the answer is yes.
+    function strayQuestion(item) {
+      return 'Move ' + item.path + ' (' + formatFileSizeInBytes(item.bytes) + ') to the Trash? '
+        + 'Its space comes back when you empty the Trash.';
+    }
+    function deleteStray(item) {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/projects/stray/delete', method: 'post',
+          body: { slug: item.slug, path: item.path }, invalidates: [] });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      projects.refetch();
+    }
     function switchProject(path, body, label) {
       try {
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/' + path, method: 'post', body: body, invalidates: [] });
@@ -344,22 +359,87 @@
          Both go through switchProject (above). Rows are laid out like the
          Exports page's. -->
     <Page url="/projects">
-      <H2>Projects</H2>
+      <!-- Sizes are worked out when the list is fetched (project_usage in
+           serve_media.py): at load, after a switch, and on Refresh. -->
+      <HStack verticalAlignment="center">
+        <H2>Projects</H2>
+        <Button label="Refresh" variant="outlined" size="sm"
+          tooltip="Work out the sizes again" onClick="projects.refetch()" />
+      </HStack>
       <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
         value="No projects yet: this Studio keeps its takes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
+      <!-- Each project is one line, so the page can be scanned: an expander
+           (https://www.xmlui.org/docs/reference/components/ExpandableItem)
+           whose summary is the project's row, closed until clicked. Inside:
+           what its disk space is for, one line a category, then anything in
+           its folder that isn't Studio's (an editor's project folder, a stray
+           file), each with Delete. Open sits beside the expander, not in its
+           summary, so clicking it doesn't also toggle the details. The inner
+           lists have their own $item
+           (https://www.xmlui.org/docs/reference/components/Items), so a stray
+           row carries its project's slug itself. -->
       <Items data="{projects.value ? projects.value.projects : []}">
-        <HStack verticalAlignment="center" paddingBottom="$space-2">
-          <Text value="{$item.name}" width="*" variant="{$item.open ? 'strong' : 'inherit'}" />
-          <Text value="{$item.takes + ($item.takes === 1 ? ' take' : ' takes')}" width="90px" />
-          <Text value="{$item.seconds + 's'}" width="90px" />
-          <Text variant="secondary" value="{$item.changed ? 'changed ' + $item.changed.substring(5) : ''}" width="170px" />
-          <HStack width="90px" horizontalAlignment="end">
-            <Text when="{$item.open}" variant="secondary" value="open" />
-            <Button when="{!$item.open}" label="Open" variant="outlined" size="sm"
-              enabled="{!opening &amp;&amp; !capturing}"
-              tooltip="Switch Studio to this project"
-              onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
+        <HStack verticalAlignment="start">
+        <ExpandableItem width="*" iconPosition="start" fullWidthSummary="true">
+          <property name="summary">
+            <HStack verticalAlignment="center" width="100%">
+              <HStack width="*" verticalAlignment="center" gap="$space-2">
+                <Text value="{$item.name}" variant="{$item.open ? 'strong' : 'inherit'}" />
+                <Text when="{$item.stray.length > 0}"
+                  value="{$item.stray.length + ($item.stray.length === 1 ? ' stray item' : ' stray items')}" />
+              </HStack>
+              <Text value="{$item.takes + ($item.takes === 1 ? ' take' : ' takes')}" width="90px" />
+              <Text value="{$item.seconds + 's'}" width="90px" />
+              <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+              <Text variant="secondary" value="{$item.changed ? 'changed ' + $item.changed.substring(5) : ''}" width="170px" />
+            </HStack>
+          </property>
+        <VStack gap="$space-1">
+        <Items data="{$item.categories}">
+          <HStack verticalAlignment="center" paddingLeft="$space-4" when="{$item.key !== 'stray' || $item.bytes > 0}">
+            <Text value="{$item.label}" width="190px" />
+            <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+            <Text variant="secondary" value="{$item.about}" width="*" />
           </HStack>
+        </Items>
+        <Items data="{$item.stray}">
+          <HStack verticalAlignment="center" paddingLeft="$space-4">
+            <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
+            <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+            <!-- Asks first (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete). -->
+            <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
+              tooltip="Move this to the Trash"
+              onClick="
+                const yes = confirm('Delete a stray item', strayQuestion($item), 'Move to Trash', 'Keep');
+                if (yes) deleteStray($item);
+              " />
+          </HStack>
+        </Items>
+        </VStack>
+        </ExpandableItem>
+        <!-- The summary's own top padding (padding-summary-ExpandableItem),
+             so this lines up with it. -->
+        <HStack width="90px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
+          <Text when="{$item.open}" variant="secondary" value="open" />
+          <Button when="{!$item.open}" label="Open" variant="outlined" size="sm"
+            enabled="{!opening &amp;&amp; !capturing}"
+            tooltip="Switch Studio to this project"
+            onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
+        </HStack>
+        </HStack>
+      </Items>
+      <!-- The same for what projects share: sources/ and the repo's media/. -->
+      <H3 when="{projects.value &amp;&amp; projects.value.shared_stray.length > 0}">Stray items in shared folders</H3>
+      <Items data="{projects.value ? projects.value.shared_stray : []}">
+        <HStack verticalAlignment="center" paddingLeft="$space-4">
+          <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
+          <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+          <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
+            tooltip="Move this to the Trash"
+            onClick="
+              const yes = confirm('Delete a stray item', strayQuestion($item), 'Move to Trash', 'Keep');
+              if (yes) deleteStray($item);
+            " />
         </HStack>
       </Items>
       <HStack verticalAlignment="center" when="{!!opening}">
