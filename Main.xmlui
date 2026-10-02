@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -297,6 +297,7 @@
           onClick="
             playing = '';
             recPaused = true;
+            liveTick = null;
             onAirYet = false;
             recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
             liveAnnots = [];
@@ -323,10 +324,12 @@
             if (recPaused) {
               logEvents([{ event: 'recresume', wallMs: Date.now() }]);
               recPaused = false;
+              liveTick = null;
               onAirYet = true;
             } else {
               logEvents([{ event: 'recpause', wallMs: Date.now() }]);
               recPaused = true;
+              liveTick = null;
               sourcePlayer.pause();
             }
           " />
@@ -338,6 +341,7 @@
             sourcePlayer.seek(0);
             restartRecording.execute({ source: sourceChoice.value });
             recPaused = true;
+            liveTick = null;
             onAirYet = false;
             recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
             liveAnnots = [];
@@ -361,6 +365,7 @@
             stopRecording.execute({ events: recEvents, diag });
             capturing = false;
             recPaused = false;
+            liveTick = null;
             recEvents = [];
           " />
         <Button label="Export" variant="outlined" size="sm"
@@ -529,11 +534,29 @@
         var.liveHandles="{liveHandleBox &amp;&amp; sourceAspect &amp;&amp; !liveDrag &amp;&amp; liveCurItem.shape !== 'pointer' ? ((liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line') ? [['a', liveHandleBox.x1, liveHandleBox.y1], ['b', liveHandleBox.x2, liveHandleBox.y2]] : [['nw', liveHandleBox.x1, liveHandleBox.y1], ['n', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y1], ['ne', liveHandleBox.x2, liveHandleBox.y1], ['e', liveHandleBox.x2, (liveHandleBox.y1 + liveHandleBox.y2) / 2], ['se', liveHandleBox.x2, liveHandleBox.y2], ['s', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y2], ['sw', liveHandleBox.x1, liveHandleBox.y2], ['w', liveHandleBox.x1, (liveHandleBox.y1 + liveHandleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * sourceAspect, width: 0.018, height: 0.018 * sourceAspect })) : []}">
         <!-- Items last 3 s of on-air time (placing and typing while paused don't
              count), unless kept; an expiring item is taken down exactly as
-             Remove does, so the take matches the screen. -->
+             Remove does, so the take matches the screen. The countdown uses
+             the clock, not a fixed 0.25 per tick: a Timer waits for its handler
+             before ticking again
+             (https://www.xmlui.org/docs/reference/components/Timer) and the page
+             runs handlers one at a time, so busy stretches (typing into a
+             callout, pointer traffic) stretched the ticks and a 3 s item was
+             measured lasting 3.76 s (2026-10-01). liveTick is the previous
+             tick's wall-clock ms, null while the countdown is idle, so idle or
+             off-air time is never charged to an item; one tick charges at most
+             2 s. Typing into a callout restarts its 3 s (the text box's
+             handler sets left back to 3 and clears liveTick): while keys are
+             typed the Timer gets no turn at all, each keystroke's handler
+             taking about 100 ms, so a callout could never go on time while
+             being typed into (measured 6.96 s for 52 characters); now it stays
+             while you type and for 3 s after the last key. -->
         <Timer interval="250" enabled="{capturing &amp;&amp; !recPaused &amp;&amp; liveAnnots.some((a) => !a.kept)}"
           onTick="
-            const expired = liveAnnots.filter((a) => !a.kept &amp;&amp; a.left &lt;= 0.25);
-            liveAnnots = liveAnnots.filter((a) => a.kept || a.left > 0.25).map((a) => a.kept ? a : { ...a, left: a.left - 0.25 });
+            const now = Date.now();
+            const dt = liveTick ? Math.min(2, (now - liveTick) / 1000) : 0.25;
+            const expired = liveAnnots.filter((a) => !a.kept &amp;&amp; a.left &lt;= dt);
+            const rest = liveAnnots.filter((a) => a.kept || a.left > dt).map((a) => a.kept ? a : { ...a, left: a.left - dt });
+            liveAnnots = rest;
+            liveTick = rest.some((a) => !a.kept) ? now : null;
             if (expired.length) {
               logEvents(expired.map((a) => ({ event: 'annotRemove', cid: a.cid, expired: true, wallMs: Date.now() })));
               if (expired.some((a) => a.cid === liveCur)) {
@@ -615,6 +638,7 @@
               const pt = inkTool === 'pointer';
               const a = { cid: cid, shape: inkTool === 'callout' ? null : inkTool, text: '', tail: 'none', x1: e.x1, y1: e.y1, x2: pt ? e.x1 : e.x2, y2: pt ? e.y1 : e.y2, left: 3, kept: false };
               liveSeq = cid;
+              if (!liveAnnots.some((a) => !a.kept)) liveTick = null;
               liveAnnots = liveAnnots.concat([a]);
               liveCur = cid;
               liveText.setValue('');
@@ -642,7 +666,8 @@
             placeholder="{!liveCurItem ? 'Hold Command and drag to place a callout or shape' : liveCurItem.shape ? 'Shapes have no text' : 'Callout text (or fill it in after the take)'}"
             onDidChange="(v) => {
               if (liveCurItem &amp;&amp; !liveCurItem.shape &amp;&amp; v !== liveCurItem.text) {
-                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, text: v } : a);
+                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, text: v, left: 3 } : a);
+                liveTick = null;
                 logEvents([{ event: 'annotSet', cid: liveCur, text: v, wallMs: Date.now() }]);
               }
             }" />
@@ -667,6 +692,7 @@
             variant="{liveCurItem &amp;&amp; liveCurItem.kept ? 'solid' : 'outlined'}" enabled="{!!liveCurItem}"
             tooltip="Keep this item up until you remove it, instead of 3 seconds on the air (click again to let it expire)"
             onClick="
+              if (!liveAnnots.some((a) => !a.kept)) liveTick = null;
               logEvents([{ event: 'annotKeep', cid: liveCur, kept: !liveCurItem.kept, wallMs: Date.now() }]);
               liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, kept: !a.kept, left: 3 } : a);
             " />
@@ -1187,7 +1213,12 @@
              waits for its handler before ticking again:
              https://www.xmlui.org/docs/reference/components/Timer), or Stop
              does earlier. The take's audio there is then replaced; the same
-             Undo line takes it back. -->
+             Undo line takes it back. While narrating, a row under the slider
+             shows the clip's start and end with a ProgressBar between them
+             (value 0 to 1:
+             https://www.xmlui.org/docs/reference/components/ProgressBar)
+             following the playhead, and the Stop button counts down the
+             seconds left, since the player's own controls are hidden then. -->
         <TabItem label="Narrate">
         <VStack>
           <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
@@ -1199,6 +1230,12 @@
               takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
               narrClip = v;
             }" />
+          <HStack when="{!!narrating}" verticalAlignment="center">
+            <Text value="{narrating ? narrating[0].toFixed(2) + ' s' : ''}" />
+            <ProgressBar width="*"
+              value="{narrating ? Math.max(0, Math.min(1, (playerTime - narrating[0]) / (narrating[1] - narrating[0]))) : 0}" />
+            <Text value="{narrating ? narrating[1].toFixed(2) + ' s' : ''}" />
+          </HStack>
           <HStack verticalAlignment="center">
           <Button label="Set start" size="xs" variant="outlined"
             tooltip="Move the clip's start to the playhead"
@@ -1214,7 +1251,7 @@
               narrSeed = [narrClip[0], Math.max(takePlayer.getCurrentTime(), narrClip[0] + 0.52)];
               narrClip = narrSeed;
             " />
-          <Button label="{narrating ? '⏹ Stop recording' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+          <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
             size="xs" themeColor="attention"
             tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this clip muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
             enabled="{!narrBusy &amp;&amp; !capturing &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"

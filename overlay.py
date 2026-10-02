@@ -50,6 +50,9 @@ TAILS = ("n", "ne", "e", "se", "s", "sw", "w", "nw")
 # (x1, y1) for pointer.
 SHAPES = ("rect", "ellipse", "arrow", "line", "pointer")
 INK_COLOR = "#ff3b30"
+# The least a shape's sprite measures each way, in picture pixels: a horizontal
+# line's was 2 px tall as a drag target (measured 2026-10-01).
+MIN_GRAB = 28
 
 
 # A take's text and shapes as one string, in id order: stored in
@@ -306,11 +309,21 @@ def video_size(path):
     return SIZES[key]
 
 
+def grab_span(a, b, limit):
+    # a..b widened to MIN_GRAB about its middle, kept inside 0..limit.
+    short = MIN_GRAB - (b - a)
+    if short <= 0:
+        return a, b
+    a = max(0, min(a - short // 2, limit - MIN_GRAB))
+    return a, min(limit, a + MIN_GRAB)
+
+
 def sprite(db, take_id, item, frame=False, size=None):
     # Just the callout (box, tail and text), or the shape when item["shape"]
     # names one, drawn as render() draws it, on a
-    # clear layer the size of the picture, cropped to what was drawn. Returns
-    # the image and its box in 0-1 picture coordinates, for PointerLayer's
+    # clear layer the size of the picture, cropped to what was drawn (a shape's
+    # crop padded with clear pixels to MIN_GRAB each way, so it can be grabbed).
+    # Returns the image and its box in 0-1 picture coordinates, for PointerLayer's
     # anchors (xmlui-org/xmlui#3922) to place over the video. frame adds the
     # editor's dashed outline of the callout's box. size (W, H) is given while
     # recording, when there is no take yet (the source's size is the take's).
@@ -337,6 +350,8 @@ def sprite(db, take_id, item, frame=False, size=None):
         px, py = min(W - 1, max(0, round(item["x1"] * W))), min(H - 1, max(0, round(item["y1"] * H)))
         bbox = (px, py, px + 1, py + 1)
     x1, y1, x2, y2 = bbox
+    if kind == "shape":
+        (x1, x2), (y1, y2) = grab_span(x1, x2, W), grab_span(y1, y2, H)
     return layer.crop((x1, y1, x2, y2)), {"x": x1 / W, "y": y1 / H, "width": (x2 - x1) / W, "height": (y2 - y1) / H}
 
 
