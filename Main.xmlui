@@ -845,26 +845,89 @@
                   applyState.refetch();
                 }
               }" />
-            <Button label="{'In ' + calloutIn.toFixed(1) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
-              tooltip="Start this item at the playhead"
-              onClick="
-                const t = Math.max(0, Math.min(takePlayer.getCurrentTime(), calloutOut - 0.1));
-                calloutIn = t;
-                updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
-                callouts.refetch();
-                savedSprites.refetch();
-                applyState.refetch();
-              " />
-            <Button label="{'Out ' + calloutOut.toFixed(1) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
-              tooltip="End this item at the playhead"
-              onClick="
-                const t = Math.max(takePlayer.getCurrentTime(), calloutIn + 0.1);
-                calloutOut = t;
-                updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
-                callouts.refetch();
-                savedSprites.refetch();
-                applyState.refetch();
-              " />
+            <!-- In and Out, each with a − before it and a + after it that move
+                 the time one frame (0.04 s at 25 fps), save at once, and take
+                 the playhead there so the frame is seen. The two groups are
+                 tight inside ($space-1) and the row's ordinary gap apart, so
+                 In's + isn't taken for Out's −, without taking width from
+                 the text box. Times show two decimals: at one, a
+                 one-frame step often wouldn't change the label. -->
+            <HStack verticalAlignment="center" gap="$space-1">
+              <Button label="−" size="xs" variant="ghost" enabled="{!!editCallout}"
+                tooltip="Start one frame earlier"
+                onClick="
+                  const t = Math.max(0, Math.min(Math.round((calloutIn - 0.04) * 100) / 100, calloutOut - 0.1));
+                  if (t !== calloutIn) {
+                    calloutIn = t;
+                    takePlayer.seek(t);
+                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  }
+                " />
+              <Button label="{'In ' + calloutIn.toFixed(2) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
+                tooltip="Start this item at the playhead"
+                onClick="
+                  const t = Math.max(0, Math.min(takePlayer.getCurrentTime(), calloutOut - 0.1));
+                  calloutIn = t;
+                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
+                  callouts.refetch();
+                  savedSprites.refetch();
+                  applyState.refetch();
+                " />
+              <Button label="+" size="xs" variant="ghost" enabled="{!!editCallout}"
+                tooltip="Start one frame later"
+                onClick="
+                  const t = Math.max(0, Math.min(Math.round((calloutIn + 0.04) * 100) / 100, calloutOut - 0.1));
+                  if (t !== calloutIn) {
+                    calloutIn = t;
+                    takePlayer.seek(t);
+                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  }
+                " />
+            </HStack>
+            <HStack verticalAlignment="center" gap="$space-1">
+              <Button label="−" size="xs" variant="ghost" enabled="{!!editCallout}"
+                tooltip="End one frame earlier"
+                onClick="
+                  const t = Math.min(takePlayer.duration || editDur, Math.max(Math.round((calloutOut - 0.04) * 100) / 100, calloutIn + 0.1));
+                  if (t !== calloutOut) {
+                    calloutOut = t;
+                    takePlayer.seek(t);
+                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  }
+                " />
+              <Button label="{'Out ' + calloutOut.toFixed(2) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
+                tooltip="End this item at the playhead"
+                onClick="
+                  const t = Math.max(takePlayer.getCurrentTime(), calloutIn + 0.1);
+                  calloutOut = t;
+                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
+                  callouts.refetch();
+                  savedSprites.refetch();
+                  applyState.refetch();
+                " />
+              <Button label="+" size="xs" variant="ghost" enabled="{!!editCallout}"
+                tooltip="End one frame later"
+                onClick="
+                  const t = Math.min(takePlayer.duration || editDur, Math.max(Math.round((calloutOut + 0.04) * 100) / 100, calloutIn + 0.1));
+                  if (t !== calloutOut) {
+                    calloutOut = t;
+                    takePlayer.seek(t);
+                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  }
+                " />
+            </HStack>
             <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
             <Select id="calloutTail" initialValue="none" width="130px" enabled="{!!editCallout &amp;&amp; !curShape}"
               onDidChange="(v) => {
@@ -953,7 +1016,7 @@
                   }
                 " />
               <Button size="xs" variant="{!$item.narr &amp;&amp; $item.id === editCallout ? 'solid' : 'ghost'}"
-                label="{($item.narr ? 'Narration' : $item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + ' s'}"
+                label="{($item.narr ? 'Narration' : $item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
                 onClick="
                   if ($item.narr) {
                     takePlayer.seek($item.t_in);
