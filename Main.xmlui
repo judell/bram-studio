@@ -287,6 +287,7 @@
       <Fragment/>
     </property>
     <NavLink label="Takes" to="/" />
+    <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
   </NavPanel>
   <Pages fallbackPath="/">
@@ -380,6 +381,7 @@
           tooltip="Join all takes, in list order, into one video"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="
+            navigate('/exports');
             exportTakes.execute();
             exports.refetch();
           " />
@@ -388,126 +390,6 @@
         <Spinner />
         <Text value="Exporting takes…" />
       </HStack>
-      <!-- The finishing workflow, two sections, each newest first: when, how
-           long, a link, a note, and delete. Exports is everything in
-           media/exports/ that isn't leveled (what Export makes, and anything
-           an editor saved there); Leveled exports is what Level wrote.
-           Collapsed by default; open or closed is remembered in localStorage
-           (https://www.xmlui.org/docs/globals#local-storage-utilities). -->
-      <!-- One Theme around the panel, not one per row: small spinners
-           (https://www.xmlui.org/docs/howto/scope-theme-outside-loops), and no
-           right padding on the panel's content, so each row's trash lines up
-           with the takes' below (paddingRight-content-ExpandableItem,
-           https://www.xmlui.org/docs/reference/components/ExpandableItem). A
-           row whose file an editor is still writing shows "writing… N MB" and
-           waits to offer Level. -->
-      <Theme size-Spinner="1em" paddingRight-content-ExpandableItem="0">
-      <!-- Hidden while a recording is set up or running, to leave the player
-           room; it comes back as it was left (the expanded state is read
-           from localStorage again). -->
-      <ExpandableItem summary="Exports" iconPosition="start" when="{!capturing}"
-        initiallyExpanded="{readLocalStorage('studio.exportsExpanded', false)}"
-        onExpandedChange="(open) => writeLocalStorage('studio.exportsExpanded', open)">
-      <VStack>
-      <Text variant="strong" value="Exports" />
-      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
-        value="Nothing exported yet." />
-      <!-- Every row, in both sections, uses the same columns so the notes
-           line up: time 110px, length 150px, name 340px, mic + note (*, a
-           leveled row's loudness beneath it),
-           trailing column 100px (Level), delete.
-           Exports holds every file here that isn't leveled. One that isn't
-           exactly what Export wrote (an editor saved over it, or beside it)
-           carries an "edited" tag; the note says what was done. -->
-      <Items data="{exports.value ? exports.value.exports : []}">
-        <HStack verticalAlignment="center">
-          <Text value="{$item.created.substring(5, 16)}" width="110px" />
-          <HStack width="150px" verticalAlignment="center" gap="$space-1">
-            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
-            <Spinner when="{$item.writing}" />
-            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
-          </HStack>
-          <HStack width="340px" verticalAlignment="center" gap="$space-2">
-            <Link to="{$item.url}" target="_blank" label="{$item.name}" />
-            <Text variant="secondary" when="{$item.edited}" value="edited" />
-          </HStack>
-          <HStack width="*" verticalAlignment="center" gap="$space-1">
-            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
-              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
-              enabled="{!dictating || dictating === noteKey($item)}"
-              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
-            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
-              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
-                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
-                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
-                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
-            </Form>
-            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
-              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
-              onClick="clearNote($item)" />
-          </HStack>
-          <!-- An export that needs no editing can be leveled directly. -->
-          <HStack width="100px" horizontalAlignment="end">
-            <Button label="Level" variant="outlined" size="sm"
-              enabled="{!levelExport.inProgress &amp;&amp; !$item.writing}"
-              tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
-              onClick="
-                levelExport.execute($item);
-                exports.refetch();
-              " />
-          </HStack>
-          <Button icon="trash" variant="ghost" themeColor="attention"
-            aria-label="Delete export" tooltip="Delete this export (moves it to media/.trash)"
-            onClick="
-              deleteExport.execute($item);
-              exports.refetch();
-            " />
-        </HStack>
-      </Items>
-      <HStack verticalAlignment="center" when="{levelExport.inProgress}">
-        <Spinner />
-        <Text value="Leveling…" />
-      </HStack>
-      <Text variant="strong" value="Leveled exports" />
-      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
-        value="Click Level on an export." />
-      <Items data="{exports.value ? exports.value.leveled : []}">
-        <HStack verticalAlignment="center">
-          <Text value="{$item.created.substring(5, 16)}" width="110px" />
-          <HStack width="150px" verticalAlignment="center" gap="$space-1">
-            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
-            <Spinner when="{$item.writing}" />
-            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
-          </HStack>
-          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="340px" />
-          <HStack width="*" verticalAlignment="center" gap="$space-1">
-            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
-              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
-              enabled="{!dictating || dictating === noteKey($item)}"
-              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
-            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
-              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
-                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
-                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
-                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
-              <Text variant="secondary" value="{$item.report}" />
-            </Form>
-            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
-              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
-              onClick="clearNote($item)" />
-          </HStack>
-          <Stack width="100px" />
-          <Button icon="trash" variant="ghost" themeColor="attention"
-            aria-label="Delete leveled export" tooltip="Delete this file (moves it to media/.trash)"
-            onClick="
-              deleteExport.execute($item);
-              exports.refetch();
-            " />
-        </HStack>
-      </Items>
-      </VStack>
-      </ExpandableItem>
-      </Theme>
       <!-- A take this page didn't start (it was reloaded mid-take, or another
            tab started it): it has no event log to render, so offer Discard. -->
       <HStack verticalAlignment="center"
@@ -1394,6 +1276,121 @@
             " />
         </HStack>
       </DndItems>
+    </Page>
+    <!-- Exports, a page of its own between Takes and Audio (it was a
+         collapsible panel on the Takes page until 2026-10-01). The finishing
+         workflow, two sections, each newest first: when, how long, a link, a
+         note, and delete. Exports is everything in media/exports/ that isn't
+         leveled (what Export makes, and anything an editor saved there);
+         Leveled exports is what Level wrote. The Takes page's Export button
+         comes here, so the new file's "writing…" row is seen. -->
+    <Page url="/exports">
+      <!-- One Theme around the lists, not one per row: small spinners
+           (https://www.xmlui.org/docs/howto/scope-theme-outside-loops). A
+           row whose file an editor is still writing shows "writing… N MB" and
+           waits to offer Level. -->
+      <Theme size-Spinner="1em">
+      <H2>Exports</H2>
+      <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
+        <Spinner />
+        <Text value="Exporting takes…" />
+      </HStack>
+      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
+        value="Nothing exported yet." />
+      <!-- Every row, in both sections, uses the same columns so the notes
+           line up: time 110px, length 150px, name 340px, mic + note (*, a
+           leveled row's loudness beneath it),
+           trailing column 100px (Level), delete.
+           Exports holds every file here that isn't leveled. One that isn't
+           exactly what Export wrote (an editor saved over it, or beside it)
+           carries an "edited" tag; the note says what was done. -->
+      <Items data="{exports.value ? exports.value.exports : []}">
+        <HStack verticalAlignment="center">
+          <Text value="{$item.created.substring(5, 16)}" width="110px" />
+          <HStack width="150px" verticalAlignment="center" gap="$space-1">
+            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
+            <Spinner when="{$item.writing}" />
+            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
+          </HStack>
+          <HStack width="340px" verticalAlignment="center" gap="$space-2">
+            <Link to="{$item.url}" target="_blank" label="{$item.name}" />
+            <Text variant="secondary" when="{$item.edited}" value="edited" />
+          </HStack>
+          <HStack width="*" verticalAlignment="center" gap="$space-1">
+            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
+              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
+              enabled="{!dictating || dictating === noteKey($item)}"
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
+                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
+            </Form>
+            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
+              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
+              onClick="clearNote($item)" />
+          </HStack>
+          <!-- An export that needs no editing can be leveled directly. -->
+          <HStack width="100px" horizontalAlignment="end">
+            <Button label="Level" variant="outlined" size="sm"
+              enabled="{!levelExport.inProgress &amp;&amp; !$item.writing}"
+              tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
+              onClick="
+                levelExport.execute($item);
+                exports.refetch();
+              " />
+          </HStack>
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete export" tooltip="Delete this export (moves it to media/.trash)"
+            onClick="
+              deleteExport.execute($item);
+              exports.refetch();
+            " />
+        </HStack>
+      </Items>
+      <HStack verticalAlignment="center" when="{levelExport.inProgress}">
+        <Spinner />
+        <Text value="Leveling…" />
+      </HStack>
+      <H2>Leveled exports</H2>
+      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
+        value="Click Level on an export." />
+      <Items data="{exports.value ? exports.value.leveled : []}">
+        <HStack verticalAlignment="center">
+          <Text value="{$item.created.substring(5, 16)}" width="110px" />
+          <HStack width="150px" verticalAlignment="center" gap="$space-1">
+            <Text when="{!$item.writing}" value="{$item.seconds + 's'}" />
+            <Spinner when="{$item.writing}" />
+            <Text when="{$item.writing}" variant="secondary" value="{'writing… ' + ($item.bytes / 1048576).toFixed(1) + ' MB'}" />
+          </HStack>
+          <Link to="{$item.url}" target="_blank" label="{$item.name}" width="340px" />
+          <HStack width="*" verticalAlignment="center" gap="$space-1">
+            <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
+              tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
+              enabled="{!dictating || dictating === noteKey($item)}"
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+            <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+                onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
+                onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
+              <Text variant="secondary" value="{$item.report}" />
+            </Form>
+            <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
+              enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
+              onClick="clearNote($item)" />
+          </HStack>
+          <Stack width="100px" />
+          <Button icon="trash" variant="ghost" themeColor="attention"
+            aria-label="Delete leveled export" tooltip="Delete this file (moves it to media/.trash)"
+            onClick="
+              deleteExport.execute($item);
+              exports.refetch();
+            " />
+        </HStack>
+      </Items>
+      </Theme>
     </Page>
     <Page url="/bench">
       <H2>Audio recording test</H2>
