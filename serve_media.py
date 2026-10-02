@@ -41,13 +41,10 @@ GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
 "record"|"exports"} whenever watch_changes() sees one of them change, so the
 page refetches then instead of polling.
 """
-import array
 import collections
 import hashlib
 import http.server
-import io
 import json
-import math
 import mimetypes
 import os
 import queue
@@ -63,8 +60,6 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
-import wave
 
 import overlay
 import voicetest
@@ -130,7 +125,7 @@ def notify(kind):
 
 def push(message):
     # Any JSON-able message to every page on GET /events: {"changed": kind}
-    # from the watcher, {"dictation": key, "text": ...} while a note is spoken.
+    # from the watcher.
     with EVENT_LOCK:
         for q in EVENT_QUEUES:
             q.put(message)
@@ -340,22 +335,23 @@ NOTES = os.path.join(ROOT, "exports", ".notes.json")
 NOTES_LOCK = threading.Lock()
 
 
-# Dictated notes: the mic record.sh uses, the whisper model register.py uses.
+# The mic record.sh uses (narrations record from it too), and the whisper
+# model register.py uses.
 NOTE_MIC = os.environ.get("MIC", "MacBook Air Microphone")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL",
                                os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
 DICTATION_LOCK = threading.Lock()
-dictation = {"current": None}  # the one note being dictated (see start_dictation)
 
-# Live dictation, after Bram's (judell/bram dc6645d): ffmpeg writes raw 16 kHz
-# mono PCM; every LIVE_STEP s the audio since the last commit is transcribed
-# by a whisper-server this process starts (model stays loaded), with the
-# committed text as prompt; a pause or LIVE_CAP s commits it. Silent windows
-# are never sent (whisper invents "Thank you." from quiet). Each partial is
-# pushed on /events as {"dictation": key, "text": base + committed + partial}.
-RATE = 16000
-LIVE_STEP, LIVE_CAP, PAUSE_S = 0.7, 12.0, 0.5
-VOICED_DB = -45.0  # a 100 ms chunk louder than this is speech; room here is ~-55
+# Dictated notes. The page does the dictating: Bram's script
+# (/__shell/dictation.js, judell/bram#417) captures the mic in the browser,
+# transcribes against a whisper-server and writes into the note field;
+# studio-dictation.js is the bridge to it. This server keeps two things:
+# - the claim on the mic ({"key": the row}), so a note, a take, a narration
+#   and a voice test still exclude each other (claim_dictation);
+# - which engine the page should use (dictation_engine): Bram's when it
+#   answers, else one started here.
+dictation = {"current": None}
+BRAM_ENGINE_PORT = 18080  # Bram starts it on a first 🎤 click in its pane
 WHISPER_PORT = 8767
 whisper_server = {"proc": None}
 
@@ -429,9 +425,34 @@ def watch_narration(n):
     print(f"narrate: abandoned take {n['id']} (never stopped)", flush=True)
 
 
+def engine_answers(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except OSError:
+        return False
+
+
+def dictating_where():
+    # What a take, a narration or a voice test says when it refuses because a
+    # note is being dictated. It names the page and the row: the dictation
+    # may be open on a page you have left (2026-10-02: a take was refused and
+    # the open note had to be hunted for).
+    d = dictation["current"]
+    where, _, name = (d["key"] if d else "").partition("/")
+    if not name:
+        return "a note is being dictated"
+    return f"a note is being dictated on the {where.capitalize()} page ({name})"
+
+
 def ensure_whisper_server():
-    p = whisper_server["proc"]
-    if p and p.poll() is None:
+    # Make sure an engine is on WHISPER_PORT. One already there is used as it
+    # is, whoever started it: whisper-server shares its port, so starting
+    # another on each restart of this server left six of them running
+    # (found 2026-10-02).
+    if engine_answers(WHISPER_PORT):
         return True
     try:
         whisper_server["proc"] = subprocess.Popen(
@@ -440,116 +461,10 @@ def ensure_whisper_server():
     except OSError:
         return False
     for _ in range(100):  # the model loads in a second or two
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{WHISPER_PORT}/", timeout=0.5)
+        if engine_answers(WHISPER_PORT):
             return True
-        except urllib.error.HTTPError:
-            return True
-        except OSError:
-            time.sleep(0.1)
+        time.sleep(0.1)
     return False
-
-
-def clean_transcript(text):
-    # Drop [BLANK_AUDIO]-style tags and what whisper invents from silence.
-    text = " ".join(re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", text).split())
-    return "" if text.lower().strip(" .!") in ("", "you", "thank you") else text
-
-
-def transcribe_pcm(pcm, prompt=""):
-    # One window of 16 kHz s16le mono: whisper-server if it's up, else whisper-cli.
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(pcm)
-    audio = buf.getvalue()
-    if ensure_whisper_server():
-        boundary = uuid.uuid4().hex
-        # temperature_inc 0 turns off whisper's temperature fallback, as Bram
-        # does: in a replay of real narration its retries froze partials
-        # mid-sentence ("…the XMLUI mark") while the window kept growing.
-        parts = ([("response_format", "json"), ("temperature", "0"), ("temperature_inc", "0.0")]
-                 + ([("prompt", prompt[-200:])] if prompt else []))
-        body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
-                        for k, v in parts)
-        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="w.wav"\r\n'
-                 f"Content-Type: audio/wav\r\n\r\n").encode() + audio + f"\r\n--{boundary}--\r\n".encode()
-        req = urllib.request.Request(f"http://127.0.0.1:{WHISPER_PORT}/inference", data=body,
-                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return clean_transcript(json.load(r).get("text", ""))
-        except (OSError, ValueError) as e:
-            print(f"whisper-server: {e}", flush=True)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(audio)
-    try:
-        r = subprocess.run(["whisper-cli", "-m", WHISPER_MODEL, "-f", f.name, "-nt", "-np"],
-                           capture_output=True, text=True, timeout=120)
-        return clean_transcript(r.stdout)
-    finally:
-        os.remove(f.name)
-
-
-def voiced_chunks(pcm):
-    # For each 100 ms of s16le audio: is it louder than VOICED_DB?
-    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
-    step, out = RATE // 10, []
-    for i in range(0, len(samples) - step + 1, step):
-        chunk = samples[i:i + step]
-        rms = math.sqrt(sum(s * s for s in chunk) / step) or 1
-        out.append(20 * math.log10(rms / 32768) > VOICED_DB)
-    return out
-
-
-def join_note(*parts):
-    return " ".join(p.strip() for p in parts if p and p.strip())
-
-
-def live_dictation(d):
-    # The live loop for one dictation d (see start_dictation) until d["stop"].
-    # One "live:" log line per window (live-dictation-lag): when, where in the
-    # PCM it starts (odd = misaligned samples), its size, how many 100 ms
-    # chunks count as speech, whisper's latency and text, and any commit.
-    t0 = time.time()
-    while not d["stop"].wait(LIVE_STEP):
-        if d["proc"].poll() is not None:
-            # Watchdog: the recorder died mid-dictation. End this dictation (if
-            # it's still the current one) and tell the page (dictation-robust).
-            print(f"live: recorder exited ({d['proc'].returncode}) during {d['key']}", flush=True)
-            with DICTATION_LOCK:
-                if dictation["current"] is d:
-                    dictation["current"] = None
-            push({"dictation": d["key"], "error": "recording stopped"})
-            return
-        try:
-            with open(d["pcm"], "rb") as f:
-                f.seek(d["start"])
-                window = f.read()
-        except OSError:
-            continue
-        voiced = voiced_chunks(window)
-        head = (f"live: t={time.time() - t0:5.1f}s start={d['start']}{' ODD' if d['start'] % 2 else ''} "
-                f"window={len(window)}B voiced={sum(voiced)}/{len(voiced)}")
-        if not any(voiced):
-            if len(voiced) > 20:  # 2 s of nothing: don't let the window grow
-                d["start"] += len(window) - RATE  # keep the last 0.5 s
-                print(f"{head} silent: skip to start={d['start']}", flush=True)
-            else:
-                print(f"{head} silent", flush=True)
-            continue
-        w0 = time.time()
-        d["partial"] = transcribe_pcm(window, d["committed"])
-        print(f"{head} whisper={int((time.time() - w0) * 1000)}ms -> {d['partial']!r}", flush=True)
-        paused = len(voiced) >= 5 and not any(voiced[-int(PAUSE_S * 10):])
-        if paused or len(window) >= LIVE_CAP * RATE * 2:
-            d["committed"] = join_note(d["committed"], d["partial"])
-            d["partial"] = ""
-            d["start"] += len(window)
-            print(f"live: commit ({'pause' if paused else 'cap'}) start={d['start']}", flush=True)
-        push({"dictation": d["key"], "text": join_note(d["base"], d["committed"], d["partial"])})
 
 
 def note_key(name, where):
@@ -811,6 +726,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, list_exports())
         if self.path == "/dictation/status":
             return self.dictation_status()
+        if self.path == "/dictation/engine":
+            return self.dictation_engine()
         if self.path.startswith("/takes/edits"):
             return self.list_edits()
         if self.path == "/narrate/status":
@@ -893,9 +810,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/exports/note":
             return self.save_export_note()
         if self.path == "/dictation/start":
-            return self.start_dictation()
+            return self.claim_dictation()
         if self.path == "/dictation/stop":
-            return self.stop_dictation()
+            return self.release_dictation()
+        if self.path == "/dictation/trace":
+            return self.dictation_trace()
         if self.path == "/callouts/add":
             return self.add_callout()
         if self.path == "/callouts/update":
@@ -945,96 +864,66 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             shutil.move(report, os.path.join(trash, f".{os.path.basename(dest)}.json"))
         self.send_json(200, {"deleted": name, "trashed": f".trash/{os.path.basename(dest)}"})
 
-    def start_dictation(self):
-        # {name, where, base}: record a spoken note for that row from the mic
-        # record.sh uses, transcribing live (live_dictation) until
-        # /dictation/stop. One at a time, and never during a take (the take
-        # owns the mic). Answers only once audio is actually arriving.
+    def claim_dictation(self):
+        # {key}: the page is about to dictate into that row's note. One at a
+        # time, and never while a take, a narration or a voice test has the
+        # mic. The same row claiming again is fine (the page re-claims when
+        # its event stream reconnects mid-dictation).
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        name, where = str(body.get("name", "")), body.get("where")
+        key = str(body.get("key", ""))
         with DICTATION_LOCK:
             if self.recording():
                 return self.send_json(409, {"error": "a take is recording"})
-            if dictation["current"]:
-                return self.send_json(409, {"error": "already dictating"})
             if narration["current"]:
                 return self.send_json(409, {"error": "a narration is recording"})
-            pcm =os.path.join(tempfile.gettempdir(), f"studio-note-{os.getpid()}.pcm")
-            if os.path.exists(pcm):
-                os.remove(pcm)
-            proc = subprocess.Popen(
-                # -flush_packets 1: without it ffmpeg wrote the PCM in 256 KiB
-                # blocks (~8 s), so the live loop saw nothing for 10 s, then
-                # identical windows until the next block (live-dictation-lag).
-                ["ffmpeg", "-v", "error", "-y", "-f", "avfoundation", "-i", f":{NOTE_MIC}",
-                 "-ac", "1", "-ar", str(RATE), "-flush_packets", "1", "-f", "s16le", pcm],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            # Wait for audio: an ffmpeg that can't open the mic exits at once,
-            # and must not leave a dictation "running" (dictation-robust).
-            deadline = time.time() + 2
-            while time.time() < deadline and proc.poll() is None:
-                if os.path.exists(pcm) and os.path.getsize(pcm) > 0:
-                    break
-                time.sleep(0.05)
-            if proc.poll() is not None or not os.path.exists(pcm) or os.path.getsize(pcm) == 0:
-                if proc.poll() is None:
-                    proc.kill()
-                err = (proc.stderr.read().decode(errors="replace").strip().splitlines() or ["no audio"])[-1]
-                print(f"live: start failed: {err}", flush=True)
-                return self.send_json(500, {"error": f"couldn't open the microphone: {err}"})
-            # Each dictation is its own object; the shared state only points at
-            # the current one. (Sharing one dict let a loop still transcribing
-            # after stop write keys back into it, so it looked "already
-            # dictating" forever, and the next stop failed on the fragment.)
-            d = {"proc": proc, "pcm": pcm, "name": name, "where": where, "key": f"{where}/{name}",
-                 "base": str(body.get("base") or ""), "committed": "", "partial": "", "start": 0,
-                 "stop": threading.Event()}
-            d["thread"] = threading.Thread(target=live_dictation, args=(d,), daemon=True)
-            dictation["current"] = d
-            d["thread"].start()
-        print(f"live: start {d['key']}", flush=True)
-        threading.Thread(target=ensure_whisper_server, daemon=True).start()  # warm it up
-        self.send_json(200, {"dictating": d["key"]})
+            if testing.locked():
+                return self.send_json(409, {"error": "a voice test is running"})
+            d = dictation["current"]
+            if d and d["key"] != key:
+                return self.send_json(409, {"error": "already dictating"})
+            dictation["current"] = {"key": key}
+        if not d:
+            print(f"dictation: claim {key}", flush=True)
+        self.send_json(200, {"dictating": key})
 
-    def stop_dictation(self):
-        # Stop recording and the live loop, transcribe only what hasn't been
-        # committed yet, and save base + everything as the row's note. Always
-        # clears the state and always answers.
+    def release_dictation(self):
+        # The page stopped dictating, loaded with nothing dictating, or is
+        # going away. Always answers; releasing nothing is not an error.
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
         with DICTATION_LOCK:
             d, dictation["current"] = dictation["current"], None
-        if not d:
-            return self.send_json(409, {"error": "not dictating"})
-        note, text = d.get("base", ""), ""
-        try:
-            d["stop"].set()
-            d["thread"].join(timeout=60)
-            try:
-                if d["proc"].poll() is None:
-                    d["proc"].communicate(b"q", timeout=5)
-            except (subprocess.TimeoutExpired, OSError, ValueError):
-                d["proc"].kill()
-            with open(d["pcm"], "rb") as f:
-                f.seek(d["start"])
-                rest = f.read()
-            if any(voiced_chunks(rest)):
-                d["committed"] = join_note(d["committed"], transcribe_pcm(rest, d["committed"]))
-            text = d["committed"]
-            note = join_note(d["base"], text)
-            if text and self.listed_export(d["name"], d["where"]):
-                set_export_note(note_key(d["name"], d["where"]), note[:500])
-        except Exception:
-            print(f"live: stop failed\n{traceback.format_exc()}", flush=True)
-        finally:
-            if os.path.exists(d.get("pcm", "")):
-                os.remove(d["pcm"])
-        print(f"live: stop {d.get('key')} -> {text!r}", flush=True)
-        push({"dictation": d.get("key"), "text": note, "done": True})
-        self.send_json(200, {"text": text, "note": note})
+        if d:
+            print(f"dictation: release {d['key']}", flush=True)
+        self.send_json(200, {"released": d["key"] if d else None})
 
     def dictation_status(self):
         with DICTATION_LOCK:
             d = dictation["current"]
         self.send_json(200, {"key": d["key"] if d else None})
+
+    def dictation_engine(self):
+        # Which whisper-server the page should use: Bram's if it answers (one
+        # model in memory for both apps), else one on WHISPER_PORT, started
+        # here if need be. Bram's script can't start an engine itself; when
+        # Bram gets a route for that (judell/bram#417) this fallback can go.
+        if engine_answers(BRAM_ENGINE_PORT):
+            return self.send_json(200, {"host": f"http://127.0.0.1:{BRAM_ENGINE_PORT}"})
+        if ensure_whisper_server():
+            return self.send_json(200, {"host": f"http://127.0.0.1:{WHISPER_PORT}"})
+        self.send_json(503, {"error": "no speech engine: Bram's isn't running and whisper-server didn't start"})
+
+    def dictation_trace(self):
+        # {key, lines: [{at, stage, fields}]}: the script's own trace lines,
+        # batched by the bridge, kept here so a dictation that went wrong
+        # leaves evidence. Never an error for the page to show.
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            for ln in body.get("lines", [])[:200]:
+                at = time.strftime("%H:%M:%S", time.localtime(ln.get("at", 0) / 1000))
+                print(f"dictation: {at} {ln.get('stage')} {json.dumps(ln.get('fields') or {})}", flush=True)
+        except (ValueError, TypeError, AttributeError):
+            pass
+        self.send_json(200, {})
 
     def save_export_note(self):
         # {name, where, note} for a listed file; an empty note removes it.
@@ -1586,7 +1475,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if self.recording() or testing.locked():
                 return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
             if dictation["current"]:
-                return self.send_json(409, {"error": "a note is being dictated"})
+                return self.send_json(409, {"error": dictating_where()})
             if narration["current"]:
                 return self.send_json(409, {"error": "already narrating"})
             base = os.path.join(tempfile.gettempdir(), f"studio-narrate-{os.getpid()}")
@@ -2010,6 +1899,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "the running take didn't stop in time"})
         if self.recording() or testing.locked() or narration["current"]:
             return self.send_json(409, {"error": "the mic is busy (recording, narrating or testing)"})
+        if dictation["current"]:
+            return self.send_json(409, {"error": dictating_where()})
         with EVENTS_LOCK:
             pending_events.clear()
         log = open(os.path.join(HERE, "record.log"), "a")
@@ -2071,6 +1962,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def run_voicetest(self):
         # One 10s test at a time, never during a take; returns when it's measured.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if dictation["current"]:
+            return self.send_json(409, {"error": dictating_where()})
         if self.recording() or not testing.acquire(blocking=False):
             return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
         try:

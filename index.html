@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Bram Studio</title>
+    <!-- Dictation: Bram's script (judell/bram#417), served by Bram's built-in
+         server, then Studio's bridge to it. Both must load before the engine,
+         which only sees page functions that exist when it starts. -->
+    <script src="/__shell/dictation.js"></script>
+    <script src="/studio-dictation.js"></script>
     <!-- Experimental XMLUI build with MediaPlayer (xmlui-org/xmlui#3913); revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
     <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after

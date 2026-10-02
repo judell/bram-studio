@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.liveNote="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -19,22 +19,14 @@
        one is refetched. EventSource is experimental in XMLUI and has no docs
        page yet (source: xmlui/src/components/EventSource/EventSource.tsx), so
        the polls above stay as a 60 s fallback. -->
-  <!-- onOpen (load and every reconnect): ask the server which row, if any, is
-       dictating, so a reload can't leave page and server disagreeing
-       (dictation-robust). -->
+  <!-- onOpen (load and every reconnect): the bridge (studio-dictation.js)
+       tells the server whether this page is dictating, and into which row,
+       so a reload can't leave the server holding the mic for a dictation
+       that no longer exists. -->
   <EventSource url="http://127.0.0.1:8765/events"
-    onOpen="() => {
-      try {
-        const s = Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/status', method: 'get' });
-        dictating = (s &amp;&amp; s.key) || '';
-      } catch (e) { }
-    }"
+    onOpen="() => { dictating = window.studioDictationSync(); }"
     onMessage="(m) => {
-      if (m.dictation !== undefined) {
-        if (m.error &amp;&amp; m.dictation === dictating) { dictating = ''; toast.error('Dictation stopped: ' + m.error); }
-        else if (m.dictation === dictating &amp;&amp; m.text !== undefined) liveNote = m.text;
-      }
-      else if (m.changed === 'takes') { takes.refetch(); edits.refetch(); narrs.refetch(); }
+      if (m.changed === 'takes') { takes.refetch(); edits.refetch(); narrs.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') { recStatus.refetch(); edits.refetch(); }
       else if (m.changed === 'exports') exports.refetch();
@@ -82,14 +74,20 @@
   <!-- Every field that takes dictation has the same frame: 🎤 before it (⏹
        while dictating) and ✕ after it to clear it. Keep that when adding
        dictation anywhere else.
-       Export-row notes: typed, or dictated with the row's mic. The mic starts
-       serve_media.py recording (POST /dictation/start); the mic again, or
-       Enter in the note (its Form submits,
+       Export-row notes: typed, or dictated with the row's mic. Dictation is
+       Bram's script (/__shell/dictation.js, judell/bram#417) behind the
+       bridge in studio-dictation.js, called through window as Bram's own
+       pane markup does (judell/bram
+       app/tools/components/IsolatedDraftEditor.xmlui). The mic starts it: the
+       bridge claims the mic from serve_media.py, captures in the browser and
+       writes the text into the note as you speak; what you type meanwhile is
+       kept. The mic again, or Enter in the note (its Form submits,
        https://www.xmlui.org/docs/howto/submit-a-form-from-a-custom-button),
-       stops it: whisper-cli transcribes, the server appends the text to the
-       note and saves it, and the refetched note re-seeds the field through
-       initialValue. Actions.callApi is awaited in handlers
-       (https://www.xmlui.org/docs/howto/add-an-async-uniqueness-check). -->
+       stops it, and the page saves the field's text as the note.
+       The bridge can't read the field (a component passed to page script is
+       a snapshot), so the field's onDidChange reports its text; the bridge
+       writes with setValue
+       (https://www.xmlui.org/docs/reference/components/TextArea). -->
   <script>
     function noteKey(item) { return item.where + '/' + item.name; }
     function commitNote(item) {
@@ -110,9 +108,7 @@
     }
     function startDictation(item, box) {
       try {
-        liveNote = item.note || '';
-        Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/start', method: 'post',
-                          body: { name: item.name, where: item.where, base: item.note || '' } });
+        window.studioDictationStart(box, noteKey(item));
         dictating = noteKey(item);
         box.focus();
       } catch (e) {
@@ -121,10 +117,12 @@
     }
     function stopDictation(item) {
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/dictation/stop', method: 'post' });
-        // The server saved it: take its note as the buffer, so leaving the
-        // field afterwards doesn't write the pre-dictation text back.
-        if (r) { noteBuffer = r.note; liveNote = r.note; }
+        // The field's final text, dictated and typed; null if nothing ran.
+        const note = window.studioDictationStop();
+        if (typeof note === 'string') {
+          noteBuffer = note;
+          saveExportNote.execute({ name: item.name, where: item.where, note: note.trim() });
+        }
       } catch (e) {
         toast.error(e.message);
       }
@@ -1448,9 +1446,9 @@
               enabled="{!dictating || dictating === noteKey($item)}"
               onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
-              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{$item.note}"
                 onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
-                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; window.studioDictationValue(noteKey($item), v); }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
             </Form>
             <Button icon="close" variant="ghost" aria-label="Clear note" tooltip="Clear this note"
@@ -1504,9 +1502,9 @@
               enabled="{!dictating || dictating === noteKey($item)}"
               onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
-              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{dictating === noteKey($item) ? liveNote : $item.note}"
+              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{$item.note}"
                 onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
-                onDidChange="(v) => { noteBuffer = v; noteEdited = true; }"
+                onDidChange="(v) => { noteBuffer = v; noteEdited = true; window.studioDictationValue(noteKey($item), v); }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
               <Text variant="secondary" value="{$item.report}" />
             </Form>

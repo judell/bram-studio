@@ -56,3 +56,7 @@ voice recorder uses AVFoundation).
   [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad); or set `VAD_MODEL`);
   without it, the voice isn't gated.
 - The recorder uses the MacBook Air microphone by default (`MIC` in `record.sh`).
+- Dictating a note on the Exports page uses Bram's dictation script, so it needs a Bram
+  that serves `/__shell/dictation.js` ([judell/bram#417](https://github.com/judell/bram/issues/417)).
+  It listens on the browser's default microphone and transcribes with `whisper-server`
+  (whisper.cpp): Bram's when it is running, otherwise one Studio starts with the model above.
