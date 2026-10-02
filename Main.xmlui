@@ -34,7 +34,7 @@
         if (m.error &amp;&amp; m.dictation === dictating) { dictating = ''; toast.error('Dictation stopped: ' + m.error); }
         else if (m.dictation === dictating &amp;&amp; m.text !== undefined) liveNote = m.text;
       }
-      else if (m.changed === 'takes') { takes.refetch(); undoableCut.refetch(); }
+      else if (m.changed === 'takes') { takes.refetch(); undoableCut.refetch(); narrs.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') { recStatus.refetch(); undoableCut.refetch(); }
       else if (m.changed === 'exports') exports.refetch();
@@ -185,6 +185,7 @@
       narrBusy = false;
       cutSeq = cutSeq + 1;
       undoableCut.refetch();
+      narrs.refetch();
       takes.refetch();
     }
   </script>
@@ -200,6 +201,13 @@
        the take's clean copy. -->
   <DataSource id="callouts" url="/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [editTake, &quot;callout&quot;, &quot;shape&quot;] }}" />
+  <!-- The edited take's narrations (serve_media.py's narrations table), for
+       the Annotate tab's list and the Cut and Pause tabs' warnings. -->
+  <DataSource id="narrs" url="/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT id, t_in, t_out FROM narrations WHERE take_id = ? ORDER BY t_in', params: [editTake] }}" />
+  <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
+    body="{{ id: $param }}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <APICall id="addCallout" method="post" url="http://127.0.0.1:8765/callouts/add"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -1021,12 +1029,50 @@
                 applyState.refetch();
               " />
           </HStack>
-          <Items data="{callouts}">
+          <!-- The take's items and its narrations, in time order, each row
+               starting with its ✕ so the ✕s line up. A narration's ✕ puts back
+               the audio it replaced (/narrate/remove), at any time; the Undo
+               line then offers to restore it. Clicking a narration's name
+               moves the playhead to its start. -->
+          <Items data="{(callouts.value || []).map((c) => ({ ...c, narr: false })).concat((narrs.value || []).map((n) => ({ id: 'n' + n.id, nid: n.id, t_in: n.t_in, t_out: n.t_out, narr: true }))).sort((a, b) => a.t_in - b.t_in)}">
             <HStack verticalAlignment="center">
-              <Button size="xs" variant="{$item.id === editCallout ? 'solid' : 'ghost'}"
-                label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + ' s'}"
+              <Button icon="close" size="xs" variant="ghost"
+                aria-label="{$item.narr ? 'Remove this narration' : 'Remove this item'}"
+                tooltip="{$item.narr ? 'Remove this narration: the audio that was there before comes back (Undo restores the narration)' : 'Remove this item'}"
+                enabled="{!removeNarration.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
+                handlerTimeoutMs:onClick="0"
                 onClick="
-                  if ($item.id === editCallout) {
+                  if ($item.narr) {
+                    removeNarration.execute($item.nid);
+                    cutSeq = cutSeq + 1;
+                    narrs.refetch();
+                    undoableCut.refetch();
+                    takes.refetch();
+                  } else {
+                    deleteCallout.execute($item.id);
+                    if ($item.id === editCallout) {
+                      editCallout = null;
+                      calloutBox = null;
+                      lastSprite = null;
+                      curShape = null;
+                      curText = '';
+                      curTail = 'none';
+                      calloutIn = 0;
+                      calloutOut = 3;
+                      calloutText.setValue('');
+                      calloutTail.setValue('none');
+                    }
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  }
+                " />
+              <Button size="xs" variant="{!$item.narr &amp;&amp; $item.id === editCallout ? 'solid' : 'ghost'}"
+                label="{($item.narr ? 'Narration' : $item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + ' s'}"
+                onClick="
+                  if ($item.narr) {
+                    takePlayer.seek($item.t_in);
+                  } else if ($item.id === editCallout) {
                     editCallout = null;
                     calloutBox = null;
                     lastSprite = null;
@@ -1051,25 +1097,6 @@
                     calloutTail.setValue($item.tail || 'none');
                     takePlayer.seek($item.t_in);
                   }
-                " />
-              <Button icon="close" size="xs" variant="ghost" aria-label="Remove this item"
-                onClick="
-                  deleteCallout.execute($item.id);
-                  if ($item.id === editCallout) {
-                    editCallout = null;
-                    calloutBox = null;
-                    lastSprite = null;
-                    curShape = null;
-                    curText = '';
-                    curTail = 'none';
-                    calloutIn = 0;
-                    calloutOut = 3;
-                    calloutText.setValue('');
-                    calloutTail.setValue('none');
-                  }
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
                 " />
             </HStack>
           </Items>
@@ -1144,6 +1171,7 @@
               cutSeq = cutSeq + 1;
               lastCut = [0, 1]; cutSeed = [0, 1];
               undoableCut.refetch();
+              narrs.refetch();
               takes.refetch();
               callouts.refetch();
               savedSprites.refetch();
@@ -1151,6 +1179,13 @@
             " />
           <Spinner when="{cutTake.inProgress}" />
           </HStack>
+          <!-- A cut through a narration takes away its ✕ (the audio kept for
+               removing it no longer fits; serve_media.py drops its row, with
+               one frame of slack at its ends). Say so before the click; it
+               doesn't block, since Undo brings the row back. -->
+          <Text color="$color-warn-700"
+            when="{(narrs.value || []).some((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04)}"
+            value="{'This cut goes through the narration at ' + (narrs.value || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
         </VStack>
         </TabItem>
         <!-- Insert a pause: one handle marks where (moving it seeks the player
@@ -1197,6 +1232,7 @@
               pauseTake.execute({ id: editTake, at: pauseAt, seconds: pauseSecs });
               cutSeq = cutSeq + 1;
               undoableCut.refetch();
+              narrs.refetch();
               takes.refetch();
               callouts.refetch();
               savedSprites.refetch();
@@ -1204,6 +1240,10 @@
             " />
           <Spinner when="{pauseTake.inProgress}" />
           </HStack>
+          <!-- The same warning for a pause that falls inside a narration. -->
+          <Text color="$color-warn-700"
+            when="{(narrs.value || []).some((n) => pauseAt > n.t_in + 0.04 &amp;&amp; pauseAt &lt; n.t_out - 0.04)}"
+            value="{'This pause falls inside the narration at ' + (narrs.value || []).filter((n) => pauseAt > n.t_in + 0.04 &amp;&amp; pauseAt &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
         </VStack>
         </TabItem>
         <!-- Narrate over a stretch: two handles mark the clip, as on the Cut
@@ -1295,6 +1335,7 @@
             cutSeq = cutSeq + 1;
             lastCut = [0, 1]; cutSeed = [0, 1];
             undoableCut.refetch();
+            narrs.refetch();
             takes.refetch();
             callouts.refetch();
             savedSprites.refetch();

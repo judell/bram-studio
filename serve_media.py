@@ -25,7 +25,8 @@ and GET /takes/last-cut names the latest edit still undoable;
 POST /narrate/start {id, start, end} opens the mic to narrate over that
 stretch of a take, /narrate/go marks the moment the page starts playing it,
 and /narrate/stop replaces the take's audio there with what was said (undone
-by /takes/uncut too);
+by /takes/uncut too); POST /narrate/remove {id} takes a narration back out
+at any time, from the audio it replaced;
 POST /reorder {ids} saves the takes list's drag order; POST /export joins
 all takes in that order into media/exports/<stamp>-takes.mp4.
 POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
@@ -168,7 +169,22 @@ def watch_changes():
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
 # A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
-EDIT_SIDECAR = re.compile(r"-before-(cut|pause|narrate)-\d{8}-\d{6}\.json$")
+EDIT_SIDECAR = re.compile(r"-before-(cut|pause|narrate|unnarrate)-\d{8}-\d{6}\.json$")
+# A take's narrations (the Narrate tab), so each can be listed and removed at
+# any time, not only while it is the take's last edit: the stretch it covers
+# and, in media/.narrated/, the audio it replaced. A later cut or pause before
+# one shifts it; one inside its stretch drops the row (the kept audio no longer
+# fits), as does narrating over it again. The page lists them through /query.
+NARRATIONS_SQL = """CREATE TABLE IF NOT EXISTS narrations (
+  id INTEGER PRIMARY KEY,
+  take_id INTEGER NOT NULL,
+  t_in REAL NOT NULL,
+  t_out REAL NOT NULL,
+  audio TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)"""
+NARRATED = os.path.join(ROOT, ".narrated")
+NARR_EDGE = 0.04  # one frame: an edit this close to a narration's end isn't inside it
 # Starting a recording ends the Undo offer for edits made before it: the time
 # is kept here (a file, so it holds across restarts) and GET /takes/last-cut
 # skips older sidecars. They stay in .trash, and /takes/uncut still takes one
@@ -786,6 +802,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.narrate_go()
         if self.path == "/narrate/stop":
             return self.narrate_stop()
+        if self.path == "/narrate/remove":
+            return self.narrate_remove()
         if self.path == "/reorder":
             return self.reorder_takes()
         if self.path == "/export":
@@ -1262,7 +1280,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             name = f"{stem}{ext}"
         saved = {"take": dict(row), "files": {},
                  "overlays": [dict(r) for r in db.execute(
-                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))]}
+                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))],
+                 "narrations": [dict(r) for r in db.execute(
+                     "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))]}
         src, trashed = os.path.join(ROOT, row["file"]), None
         if os.path.exists(src):
             try:
@@ -1281,6 +1301,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             json.dump(saved, f, indent=1)
         db.execute("DELETE FROM takes WHERE id = ?", (row["id"],))
         db.execute("DELETE FROM overlays WHERE take_id = ?", (row["id"],))
+        db.execute("DELETE FROM narrations WHERE take_id = ?", (row["id"],))
         db.commit()
         self.send_json(200, {"deleted": row["id"], "name": row["name"], "trashed": trashed, "undo": undo})
 
@@ -1314,6 +1335,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             o = {k: v for k, v in o.items() if k != "id"}
             o["take_id"] = take_id
             db.execute(f"INSERT INTO overlays ({', '.join(o)}) VALUES ({', '.join('?' * len(o))})", list(o.values()))
+        for n in saved.get("narrations", []):
+            n = {k: v for k, v in n.items() if k != "id"}
+            n["take_id"] = take_id
+            db.execute(f"INSERT INTO narrations ({', '.join(n)}) VALUES ({', '.join('?' * len(n))})", list(n.values()))
         db.commit()
         os.remove(path)
         self.send_json(200, {"restored": take_id, "name": take["name"], "overlays": len(saved["overlays"])})
@@ -1364,7 +1389,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # overlaps the cut: keep what's left of it on either side
             return min(t_in, start), (t_out - cut if t_out > end else start)
 
-        done = self.apply_take_edit(db, row, src, chain, "cut", [round(start, 3), round(end, 3)], retime)
+        def narr(t_in, t_out):
+            # A cut through a narration takes its row; one before it moves it.
+            if start < t_out - NARR_EDGE and end > t_in + NARR_EDGE:
+                return None
+            return (max(start, t_in - cut), t_out - cut) if t_in >= end - NARR_EDGE else (t_in, t_out)
+
+        done = self.apply_take_edit(db, row, src, chain, "cut", [round(start, 3), round(end, 3)], retime, narr=narr)
         if done:
             self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "cut", "start": round(start, 2),
                                  "end": round(end, 2), "duration": done[0], "undo": done[1]})
@@ -1424,7 +1455,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return t_in + secs, t_out + secs
             return t_in, t_out
 
-        done = self.apply_take_edit(db, row, src, chain, "pause", [round(at, 3), round(secs, 3)], retime)
+        def narr(t_in, t_out):
+            # A pause inside a narration takes its row; one before it moves it.
+            if t_in + NARR_EDGE < at < t_out - NARR_EDGE:
+                return None
+            return (t_in + secs, t_out + secs) if t_in >= at - NARR_EDGE else (t_in, t_out)
+
+        done = self.apply_take_edit(db, row, src, chain, "pause", [round(at, 3), round(secs, 3)], retime, narr=narr)
         if done:
             self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "pause", "at": round(at, 2),
                                  "seconds": round(secs, 2), "duration": done[0], "undo": done[1]})
@@ -1552,23 +1589,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(409, {"error": "the take is gone"})
             dur = float(probe(src, "format=duration") or 0)
             start, end = n["start"], n["end"]
-            fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
-            parts, chain = [], ""
-            if start > 0.02:
-                chain += (f"[0:a]atrim=start=0:end={start:.3f},asetpts=PTS-STARTPTS,{fmt},"
-                          f"afade=t=out:st={start - 0.01:.3f}:d=0.01[a0];")
-                parts.append("[a0]")
-            chain += (f"[1:a]volume={gain:.2f}dB,alimiter=limit=0.841:attack=5:release=80:level=false,"
-                      f"afade=t=in:d=0.01,afade=t=out:st={said - 0.01:.3f}:d=0.01,{fmt},"
-                      f"apad=whole_dur={clip:.3f},atrim=duration={clip:.3f}[a1];")
-            parts.append("[a1]")
-            if end < dur - 0.02:
-                chain += f"[0:a]atrim=start={end:.3f},asetpts=PTS-STARTPTS,{fmt},afade=t=in:d=0.01[a2];"
-                parts.append("[a2]")
-            chain += f"{''.join(parts)}concat=n={len(parts)}:v=0:a=1[a]"
-            done = self.apply_take_edit(db, row, src, chain, "narrate", [round(start, 3), round(end, 3)],
-                                        lambda t_in, t_out: (t_in, t_out), extra=[voice], copy_video=True)
+            chain = self.replace_audio_chain(
+                start, end, dur, f"volume={gain:.2f}dB,alimiter=limit=0.841:attack=5:release=80:level=false,"
+                                 f"afade=t=in:d=0.01,afade=t=out:st={said - 0.01:.3f}:d=0.01")
+            # Keep the audio being replaced, so this narration can be removed
+            # later (/narrate/remove) whatever else has been done to the take.
+            os.makedirs(NARRATED, exist_ok=True)
+            kept = f"{row['file'][:-4]}-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vn", "-af",
+                            f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
+                            "-ar", "48000", "-ac", "2", os.path.join(NARRATED, kept)], check=True)
+            # Narrating over an earlier narration's stretch takes that one's
+            # row: its kept audio would wipe this narration too.
+            done = self.apply_take_edit(
+                db, row, src, chain, "narrate", [round(start, 3), round(end, 3)],
+                lambda t_in, t_out: (t_in, t_out), extra=[voice], copy_video=True,
+                narr=lambda a, b: None if start < b - NARR_EDGE and end > a + NARR_EDGE else (a, b))
+            if not done:
+                os.remove(os.path.join(NARRATED, kept))
             if done:
+                db.execute("INSERT INTO narrations (take_id, t_in, t_out, audio, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (row["id"], round(start, 3), round(end, 3), kept, time.strftime("%Y-%m-%d %H:%M:%S")))
+                db.commit()
                 self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "narrate",
                                      "start": round(start, 2), "end": round(end, 2), "said": round(said, 2),
                                      "measured": loud, "gain": round(gain, 1), "duration": done[0], "undo": done[1]})
@@ -1580,8 +1622,60 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if os.path.exists(path):
                     os.remove(path)
 
-    def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False):
-        # The part a cut, a pause and a narration share. Runs the ffmpeg filter
+    @staticmethod
+    def replace_audio_chain(start, end, dur, mid):
+        # The filter chain (ending in [a]) that replaces a take's audio from
+        # start to end with input 1 run through `mid`, padded or trimmed to
+        # the stretch's length, with 10 ms fades where the take's own audio
+        # stops and resumes.
+        fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+        clip, parts, chain = end - start, [], ""
+        if start > 0.02:
+            chain += (f"[0:a]atrim=start=0:end={start:.3f},asetpts=PTS-STARTPTS,{fmt},"
+                      f"afade=t=out:st={start - 0.01:.3f}:d=0.01[a0];")
+            parts.append("[a0]")
+        chain += f"[1:a]{mid},{fmt},apad=whole_dur={clip:.3f},atrim=duration={clip:.3f}[a1];"
+        parts.append("[a1]")
+        if end < dur - 0.02:
+            chain += f"[0:a]atrim=start={end:.3f},asetpts=PTS-STARTPTS,{fmt},afade=t=in:d=0.01[a2];"
+            parts.append("[a2]")
+        return chain + f"{''.join(parts)}concat=n={len(parts)}:v=0:a=1[a]"
+
+    def narrate_remove(self):
+        # {id}: take a narration back out: the audio it replaced
+        # (media/.narrated/) goes back over its stretch, in the take and its
+        # clean copy, the picture stream-copied. An edit like the others, so
+        # the Undo line offers to put the narration back.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(os.path.join(HERE, "studio.db"))
+        db.row_factory = sqlite3.Row
+        n = db.execute("SELECT * FROM narrations WHERE id = ?", (body.get("id"),)).fetchone()
+        if not n:
+            return self.send_json(404, {"error": f"no narration with id {body.get('id')}"})
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (n["take_id"],)).fetchone()
+        src = os.path.join(ROOT, row["file"]) if row else ""
+        kept = os.path.join(NARRATED, n["audio"])
+        if not os.path.isfile(src):
+            return self.send_json(409, {"error": "the take is gone"})
+        if not os.path.isfile(kept):
+            return self.send_json(409, {"error": f"the audio this narration replaced is missing ({n['audio']})"})
+        with DICTATION_LOCK:
+            if narration["current"]:
+                return self.send_json(409, {"error": "a narration is recording"})
+        dur = float(probe(src, "format=duration") or 0)
+        start, end = n["t_in"], min(dur, n["t_out"])
+        chain = self.replace_audio_chain(
+            start, end, dur, f"afade=t=in:d=0.01,afade=t=out:st={max(0, end - start - 0.01):.3f}:d=0.01")
+        done = self.apply_take_edit(db, row, src, chain, "unnarrate", [round(start, 3), round(end, 3)],
+                                    lambda t_in, t_out: (t_in, t_out), extra=[kept], copy_video=True)
+        if done:
+            db.execute("DELETE FROM narrations WHERE id = ?", (n["id"],))
+            db.commit()
+            self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "unnarrate", "start": round(start, 2),
+                                 "end": round(end, 2), "duration": done[0], "undo": done[1]})
+
+    def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False, narr=None):
+        # The part a cut, a pause, a narration and its removal share. Runs the ffmpeg filter
         # `chain` (ending in [v] and [a]) on the take's MP4 and its clean copy, into
         # hidden temp files first, so a failure changes nothing. `extra` are
         # further input files (inputs 1…); with copy_video the chain ends in
@@ -1614,8 +1708,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         stem, when = row["file"][:-4], time.strftime("%Y%m%d-%H%M%S")
         saved = {"take": dict(row), "edit": kind, kind: record, "files": {},
                  "overlays": [dict(r) for r in db.execute(
-                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))]}
-        was_applied = row["overlay_applied"] == db.execute(overlay.APPLIED_SQL, (row["id"],)).fetchone()[0]
+                     "SELECT * FROM overlays WHERE take_id = ? ORDER BY id", (row["id"],))],
+                 "narrations": [dict(r) for r in db.execute(
+                     "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))]}
+        was_applied =row["overlay_applied"] == db.execute(overlay.APPLIED_SQL, (row["id"],)).fetchone()[0]
         for path, tmp in zip(targets, tmps):
             which = "clean-" if path == clean else ""
             trashed = f"{stem}-{which}before-{kind}-{when}.mp4"
@@ -1631,6 +1727,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 db.execute("UPDATE overlays SET t_in = ?, t_out = ? WHERE id = ?",
                            (round(new[0], 3), round(new[1], 3), o["id"]))
+        # The take's narrations: narr(t_in, t_out) gives one's new stretch, or
+        # None when this edit changed what is inside it, which takes its row
+        # (its kept audio no longer fits). The sidecar has them all for undo.
+        for n in saved["narrations"]:
+            new = narr(n["t_in"], n["t_out"]) if narr else (n["t_in"], n["t_out"])
+            if new is None:
+                db.execute("DELETE FROM narrations WHERE id = ?", (n["id"],))
+            elif new != (n["t_in"], n["t_out"]):
+                db.execute("UPDATE narrations SET t_in = ?, t_out = ? WHERE id = ?",
+                           (round(new[0], 3), round(new[1], 3), n["id"]))
         new_dur = round(float(probe(src, "format=duration") or 0), 1)
         url = row["url"].split("?")[0] + f"?v={int(time.time())}"
         db.execute("UPDATE takes SET duration_s = ?, url = ? WHERE id = ?", (new_dur, url, row["id"]))
@@ -1692,7 +1798,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except (OSError, ValueError, KeyError):
                 continue
             if row and (st.st_size, st.st_mtime_ns) == (saved["after"]["size"], saved["after"]["mtime_ns"]):
-                if saved.get("edit") == "narrate":
+                if saved.get("edit") == "unnarrate":
+                    what = (f"Removed the narration at {saved['unnarrate'][0]:.2f}–{saved['unnarrate'][1]:.2f} s "
+                            "from")
+                elif saved.get("edit") == "narrate":
                     what = f"Narrated over {saved['narrate'][0]:.2f}–{saved['narrate'][1]:.2f} s in"
                 elif saved.get("edit") == "pause":
                     what =f"Inserted a {saved['pause'][1]:g} s pause at {saved['pause'][0]:.2f} s in"
@@ -1731,6 +1840,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db.execute("DELETE FROM overlays WHERE take_id = ?", (take["id"],))
         for o in saved["overlays"]:
             db.execute(f"INSERT INTO overlays ({', '.join(o)}) VALUES ({', '.join('?' * len(o))})", list(o.values()))
+        # The narrations as they were before the edit (sidecars written before
+        # narrations had rows have none, and leave the rows alone).
+        if "narrations" in saved:
+            db.execute("DELETE FROM narrations WHERE take_id = ?", (take["id"],))
+            for n in saved["narrations"]:
+                db.execute(f"INSERT INTO narrations ({', '.join(n)}) VALUES ({', '.join('?' * len(n))})",
+                           list(n.values()))
         db.commit()
         os.remove(path)
         self.mark_take_cut(take["file"], None)
@@ -1879,6 +1995,7 @@ def adopt_running_take():
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(os.path.join(HERE, "studio.db")) as _db:
     overlay.ensure_schema(_db)
+    _db.execute(NARRATIONS_SQL)
 recorder = adopt_running_take()
 backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()

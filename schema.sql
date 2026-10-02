@@ -44,3 +44,15 @@ CREATE TABLE IF NOT EXISTS overlays (
   tail TEXT,  -- a callout's speech-bubble tail: n, ne, e, se, s, sw, w, nw, or none
   shape TEXT  -- a shape's kind: rect, ellipse, arrow, pointer
 );
+
+-- Narrations recorded over part of a take (serve_media.py's /narrate/*): the
+-- stretch each covers, in take seconds, and the audio it replaced, so it can
+-- be taken back out (/narrate/remove). serve_media.py creates this at startup.
+CREATE TABLE IF NOT EXISTS narrations (
+  id INTEGER PRIMARY KEY,
+  take_id INTEGER NOT NULL,
+  t_in REAL NOT NULL,
+  t_out REAL NOT NULL,
+  audio TEXT NOT NULL,  -- a WAV in media/.narrated/: what was there before
+  created_at TEXT NOT NULL
+);
