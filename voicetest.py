@@ -30,6 +30,21 @@ NATIVE_SRC = os.path.join(HERE, "record_native.swift")
 NATIVE_BIN = os.path.expanduser("~/.cache/bram-studio/record_native")
 RATE, SECONDS = 48000, 10
 RECORDERS = ("ffmpeg-raw", "ffmpeg-async", "native")
+# One row per 10s voice test.
+SCHEMA = """CREATE TABLE IF NOT EXISTS voice_tests (
+  id INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  mic TEXT NOT NULL,
+  recorder TEXT NOT NULL,
+  expected_s REAL,
+  captured_s REAL,
+  short_pct REAL,
+  clicks INTEGER,
+  peak_db REAL,
+  rms_db REAL,
+  raw_url TEXT NOT NULL,
+  leveled_url TEXT NOT NULL
+)"""
 # take.py's leveling, so "leveled" is what a take would sound like
 PRE = "highpass=f=80,acompressor=threshold=-24dB:ratio=3:attack=5:release=120"
 LOUD = "loudnorm=I=-16:TP=-1.5:LRA=11"
@@ -114,8 +129,10 @@ def main():
            "peak_db": peak_db, "rms_db": rms_db,
            "raw_url": f"http://127.0.0.1:8765/tests/{os.path.basename(raw)}",
            "leveled_url": f"http://127.0.0.1:8765/tests/{os.path.basename(leveled)}"}
+    # The bench is shared by all projects: its table lives in the repo's
+    # studio.db, not the open project's (studio_paths.py).
     db = sqlite3.connect(os.path.join(HERE, "studio.db"))
-    db.executescript(open(os.path.join(HERE, "schema.sql")).read())
+    db.execute(SCHEMA)
     db.execute(f"INSERT INTO voice_tests ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", list(row.values()))
     db.commit()
     print(json.dumps(row))

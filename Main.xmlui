@@ -2,10 +2,14 @@
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
-  <!-- Takes live in studio.db (see schema.sql); Bram serves it read-only via
-       /query. Each take's MP4 is served by serve_media.py, which Bram's
-       loopback can't do yet (no video content types, no byte ranges). -->
-  <DataSource id="takes" url="/query" method="POST" dataType="sql"
+  <!-- Takes live in the open project's studio.db (see schema.sql and
+       studio_paths.py). serve_media.py answers the project's queries
+       read-only at its own /query, since it is what knows which project is
+       open; Bram's /query serves only the repo's studio.db, which holds the
+       shared Audio bench (voiceTests below). Each take's MP4 is served by
+       serve_media.py too, which Bram's loopback can't do yet (no video
+       content types, no byte ranges). -->
+  <DataSource id="takes" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
     pollIntervalInSeconds="60" />
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
@@ -197,11 +201,11 @@
   <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
        a take (overlay.py). Add/delete edit the list; render burns them in from
        the take's clean copy. -->
-  <DataSource id="callouts" url="/query" method="POST" dataType="sql"
+  <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [editTake, &quot;callout&quot;, &quot;shape&quot;] }}" />
   <!-- The edited take's narrations (serve_media.py's narrations table), for
        the Annotate tab's list and the Cut and Pause tabs' warnings. -->
-  <DataSource id="narrs" url="/query" method="POST" dataType="sql"
+  <DataSource id="narrs" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, t_in, t_out FROM narrations WHERE take_id = ? ORDER BY t_in', params: [editTake] }}" />
   <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
     body="{{ id: $param }}" invalidates="{[]}"
@@ -686,7 +690,7 @@
         <!-- applyState.dirty: the saved callouts differ from what was last burned
              in (the SQL is overlay.py's APPLIED_SQL, which fills
              takes.overlay_applied at Apply); Apply is dimmed otherwise. -->
-        <DataSource id="applyState" url="/query" method="POST" dataType="sql" when="{!!editTake}"
+        <DataSource id="applyState" url="http://127.0.0.1:8765/query" method="POST" dataType="sql" when="{!!editTake}"
           body="{{ sql: 'SELECT (SELECT group_concat(id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) || ifnull(shape, char(45)), char(124)) FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)) IS NOT overlay_applied AS dirty FROM takes WHERE id = ?', params: [editTake, editTake] }}" />
         <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
           when="{!!editTake}" body="{{ take_id: editTake }}" />

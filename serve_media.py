@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Serve media/ with video content types and HTTP byte ranges.
+"""Serve the open project's media/ with video content types and HTTP byte ranges.
 
     python3 serve_media.py [port]      (default 8765)
 
 Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
 it (and couldn't seek). This fills that gap until Bram does it itself.
+
+The open project (studio_paths.py) is fixed at startup: its media/ is what
+is served, and POST /query {sql, params} answers the pages' read-only
+queries from its studio.db. /tests/<name> serves the Audio bench's shared
+recordings.
 
 GET /sources lists the movies in sources/ and on the Desktop (newest first)
 and /sources/<name> streams one;
@@ -668,6 +673,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if name.startswith("/sources/"):
             name = name[len("/sources/"):]
             return source_paths().get(name, os.path.join(ROOT, ".no-such-file"))
+        if name.startswith("/tests/"):
+            # The Audio bench's recordings (voicetest.py) are shared, not the
+            # open project's. Only plain file names.
+            name = name[len("/tests/"):]
+            if "/" in name or name.startswith("."):
+                return os.path.join(ROOT, ".no-such-file")
+            return os.path.join(studio_paths.TESTS, name)
         return super().translate_path(path)
 
     def send_head(self):
@@ -769,6 +781,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 EVENT_QUEUES.discard(q)
 
     def do_POST(self):
+        if self.path == "/query":
+            return self.query()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -1979,6 +1993,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if r.returncode:
             return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["voicetest failed"])[-1]})
         self.send_json(200, json.loads(r.stdout))
+
+    def query(self):
+        # The pages' DataSource dataType="sql" requests, answered from the
+        # open project's database: {sql, params} (or bare SQL) in, a JSON
+        # array of column-keyed rows out. The same contract as Bram's /query,
+        # which serves only the one database .bram.json names (the repo's,
+        # with the Audio bench's voice_tests). Read-only at the engine: opened
+        # mode=ro with query_only on, so a page can't change project data.
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = raw.decode("utf-8", "replace")
+        sql, params = (body, []) if isinstance(body, str) else (
+            (body.get("sql"), body.get("params") or []) if isinstance(body, dict) else (None, []))
+        if not isinstance(sql, str) or not sql.strip() or not isinstance(params, list):
+            return self.send_json(400, {"error": "expected {sql, params}"})
+        try:
+            db = sqlite3.connect(f"file:{urllib.parse.quote(DB)}?mode=ro", uri=True)
+            try:
+                db.row_factory = sqlite3.Row
+                db.execute("PRAGMA query_only = ON")
+                rows = [dict(r) for r in db.execute(sql, params)]
+            finally:
+                db.close()
+        except sqlite3.Error as e:
+            return self.send_json(400, {"error": str(e)})
+        self.send_json(200, rows)
 
     def send_json(self, code, obj):
         body = json.dumps(obj).encode()

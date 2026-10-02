@@ -42,6 +42,18 @@ voice recorder uses AVFoundation).
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
   the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.
 
+## Where things are kept
+
+Each screencast is a project, a folder under `projects/` (not committed): its
+`studio.db` (takes, callouts and shapes, narrations), `media/` (takes, undo history,
+exports) and `work/` (recording sessions and render ingredients). `projects/.open` names
+the open one. Source movies (`sources/`) and the Audio page's test recordings are shared
+by all projects. `studio_paths.py` is the one place that knows these paths.
+
+A Studio from before projects keeps working from the repo's own `studio.db`, `media/`
+and `work/`. To move it into a project, stop `serve_media.py` and run
+`python3 migrate_project.py <folder-name> "<Name>"`.
+
 ## What you need
 
 - [Bram](https://github.com/judell/bram), with this project as its target app, and
