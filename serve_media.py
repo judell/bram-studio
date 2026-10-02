@@ -11,6 +11,7 @@ GET /sources lists the movies in sources/ and on the Desktop (newest first)
 and /sources/<name> streams one;
 GET /record/status reports a running take's phase; POST /record {source}
 starts record.sh (one take of that movie) for the app's Record button,
+POST /record/event {events} logs events as they happen,
 POST /record/stop {events} ends it with the player's event log, and
 POST /record/cancel / /record/restart {source} discard it (and start anew);
 record.sh logs to record.log. GET /devices lists the audio inputs and
@@ -39,6 +40,7 @@ GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
 page refetches then instead of polling.
 """
 import array
+import collections
 import hashlib
 import http.server
 import io
@@ -277,6 +279,34 @@ NARRATE_AF = ("anlmdn=s=0.0005:p=0.002:r=0.006,highpass=f=80,"
               "acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
 NARRATE_FLOOR = -45.0  # LUFS: a recording quieter than this has no speech in it
 NARRATE_GRACE = 30  # s past the clip's length before an unstopped narration is abandoned
+
+
+# A recording's events, as the page sends them one by one (POST /record/event)
+# into <session>/events.jsonl. The page also keeps them in one array that it
+# rewrites on every event and posts at Stop; an item placed while recording
+# was found with its annotAdd and annotRemove missing from that array
+# (session 20261001-150809), so its span ran to the end of the take. At Stop
+# the two are merged and compared (stop_recording). Events that arrive before
+# record.sh has made its session directory wait in pending_events.
+EVENTS_LOCK = threading.Lock()
+pending_events = []
+
+
+def log_events(events):
+    with EVENTS_LOCK:
+        pending_events.extend(events)
+        try:
+            session = open(os.path.join(ROOT, ".record-session")).read().strip()
+        except OSError:
+            return
+        if pending_events and os.path.isdir(session):
+            with open(os.path.join(session, "events.jsonl"), "a") as f:
+                f.writelines(json.dumps(e) + "\n" for e in pending_events)
+            pending_events.clear()
+
+
+def event_key(e):
+    return e.get("event"), e.get("wallMs"), e.get("cid")
 
 
 def end_narration(n, keep=False):
@@ -736,6 +766,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, {"cancelled": cancel_recording()})
         if self.path == "/record/stop":
             return self.stop_recording()
+        if self.path == "/record/event":
+            return self.record_event()
         if self.path == "/voicetest":
             return self.run_voicetest()
         if self.path == "/delete":
@@ -1018,8 +1050,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None, "a callout or shape needs x1, y1, x2, y2, t_in and t_out"
         if not isinstance(body.get("take_id"), int):
             return None, "a callout or shape needs a take"
-        if not shape and not text:
-            return None, "a callout needs some text"
+        # A callout may have no text yet, as one placed while recording may:
+        # the editor shows a placeholder (overlay.sprite) and Apply skips it.
         if t_out <= t_in:
             return None, "the out point must come after the in point"
         clamp = lambda v: max(0.0, min(1.0, v))
@@ -1071,7 +1103,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "shape": shape, "frame": bool(body.get("frame")) and not shape}
         db = sqlite3.connect(os.path.join(HERE, "studio.db"))
         try:
-            self.send_json(200, self.sprite_file(db, take_id, item))
+            # id: the saved item this is, echoed so the page can tell a sprite
+            # that has just loaded from the previously selected item's.
+            self.send_json(200, {**self.sprite_file(db, take_id, item), "id": body.get("id")})
         except LookupError as e:
             self.send_json(404, {"error": str(e)})
 
@@ -1720,15 +1754,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.recording() or testing.locked() or narration["current"]:
             return self.send_json(409, {"error": "the mic is busy (recording, narrating or testing)"})
         set_undo_floor()  # a new recording: earlier take edits are settled work
+        with EVENTS_LOCK:
+            pending_events.clear()
         log = open(os.path.join(HERE, "record.log"), "a")
         recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), source_paths()[source]],
                                     cwd=HERE, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         self.send_json(202, {"started": True})
 
+    def record_event(self):
+        # {events: [...]}: events the page logs as they happen (everything but
+        # pointer samples), each stamped with its arrival time. Never an
+        # error for the page to show: with nothing recording, nothing is kept.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        events = [e for e in body.get("events") or [] if isinstance(e, dict)]
+        if not self.recording():
+            return self.send_json(200, {"logged": 0})
+        now = int(time.time() * 1000)
+        log_events([{**e, "serverMs": now} for e in events])
+        self.send_json(200, {"logged": len(events)})
+
     def stop_recording(self):
-        # The page's MediaPlayer event log becomes the session's events.json;
-        # then .record-stop tells record.sh the take is over.
+        # The session's events.json is the page's event array plus whatever the
+        # server's own log (record_event) holds that the array lacks; then
+        # .record-stop tells record.sh the take is over. The array as posted
+        # is kept as events-page.json, and one "events:" log line says what
+        # each side had and what the page's array was missing.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if not self.recording():
             return self.send_json(409, {"error": "nothing is recording"})
@@ -1736,11 +1787,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             session = open(os.path.join(ROOT, ".record-session")).read().strip()
         except OSError:
             return self.send_json(409, {"error": "the recorder hasn't started yet"})
-        json.dump(body.get("events", []), open(os.path.join(session, "events.json"), "w"), indent=1)
+        page = [e for e in body.get("events", []) if isinstance(e, dict)]
+        log_events([])  # anything still waiting for the session directory
+        logged = []
+        try:
+            with open(os.path.join(session, "events.jsonl")) as f:
+                logged = [json.loads(line) for line in f if line.strip()]
+        except (OSError, ValueError) as e:
+            print(f"events: no server log for {os.path.basename(session)} ({e})", flush=True)
+        have = {event_key(e) for e in page}
+        missing = [e for e in logged if event_key(e) not in have]
+        events = page
+        json.dump(page, open(os.path.join(session, "events-page.json"), "w"), indent=1)
+        if missing:
+            # sorted() is stable, so events with one wallMs keep their order.
+            events = sorted(page + missing, key=lambda e: e.get("wallMs") or 0)
+        kinds = lambda evs: dict(collections.Counter(e.get("event") for e in evs if e.get("event") != "pointer"))
+        print(f"events: {os.path.basename(session)} page {kinds(page)} server {kinds(logged)}; "
+              f"the page's array was missing {len(missing)}"
+              + (f": {[(e.get('event'), e.get('cid')) for e in missing]}" if missing else ""), flush=True)
+        json.dump(events, open(os.path.join(session, "events.json"), "w"), indent=1)
         # What the source player reported at Stop, so an empty take carries evidence.
         json.dump(body.get("diag", {}), open(os.path.join(session, "diag.json"), "w"), indent=1)
         open(os.path.join(ROOT, ".record-stop"), "w").close()
-        self.send_json(200, {"stopped": True, "events": len(body.get("events", []))})
+        self.send_json(200, {"stopped": True, "events": len(events), "recovered": len(missing)})
 
     def run_voicetest(self):
         # One 10s test at a time, never during a take; returns when it's measured.
