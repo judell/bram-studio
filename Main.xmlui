@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -173,7 +173,7 @@
     // shows a spinner until it answers.
     function startNarration() {
       try {
-        cutPreview = null;
+        cutPreview = null; audition = null;
         takePlayer.pause();
         takePlayer.seek(narrClip[0]);
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
@@ -192,6 +192,11 @@
       narrBusy = true;
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post' });
+        // Done: the slider goes back to where it starts, as Cut's does after a
+        // cut, ready for the next narration; the new one shows in the list
+        // below. A refused narration (nothing said) keeps its range to retry.
+        narrSeed = [0, 1];
+        narrClip = narrSeed;
       } catch (e) {
         toast.error(e.message);
       }
@@ -200,6 +205,50 @@
       edits.refetch();
       narrs.refetch();
       takes.refetch();
+    }
+    // An audition plays a bounded stretch of the take and stops, as judell/av
+    // does (https://github.com/judell/av, av.js playIntro/playOutro/playClip):
+    // seek to start, set where to stop, play. The Timer beside Preview's
+    // pauses once the playhead reaches stop; whatever ends Preview (a handle
+    // moved, a tab switched, an edit, another take) ends an audition too, as
+    // does pausing the player. Each stop is logged (/audition/log) with where
+    // the playhead actually stopped, to measure how close the 40 ms Timer
+    // gets. invalidates: [] keeps the log call from refetching every list.
+    // (Not from / to: the markup's script parser rejects from as a name.)
+    function playAudition(start, stop, kind) {
+      const end = takePlayer.duration || editDur;
+      const a = { start: Math.max(0, start), stop: Math.min(end, stop), kind, startedMs: Date.now(),
+                  at: Math.max(0, start), atMs: Date.now() };
+      // No pause before the seek: a pause cuts off a play() still starting
+      // (a quick second click), which the page shows as an error.
+      cutPreview = null;
+      takePlayer.seek(a.start);
+      audition = a;
+      takePlayer.play();
+    }
+    // The user scrubbed during an audition: let go without pausing, so the
+    // player does what they asked, and log where the playhead went.
+    function yieldAudition(t) {
+      const a = audition;
+      audition = null;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+                          body: { kind: 'yielded-to-scrub-' + a.kind, start: a.start, stop: a.stop, stoppedAt: t } });
+      } catch (e) {
+        // A missing log line is no reason to bother the user.
+      }
+    }
+    function endAudition() {
+      const a = audition;
+      takePlayer.pause();
+      audition = null;
+      const stoppedAt = takePlayer.getCurrentTime();
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+                          body: { kind: a.kind, start: a.start, stop: a.stop, stoppedAt } });
+      } catch (e) {
+        // A missing log line is no reason to bother the user.
+      }
     }
     // Open and New project (the Projects page). The server writes which
     // project is open and starts itself over on it, so the page doesn't
@@ -396,7 +445,7 @@
   <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [editTake, &quot;callout&quot;, &quot;shape&quot;] }}" />
   <!-- The edited take's narrations (serve_media.py's narrations table), for
-       the Annotate tab's list and the Cut and Pause tabs' warnings. -->
+       the Narrate tab's list and the Cut and Pause tabs' warnings. -->
   <DataSource id="narrs" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, t_in, t_out FROM narrations WHERE take_id = ? ORDER BY t_in', params: [editTake] }}" />
   <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
@@ -1237,7 +1286,7 @@
         <Theme paddingVertical-trigger-Tabs="$space-1" paddingHorizontal-trigger-Tabs="$space-3"
           paddingTop-TabItem="$space-2">
         <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
-          onDidChange="cutPreview = null">
+          onDidChange="cutPreview = null; audition = null">
         <!-- Annotate: the current item's row (text, tail, In and Out where
              the recording view has Keep, Remove) and the take's items; click
              a name to make that item current and move the playhead to its
@@ -1392,50 +1441,35 @@
                 applyState.refetch();
               " />
           </HStack>
-          <!-- The take's items and its narrations, in time order, each row
-               starting with its ✕ so the ✕s line up. A narration's ✕ puts back
-               the audio it replaced (/narrate/remove), at any time; the Undo
-               line then offers to restore it. Clicking a narration's name
-               moves the playhead to its start. -->
-          <Items data="{(callouts.value || []).map((c) => ({ ...c, narr: false })).concat((narrs.value || []).map((n) => ({ id: 'n' + n.id, nid: n.id, t_in: n.t_in, t_out: n.t_out, narr: true }))).sort((a, b) => a.t_in - b.t_in)}">
+          <!-- The take's items, in time order (callouts.value is sorted by
+               t_in), each row starting with its ✕ so the ✕s line up. The
+               take's narrations are listed on the Narrate tab. -->
+          <Items data="{callouts.value || []}">
             <HStack verticalAlignment="center">
               <Button icon="close" size="xs" variant="ghost"
-                aria-label="{$item.narr ? 'Remove this narration' : 'Remove this item'}"
-                tooltip="{$item.narr ? 'Remove this narration: the audio that was there before comes back (Undo restores the narration)' : 'Remove this item'}"
-                enabled="{!removeNarration.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-                handlerTimeoutMs:onClick="0"
+                aria-label="Remove this item" tooltip="Remove this item"
                 onClick="
-                  if ($item.narr) {
-                    removeNarration.execute($item.nid);
-                    cutSeq = cutSeq + 1;
-                    narrs.refetch();
-                    edits.refetch();
-                    takes.refetch();
-                  } else {
-                    deleteCallout.execute($item.id);
-                    if ($item.id === editCallout) {
-                      editCallout = null;
-                      calloutBox = null;
-                      lastSprite = null;
-                      curShape = null;
-                      curText = '';
-                      curTail = 'none';
-                      calloutIn = 0;
-                      calloutOut = 3;
-                      calloutText.setValue('');
-                      calloutTail.setValue('none');
-                    }
-                    callouts.refetch();
-                    savedSprites.refetch();
-                    applyState.refetch();
+                  deleteCallout.execute($item.id);
+                  if ($item.id === editCallout) {
+                    editCallout = null;
+                    calloutBox = null;
+                    lastSprite = null;
+                    curShape = null;
+                    curText = '';
+                    curTail = 'none';
+                    calloutIn = 0;
+                    calloutOut = 3;
+                    calloutText.setValue('');
+                    calloutTail.setValue('none');
                   }
+                  callouts.refetch();
+                  savedSprites.refetch();
+                  applyState.refetch();
                 " />
-              <Button size="xs" variant="{!$item.narr &amp;&amp; $item.id === editCallout ? 'solid' : 'ghost'}"
-                label="{($item.narr ? 'Narration' : $item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
+              <Button size="xs" variant="{$item.id === editCallout ? 'solid' : 'ghost'}"
+                label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
                 onClick="
-                  if ($item.narr) {
-                    takePlayer.seek($item.t_in);
-                  } else if ($item.id === editCallout) {
+                  if ($item.id === editCallout) {
                     editCallout = null;
                     calloutBox = null;
                     lastSprite = null;
@@ -1486,7 +1520,7 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!cutTake.inProgress}"
             onDidChange="(v) => {
-              cutPreview = null;
+              cutPreview = null; audition = null;
               takePlayer.seek(v[0] !== lastCut[0] ? v[0] : v[1]);
               lastCut = v;
             }" />
@@ -1513,10 +1547,10 @@
             tooltip="{cutPreview ? 'Stop skipping the marked stretch' : 'Play from the playhead, skipping the marked stretch. Nothing is changed.'}"
             onClick="
               if (cutPreview) {
-                cutPreview = null;
+                cutPreview = null; audition = null;
                 takePlayer.pause();
               } else {
-                cutPreview = lastCut;
+                cutPreview = lastCut; audition = null;
                 if (takePlayer.getCurrentTime() >= lastCut[0]) takePlayer.seek(Math.max(0, lastCut[0] - 2));
                 takePlayer.play();
               }
@@ -1526,7 +1560,7 @@
             enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
-              cutPreview = null;
+              cutPreview = null; audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               calloutText.setValue(''); calloutTail.setValue('none');
@@ -1564,7 +1598,7 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!pauseTake.inProgress}"
             onDidChange="(v) => {
-              cutPreview = null;
+              cutPreview = null; audition = null;
               pauseAt = v;
               takePlayer.seek(v);
             }" />
@@ -1588,7 +1622,7 @@
             enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
-              cutPreview = null;
+              cutPreview = null; audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               calloutText.setValue(''); calloutTail.setValue('none');
@@ -1629,7 +1663,7 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!narrating &amp;&amp; !narrBusy}"
             onDidChange="(v) => {
-              cutPreview = null;
+              cutPreview = null; audition = null;
               takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
               narrClip = v;
             }" />
@@ -1640,20 +1674,6 @@
             <Text value="{narrating ? narrating[1].toFixed(2) + ' s' : ''}" />
           </HStack>
           <HStack verticalAlignment="center">
-          <Button label="Set start" size="xs" variant="outlined"
-            tooltip="Move the clip's start to the playhead"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="
-              narrSeed = [Math.min(takePlayer.getCurrentTime(), narrClip[1] - 0.52), narrClip[1]];
-              narrClip = narrSeed;
-            " />
-          <Button label="Set end" size="xs" variant="outlined"
-            tooltip="Move the clip's end to the playhead"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="
-              narrSeed = [narrClip[0], Math.max(takePlayer.getCurrentTime(), narrClip[0] + 0.52)];
-              narrClip = narrSeed;
-            " />
           <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
             size="xs" themeColor="attention"
             tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this clip muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
@@ -1662,6 +1682,43 @@
             onClick="narrating ? stopNarration() : startNarration();" />
           <Spinner when="{narrBusy}" />
           </HStack>
+          <!-- The take's narrations, one row each. The ✕ puts back the audio
+               a narration replaced (/narrate/remove), at any time; Undo on the
+               History tab restores it. The buttons hear what was narrated, as
+               judell/av plays a clip, its intro and its outro
+               (https://github.com/judell/av av.js): whole, or just its first or
+               last 3 s when it's longer than you want to listen to
+               (playAudition). -->
+          <Items data="{narrs.value || []}">
+            <HStack verticalAlignment="center">
+              <Button icon="close" size="xs" variant="ghost"
+                aria-label="Remove this narration"
+                tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
+                enabled="{!removeNarration.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
+                handlerTimeoutMs:onClick="0"
+                onClick="
+                  audition = null;
+                  removeNarration.execute($item.id);
+                  cutSeq = cutSeq + 1;
+                  narrs.refetch();
+                  edits.refetch();
+                  takes.refetch();
+                " />
+              <Text value="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}" />
+              <Button label="Play clip" size="xs" variant="outlined"
+                tooltip="Play this narration from start to end"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="playAudition($item.t_in, $item.t_out, 'clip')" />
+              <Button label="Intro 3s" size="xs" variant="outlined"
+                tooltip="Play this narration's first 3 seconds"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="playAudition($item.t_in, Math.min($item.t_in + 3, $item.t_out), 'intro')" />
+              <Button label="Outro 3s" size="xs" variant="outlined"
+                tooltip="Play this narration's last 3 seconds"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="playAudition(Math.max($item.t_out - 3, $item.t_in), $item.t_out, 'outro')" />
+            </HStack>
+          </Items>
         </VStack>
         </TabItem>
         <!-- History: the take's edits (cut, pause, narrate, a narration
@@ -1683,7 +1740,7 @@
               enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
               handlerTimeoutMs:onClick="0"
               onClick="
-                cutPreview = null;
+                cutPreview = null; audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
                 calloutText.setValue(''); calloutTail.setValue('none');
@@ -1702,7 +1759,7 @@
               enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
               handlerTimeoutMs:onClick="0"
               onClick="
-                cutPreview = null;
+                cutPreview = null; audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
                 calloutText.setValue(''); calloutTail.setValue('none');
@@ -1755,6 +1812,29 @@
             const t = takePlayer.getCurrentTime();
             if (t >= cutPreview[0] &amp;&amp; t &lt; cutPreview[1]) takePlayer.seek(cutPreview[1]);
           " />
+        <!-- An audition stops at its end (playAudition), and yields to the
+             player, whose scrubber and play/pause are always live: a pause
+             ends it (one in its first 300 ms is the play() still starting,
+             not the user), and so does a scrub, seen as the playhead more
+             than 0.3 s from where playing would have taken it: audition.at
+             (where it was found) plus the time since (audition.atMs). While
+             paused, audition.at follows the playhead, so a slow start isn't
+             taken for a scrub (one was, 0.33 s, 2026-10-02 21:35:54). A
+             yield is logged (yieldAudition), to check the detection. -->
+        <Timer interval="40" enabled="{!!audition}"
+          onTick="
+            const t = takePlayer.getCurrentTime();
+            const now = Date.now();
+            if (audition &amp;&amp; takePlayer.paused) {
+              audition = now - audition.startedMs > 300 ? null : { ...audition, at: t, atMs: now };
+            } else if (audition &amp;&amp; Math.abs(t - (audition.at + (now - audition.atMs) / 1000)) > 0.3) {
+              yieldAudition(t);
+            } else if (audition &amp;&amp; t >= audition.stop) {
+              endAudition();
+            } else {
+              audition = { ...audition, at: t, atMs: now };
+            }
+          " />
       </VStack>
       <!-- Takes as a drag-reorderable list (DndItems, the xmlui-dnd-list extension
            Bram's queue uses): only the grip drags, so the row's buttons stay live.
@@ -1800,7 +1880,7 @@
                 narrClip = [0, 1]; narrSeed = [0, 1];
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
-                cutPreview = null;
+                cutPreview = null; audition = null;
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"

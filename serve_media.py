@@ -1329,6 +1329,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.stop_recording()
         if self.path == "/record/event":
             return self.record_event()
+        if self.path == "/audition/log":
+            return self.log_audition()
         if self.path == "/voicetest":
             return self.run_voicetest()
         if self.path == "/delete":
@@ -2472,6 +2474,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         now = int(time.time() * 1000)
         log_events([{**e, "serverMs": now} for e in events])
         self.send_json(200, {"logged": len(events)})
+
+    def log_audition(self):
+        # {kind, start, stop, stoppedAt}: the take editor played a stretch and
+        # stopped it (playAudition in Main.xmlui). One line per stop, with how
+        # far past its end the playhead got, to measure the page's 40 ms Timer.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        try:
+            stop, stopped = float(body["stop"]), float(body["stoppedAt"])
+            print(f"audition: {body.get('kind')} {float(body['start']):.2f}-{stop:.2f} s, "
+                  f"stopped at {stopped:.3f} s ({(stopped - stop) * 1000:+.0f} ms)", flush=True)
+        except (KeyError, TypeError, ValueError):
+            return self.send_json(400, {"error": "need start, stop and stoppedAt"})
+        self.send_json(200, {"logged": 1})
 
     def stop_recording(self):
         # The session's events.json is the page's event array plus whatever the
