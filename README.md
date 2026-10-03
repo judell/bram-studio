@@ -51,7 +51,9 @@ the open one. Source movies (`sources/`) and the Audio page's test recordings ar
 by all projects. `studio_paths.py` is the one place that knows these paths.
 
 The **Projects** page lists them (drag a project by its grip to reorder the list), with
-**Open** to switch and **New project** to start an empty one; the open project's name shows at the top of the nav panel. Switching starts
+**Open** to switch, **New project** to start an empty one, and **Delete** to move a project's
+whole folder to the Trash (drag it back into `projects/` to restore it; the open project can't
+be deleted). The open project's name shows in the header. Switching starts
 `serve_media.py` over on that project, so it waits until no take, narration, render or
 export is under way.
 

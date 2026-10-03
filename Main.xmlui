@@ -365,6 +365,25 @@
       projects.refetch();
       return saved;
     }
+    // A project's Delete (the Projects page): the question asked first, and
+    // the move to the Trash once the answer is yes.
+    function deleteProjectQuestion(p) {
+      const folder = projects.value ? projects.value.folder : 'projects';
+      return 'Move ' + p.name + ' (' + p.takes + (p.takes === 1 ? ' take, ' : ' takes, ') + p.seconds + ' s, '
+        + formatFileSizeInBytes(p.bytes) + ') to the Trash? To bring it back, drag the folder ' + p.slug
+        + ' from the Trash into ' + folder + ' and click Refresh.'
+        + (p.safekeeping.copy_exists ? ' Its safekeeping copy in ' + p.safekeeping.copy_path + ' stays where it is.' : '');
+    }
+    function deleteProject(p) {
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/delete', method: 'post',
+          body: { slug: p.slug }, invalidates: [] });
+        toast.success(p.name + ' is in the Trash, as ' + r.as + '.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      projects.refetch();
+    }
     function clearSafekeepingQuestion(p) {
       const s = p.safekeeping;
       return 'Move the safekeeping copy of ' + p.name + ' (' + s.copy_path
@@ -759,6 +778,20 @@
             enabled="{!opening &amp;&amp; !capturing}"
             tooltip="Switch Studio to this project"
             onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
+        </HStack>
+        <!-- Delete, last on the row: the whole project folder to the Trash,
+             under its own name, so dragging it back into projects/ restores
+             it (delete_project in serve_media.py). Asks first
+             (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete).
+             Not the open project, which Studio is running on. -->
+        <HStack width="80px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
+          <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
+            enabled="{!$item.open &amp;&amp; !opening &amp;&amp; !copyingProject}"
+            tooltip="{$item.open ? 'This is the open project: open another one to delete it' : 'Move this project to the Trash'}"
+            onClick="
+              const yes = confirm('Delete a project', deleteProjectQuestion($item), 'Move to Trash', 'Keep');
+              if (yes) deleteProject($item);
+            " />
         </HStack>
         </HStack>
       </DndItems>

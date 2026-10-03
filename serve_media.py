@@ -12,8 +12,9 @@ is served, and POST /query {sql, params} answers the pages' read-only
 queries from its studio.db. /tests/<name> serves the Audio bench's shared
 recordings. GET /projects lists the project folders, with what each one's
 disk space is for and what in it isn't Studio's (project_usage);
-POST /projects/stray/delete {slug, path} moves such a stray item to the
-system Trash, and POST /projects/clean {slug, what, days, dry} does the same
+POST /projects/delete {slug} moves a whole project folder (not the open one)
+to the system Trash under its own name; POST /projects/stray/delete
+{slug, path} moves a stray item to the system Trash, and POST /projects/clean {slug, what, days, dry} does the same
 for a project's discarded files, deleted takes (restorable ones), or undo
 history; POST /projects/open
 {slug} and /projects/new {name} switch to one, by starting this server over
@@ -627,6 +628,13 @@ def project_info(slug):
 ORDER = os.path.join(studio_paths.PROJECTS, ".order")  # the Projects page's drag order: a JSON list of slugs
 
 
+def write_order(slugs):
+    tmp = ORDER + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(slugs, f)
+    os.replace(tmp, ORDER)
+
+
 def read_order():
     try:
         with open(ORDER) as f:
@@ -661,7 +669,8 @@ def list_projects():
     current = next((p for p in projects if p["open"]), None)
     shared = [{**s, "slug": ""} for s in shared_stray()]
     return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
-            "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects)}
+            "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects),
+            "folder": studio_paths.PROJECTS}
 
 
 def restart():
@@ -1354,6 +1363,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.clear_safekeeping()
         if self.path == "/projects/reorder":
             return self.reorder_projects()
+        if self.path == "/projects/delete":
+            return self.delete_project()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -2717,11 +2728,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         slugs = [s for s in body.get("slugs") or [] if isinstance(s, str) and os.path.basename(s) == s
                  and not s.startswith(".") and os.path.isfile(os.path.join(studio_paths.PROJECTS, s, "project.json"))]
-        tmp = ORDER + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(slugs, f)
-        os.replace(tmp, ORDER)
+        write_order(slugs)
         self.send_json(200, {"order": slugs})
+
+    def delete_project(self):
+        # {slug}: move the whole project folder to the system Trash, so it
+        # can be dragged back into projects/. It keeps its folder name there
+        # (projects/<slug> back in place is the same project); only when the
+        # Trash already holds that name does trash_path add the time. It
+        # leaves the drag order. Not the open project: Studio is running on
+        # it. Its safekeeping copy, wherever it is, is left alone.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        found = self.project_folder(body)
+        if not found:
+            return
+        slug, folder = found
+        if folder == studio_paths.PROJECT:
+            return self.send_json(409, {"error": "That's the open project: open another one first"})
+        if SAFE_LOCK.locked():
+            return self.send_json(409, {"error": "A safekeeping copy is running"})
+        try:
+            dest = trash_path(slug)  # refuses off macOS
+            plain = os.path.join(os.path.dirname(dest), slug)
+            if not os.path.lexists(plain):
+                dest = plain
+            os.rename(folder, dest)
+        except OSError as e:
+            return self.send_json(500, {"error": f"Couldn't move {slug} to the Trash: {e}"})
+        write_order([s for s in read_order() if s != slug])
+        print(f"projects: moved {folder} to {dest}", flush=True)
+        self.send_json(200, {"deleted": slug, "as": os.path.basename(dest)})
 
     def clear_safekeeping(self):
         # {slug}: a fresh start for the project's safekeeping. Its copy,
