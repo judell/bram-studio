@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -10,7 +10,7 @@
        serve_media.py too, which Bram's loopback can't do yet (no video
        content types, no byte ranges). -->
   <DataSource id="takes" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
+    body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, src_end, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
     pollIntervalInSeconds="60" />
   <!-- serve_media.py runs record.sh; Stop posts the source player's event
        log, record.sh renders from it, and the take appears when it
@@ -242,6 +242,23 @@
       }
       sourcePlayer.seek(which === 'start' ? s : e);
     }
+    // Where the next scene from a source starts: the end of the most recent
+    // scene made from it (a clip, file *-clip*), or 0:00 with none.
+    function lastSceneEnd(source) {
+      const made = (takes.value || []).filter((t) => t.source === source && (t.file || '').indexOf('-clip') !== -1 && t.src_end);
+      if (!made.length) return 0;
+      return Number(made.reduce((a, b) => (b.id > a.id ? b : a)).src_end) || 0;
+    }
+    // Set the next scene to start at startAt and run 10 s (or to the end of
+    // the source), and show that frame. (Not "from": the markup's script
+    // parser rejects it as a name.)
+    function nextClipFrom(startAt) {
+      const end = sourcePlayer.duration || srcDur || 0;
+      const s = Math.max(0, Math.min(startAt, Math.max(0, end - 0.52)));
+      capSeed = [s, Math.min(end || s + 10, s + 10)];
+      capClip = capSeed;
+      sourcePlayer.seek(s);
+    }
     // m:ss.ss for the capture view's times (sources run to minutes).
     function mmss(t) {
       const m = Math.floor(t / 60);
@@ -256,7 +273,7 @@
       return lv.levels.map((db, i) => {
         const t = (i + 0.5) * lv.binSecs;
         const n = narrations.find((r) => t >= r.t_in && !(t > r.t_out));
-        const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Take audio';
+        const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Scene audio';
         const level = db > -60 ? Math.round(db) + ' dB' : 'silence';
         return { px: Math.max(1, Math.round(Math.min(1, (db + 60) / 60) * 24)), narr: !!n,
                  t0: i * lv.binSecs, t1: (i + 1) * lv.binSecs,
@@ -614,7 +631,7 @@
       <Fragment/>
     </property>
     <NavLink label="Projects" to="/projects" />
-    <NavLink label="Takes" to="/" />
+    <NavLink label="Scenes" to="/" />
     <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
   </NavPanel>
@@ -676,7 +693,7 @@
           tooltip="Work out the sizes again" onClick="projects.refetch()" />
       </HStack>
       <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
-        value="No projects yet: this Studio keeps its takes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
+        value="No projects yet: this Studio keeps its scenes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
       <!-- Each project is one line, so the page can be scanned: an expander
            (https://www.xmlui.org/docs/reference/components/ExpandableItem)
            whose summary is the project's row, closed until clicked. Inside:
@@ -780,7 +797,7 @@
               value="{copyingProject === $item.slug ? 'Copying…' : safekeepingNote($item.safekeeping)}" />
             <Button label="Copy to safekeeping" variant="outlined" size="sm"
               enabled="{$item.safekeeping.exists &amp;&amp; $item.safekeeping.changed_since !== false &amp;&amp; !copyingProject &amp;&amp; !capturing}"
-              tooltip="{$item.safekeeping.changed_since === false ? 'Nothing has changed since the last copy' : 'Copy the takes, their re-mix ingredients, exports and logs; unchanged files are skipped'}"
+              tooltip="{$item.safekeeping.changed_since === false ? 'Nothing has changed since the last copy' : 'Copy the scenes, their re-mix ingredients, exports and logs; unchanged files are skipped'}"
               onClick="copyToSafekeeping($item)" />
             <!-- A fresh start: the copy goes to the Trash (after asking), the
                  location stays, and the next Copy copies everything again. -->
@@ -856,7 +873,7 @@
           placeholder="Choose a source"
           width="260px" onDidChange="audition = null; playing = '';" />
         <Button label="Export" variant="outlined" size="sm"
-          tooltip="Join all takes, in list order, into one video"
+          tooltip="Join all scenes, in list order, into one video"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="
             navigate('/exports');
@@ -866,7 +883,7 @@
       </HStack>
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
         <Spinner />
-        <Text value="Exporting takes…" />
+        <Text value="Exporting scenes…" />
       </HStack>
       <!-- A take this page didn't start (it was reloaded mid-take, or another
            tab started it): it has no event log to render, so offer Discard. -->
@@ -886,7 +903,7 @@
       <VStack when="{!!sourceChoice.value &amp;&amp; !playing}">
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
-          onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; capSeed = [0, Math.min(10, e.duration || 1)]; capClip = capSeed; }" />
+          onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; nextClipFrom(lastSceneEnd(sourceChoice.value)); }" />
         <Slider id="capSlider" width="100%" minValue="{0}" maxValue="{srcDur || 1}" step="{0.04}"
           initialValue="{capSeed}" minStepsBetweenThumbs="{13}"
           valueFormat="{(v) => mmss(v)}"
@@ -921,17 +938,17 @@
           </HStack>
         </HStack>
         <HStack verticalAlignment="center">
-          <Button label="Play clip" size="xs" variant="outlined" enabled="{srcDur > 0}"
-            tooltip="Play the clip from start to end"
+          <Button label="Play scene" size="xs" variant="outlined" enabled="{srcDur > 0}"
+            tooltip="Play the scene from start to end"
             onClick="playAudition(capClip[0], capClip[1], 'capture-clip', true)" />
           <Button label="Intro 3s" size="xs" variant="outlined" enabled="{srcDur > 0}"
-            tooltip="Play the clip's first 3 seconds"
+            tooltip="Play the scene's first 3 seconds"
             onClick="playAudition(capClip[0], Math.min(capClip[0] + 3, capClip[1]), 'capture-intro', true)" />
           <Button label="Outro 3s" size="xs" variant="outlined" enabled="{srcDur > 0}"
-            tooltip="Play the clip's last 3 seconds"
+            tooltip="Play the scene's last 3 seconds"
             onClick="playAudition(Math.max(capClip[1] - 3, capClip[0]), capClip[1], 'capture-outro', true)" />
-          <Button label="{'Make take · ' + mmss(capClip[1] - capClip[0])}" size="xs" themeColor="primary"
-            tooltip="Add this clip to the takes, with the source's own sound (rename it in the list)"
+          <Button label="{'Make scene · ' + mmss(capClip[1] - capClip[0])}" size="xs" themeColor="primary"
+            tooltip="Add this scene to the list, with the source's own sound, as the next Scene N (rename it there)"
             enabled="{srcDur > 0 &amp;&amp; !clipBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
@@ -940,7 +957,9 @@
               try {
                 const r = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/clip', method: 'post', invalidates: [],
                                             body: { source: sourceChoice.value, start: capClip[0], end: capClip[1] } });
-                toast.success('Added ' + (r &amp;&amp; r.name ? r.name : 'the take'));
+                toast.success('Added ' + (r &amp;&amp; r.name ? r.name : 'the scene'));
+                // Ready for the next scene: it starts where this one ended.
+                nextClipFrom(capClip[1]);
               } catch (e) {
                 toast.error(e.message);
               }
@@ -1324,7 +1343,7 @@
               <Option value="w" label="Tail ← w" />
             </Select>
             <Button label="Remove" size="xs" variant="outlined" enabled="{!!editCallout}"
-              tooltip="Delete this item from the take"
+              tooltip="Delete this item from the scene"
               onClick="
                 deleteCallout.execute(editCallout);
                 editCallout = null;
@@ -1344,7 +1363,7 @@
             <Spinner when="{renderOverlay.inProgress}" />
             <Button label="Apply" size="xs"
               enabled="{!renderOverlay.inProgress &amp;&amp; !!applyState.value &amp;&amp; !!applyState.value[0] &amp;&amp; !!applyState.value[0].dirty}"
-              tooltip="Burn this take's items into its video file, for export (the player shows them live either way)"
+              tooltip="Burn this scene's items into its video file, for export (the player shows them live either way)"
               onClick="
                 renderOverlay.execute(editTake);
                 takes.refetch();
@@ -1481,7 +1500,7 @@
             enabled="{!cutTake.inProgress}"
             onClick="playAudition(Math.max(lastCut[1] - 3, lastCut[0]), lastCut[1], 'cut-outro')" />
           <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
-            tooltip="Remove this stretch from the take (Undo brings it back)"
+            tooltip="Remove this stretch from the scene (Undo brings it back)"
             enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
@@ -1704,7 +1723,7 @@
             <Text variant="secondary" when="{!!edits.value &amp;&amp; !!edits.value.note}" value="{edits.value.note}" />
           </HStack>
           <Text variant="secondary" when="{!!edits.value &amp;&amp; edits.value.edits.length === 0}"
-            value="No edits to this take yet." />
+            value="No edits to this scene yet." />
           <VStack gap="0" when="{!!edits.value &amp;&amp; edits.value.edits.length > 0}">
             <HStack paddingHorizontal="$space-2" paddingVertical="$space-1">
               <Text variant="secondary" width="200px" value="When" />
@@ -1758,7 +1777,29 @@
           <!-- Empty take (no player events): record.sh's warning, with what the
                player reported at Stop. -->
           <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
-          <Text value="{$item.name}" overflowMode="flow" width="*" />
+          <!-- The name, renamed in place: the pencil turns it into a text box,
+               which saves when it loses focus (TextBox has no Enter event:
+               https://www.xmlui.org/docs/reference/components/TextBox), if
+               changed and not empty. One scene at a time. -->
+          <Text when="{renamingTake !== $item.id}" value="{$item.name}" overflowMode="flow" width="*" />
+          <TextBox when="{renamingTake === $item.id}" width="*" initialValue="{$item.name}" autoFocus="true"
+            onDidChange="(v) => renameDraft = v"
+            onLostFocus="
+              const name = renameDraft.trim();
+              renamingTake = null;
+              if (name &amp;&amp; name !== $item.name) {
+                try {
+                  Actions.callApi({ url: 'http://127.0.0.1:8765/takes/rename', method: 'post', invalidates: [],
+                                    body: { id: $item.id, name: name } });
+                } catch (e) {
+                  toast.error(e.message);
+                }
+                takes.refetch();
+              }
+            " />
+          <Button icon="pencil" size="xs" variant="ghost" when="{renamingTake !== $item.id}"
+            aria-label="Rename scene" tooltip="Rename this scene"
+            onClick="renameDraft = $item.name; renamingTake = $item.id;" />
           <Text value="{$item.recorded}" width="110px" />
           <Text value="{$item.duration_s + 's'}" width="70px" />
           <Text value="{$item.source}" width="160px" />
@@ -1766,7 +1807,7 @@
           <Button variant="ghost" enabled="{!capturing &amp;&amp; !narrating}"
             icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
             tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
-            aria-label="Play or pause take"
+            aria-label="Play or pause scene"
             onClick="
               if (playing === $item.url) {
                 takePlayer.paused ? takePlayer.play() : takePlayer.pause();
@@ -1782,7 +1823,7 @@
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"
-            aria-label="Delete take" tooltip="Delete this take (moves the MP4 to media/.trash; Undo brings it back)"
+            aria-label="Delete scene" tooltip="Delete this scene (moves the MP4 to media/.trash; Undo brings it back)"
             onClick="
               if (playing === $item.url) playing = '';
               deleteTake.execute($item.id);
@@ -1807,7 +1848,7 @@
       <H2>Exports</H2>
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
         <Spinner />
-        <Text value="Exporting takes…" />
+        <Text value="Exporting scenes…" />
       </HStack>
       <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.exports.length === 0}"
         value="Nothing exported yet." />
@@ -1969,7 +2010,7 @@
         <HStack verticalAlignment="center">
           <Select id="audioChoice" placeholder="Play from…" width="480px"
             data="{[
-              ...(takes.value || []).map(t => ({ label: 'Take: ' + t.name.slice(0, 60), value: t.url })),
+              ...(takes.value || []).map(t => ({ label: 'Scene: ' + t.name.slice(0, 60), value: t.url })),
               ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
             ]}"
             onDidChange="audioLog = []; audioDuration = ''">

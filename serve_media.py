@@ -1389,6 +1389,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.cut_take()
         if self.path == "/takes/clip":
             return self.clip_take()
+        if self.path == "/takes/rename":
+            return self.rename_take()
         if self.path == "/takes/pause":
             return self.pause_take()
         if self.path == "/takes/undo":
@@ -1970,17 +1972,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 os.remove(tmp)
             return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["the clip failed"])[-1]})
         os.replace(tmp, dest)
-        def mmss(t):
-            return f"{int(t // 60)}:{t % 60:05.2f}".replace(".00", "")
-        name = f"{os.path.splitext(os.path.basename(path))[0]} · {mmss(start)}–{mmss(end)}"
+        # Scene N: one more than the number of scenes or the highest Scene N
+        # already named, whichever is larger, so a deleted scene's number
+        # isn't handed out again while a later one still has it.
+        db = sqlite3.connect(DB)
+        names = [r[0] for r in db.execute("SELECT name FROM takes")]
+        nums = [int(m.group(1)) for m in (re.fullmatch(r"Scene (\d+)", n or "") for n in names) if m]
+        name = f"Scene {max([len(names)] + nums) + 1}"
         reg = subprocess.run([sys.executable, os.path.join(HERE, "register.py"), dest, name,
                               f"{start:.3f}", f"{end:.3f}", os.path.basename(path)],
                              capture_output=True, text=True)
         if reg.returncode:
             return self.send_json(500, {"error": (reg.stderr.strip().splitlines() or ["registering failed"])[-1]})
-        db = sqlite3.connect(DB)
         row = db.execute("SELECT id, name, duration_s FROM takes WHERE file = ?", (fname,)).fetchone()
-        self.send_json(200, {"id": row[0], "name": row[1], "duration": row[2]} if row else {"file": fname})
+        if not row:
+            return self.send_json(200, {"file": fname})
+        # Each new scene opens with its name in a callout at the top right for
+        # 3 s: an ordinary item (move, edit or remove it; Apply burns it in).
+        overlay.ensure_schema(db)
+        db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
+                   "VALUES (?, 'callout', ?, 0.74, 0.03, 0.97, 0.12, 0, ?, NULL, NULL)",
+                   (row[0], row[1], min(3.0, row[2] or 3.0)))
+        db.commit()
+        self.send_json(200, {"id": row[0], "name": row[1], "duration": row[2]})
+
+    def rename_take(self):
+        # {id, name}: a scene's name, as the list shows it (the file keeps its
+        # name). Its callouts keep their text.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        name = " ".join(str(body.get("name") or "").split())
+        if not name:
+            return self.send_json(400, {"error": "a scene needs a name"})
+        db = sqlite3.connect(DB)
+        n = db.execute("UPDATE takes SET name = ? WHERE id = ?", (name, body.get("id"))).rowcount
+        db.commit()
+        if not n:
+            return self.send_json(404, {"error": f"no scene with id {body.get('id')}"})
+        self.send_json(200, {"id": body.get("id"), "name": name})
 
     def cut_take(self):
         # {id, start, end}: remove that stretch from a take. The same cut is

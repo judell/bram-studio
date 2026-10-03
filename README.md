@@ -22,22 +22,22 @@ voice recorder uses AVFoundation).
 - **Sources:** any `.mp4`, `.mov` or `.m4v` at the top of your Desktop shows up in the
   picker, newest first; `sources/` holds links to videos kept elsewhere. Tall (portrait)
   recordings fit the window.
-- **Recording:** Record opens the source off the air, so you can set up; Start recording
-  goes on the air; Pause recording cuts everything until you resume; Restart discards and
-  begins again.
-- **Annotations:** hold ⌘ and drag over the picture to place a callout, box, oval, arrow
-  or line, or ⌘-click for a pointer (an arrow at the spot you click). Each stays up for 3 s
-  on the air unless you Keep it, and becomes an editable item on the take.
-- **Sound:** the take has your narration and the source's own audio, in sync. Each is
-  leveled to -16 LUFS so they match; your voice is denoised; and a speech detector keeps
-  your voice only while you're talking, whether the source is playing or held, so room
-  noise between phrases drops out. Wear headphones, so the mic doesn't hear the source.
-- **Callouts:** on a recorded take, ⌘-drag a box on the video and type. Drag the callout
+- **Capturing scenes:** choose a source and its player opens with a two-handled slider
+  over it. The handles and their nudges (1 s and one frame, each way) set the scene; Play
+  scene, Intro 3s and Outro 3s let you hear it; **Make scene** adds it to the list as the
+  next **Scene N**, with the source's own sound and a 3 s callout of its name at the top
+  right. The next scene starts where the last one from that source ended. Rename a scene
+  with the pencil beside its name.
+- **Editing a scene:** play a scene to open the editor under its player, with tabs to
+  annotate, cut, insert a pause, narrate over a stretch (your mic replaces the sound there,
+  leveled to -16 LUFS and denoised) and see its history (Undo, Redo). A strip under the
+  player shows where its sound is.
+- **Callouts:** on a scene, ⌘-drag a box on the video and type. Drag the callout
   to move it, drag its eight handles to resize it (the text grows to fit), give it a
   speech-bubble tail at any compass point, and set when it appears and disappears.
   Callouts are drawn live over the video while you edit; **Apply** burns them into the
-  take for export.
-- **Takes and export:** drag takes into order, then **Export** joins them into one video.
+  scene for export. Boxes, ovals, arrows, lines and pointers work the same way.
+- **Scenes and export:** drag scenes into order, then **Export** joins them into one video.
 - **After editing elsewhere:** if you cut the export in another editor, run
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
   the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.
