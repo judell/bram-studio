@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -187,16 +187,18 @@
       }
     }
     function stopNarration() {
+      const clip = narrating;
       takePlayer.pause();
       narrating = null;
       narrBusy = true;
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post' });
-        // Done: the slider goes back to where it starts, as Cut's does after a
-        // cut, ready for the next narration; the new one shows in the list
-        // below. A refused narration (nothing said) keeps its range to retry.
-        narrSeed = [0, 1];
-        narrClip = narrSeed;
+        // Done: the adding row closes and the new narration is selected in
+        // the list (by its start, until the list has its row). A refused
+        // narration (nothing said) keeps the adding row open, to retry.
+        narrAdding = false;
+        narrSel = null;
+        narrSelAt = clip ? clip[0] : null;
       } catch (e) {
         toast.error(e.message);
       }
@@ -304,6 +306,12 @@
         lastCut = cutSeed;
       }
       takePlayer.seek(which === 'start' ? s : e);
+    }
+    // A Play button pressed again while its stretch plays (it reads Stop):
+    // pause and end the audition, unlogged, since nothing was measured.
+    function stopAudition() {
+      if (audition) (audition.src ? sourcePlayer : takePlayer).pause();
+      audition = null;
     }
     // The user scrubbed during an audition: let go without pausing, so the
     // player does what they asked, and log where the playhead went.
@@ -1018,21 +1026,37 @@
       <!-- At page level, so it runs for the capture view and the take editor
            alike (audition.src: the source player). An audition stops at its end (playAudition), and yields to the
            player, whose scrubber and play/pause are always live: a pause
-           ends it (one in its first 300 ms is the play() still starting,
+           ends it (one in its first 600 ms is the play() still starting,
            not the user), and so does a scrub, seen as the playhead more
            than 0.3 s from where playing would have taken it: audition.at
            (where it was found) plus the time since (audition.atMs). While
-           paused, audition.at follows the playhead, so a slow start isn't
-           taken for a scrub (one was, 0.33 s, 2026-10-02 21:35:54). A
-           yield is logged (yieldAudition), to check the detection. -->
+           starting up (its first 0.6 s: paused, or the seek to its start
+           not landed yet), audition.at is its start, not what the player
+           reports: the seek and the play() both land late, and a press made
+           while the player sat at the last stop read that stale position,
+           took the jump back for a scrub and played on past the end, every
+           other time (2026-10-03, narr-preview yields at 13.4-13.7 s of a
+           12.59-18.04 s stretch). A scrub is a jump forward past where
+           playing could have taken the playhead (audition.at, where the last
+           tick found it, plus the time since) or a jump back from where the
+           last tick found it. Playback starting late only leaves the playhead
+           behind schedule, never behind its last place: judged against the
+           schedule both ways, a start that lagged 0.3 s while the Timer got
+           no tick read as a scrub about 0.9 s in, every other press
+           (2026-10-03, 11.99-19.64 s yielded at 12.87 s). A yield is logged
+           (yieldAudition). -->
       <Timer interval="40" enabled="{!!audition}"
         onTick="
           const P = audition &amp;&amp; audition.src ? sourcePlayer : takePlayer;
           const t = P.getCurrentTime();
           const now = Date.now();
+          const young = !!audition &amp;&amp; now - audition.startedMs &lt; 600;
+          const landed = !!audition &amp;&amp; t >= audition.start - 0.15 &amp;&amp; t &lt;= audition.start + 0.9;
           if (audition &amp;&amp; P.paused) {
-            audition = now - audition.startedMs > 300 ? null : { ...audition, at: t, atMs: now };
-          } else if (audition &amp;&amp; Math.abs(t - (audition.at + (now - audition.atMs) / 1000)) > 0.3) {
+            audition = now - audition.startedMs > 600 ? null : { ...audition, at: audition.start, atMs: now };
+          } else if (audition &amp;&amp; young &amp;&amp; !landed) {
+            audition = { ...audition, at: audition.start, atMs: now };
+          } else if (audition &amp;&amp; (t > audition.at + (now - audition.atMs) / 1000 + 0.3 || t &lt; audition.at - 0.3)) {
             yieldAudition(t);
           } else if (audition &amp;&amp; t >= audition.stop) {
             endAudition();
@@ -1263,7 +1287,8 @@
           paddingTop-TabItem="$space-2">
         <!-- Arriving on Cut starts the cut at the playhead and offers 5 s
              (to the scene's end; at least the cut's 0.12 s), re-seeding
-             cutSeed, which fires no slider events. didChange passes the new
+             cutSeed, which fires no slider events. Leaving Narrate closes its
+             adding row, unless a narration is recording. didChange passes the new
              tab's index, id and label
              (https://www.xmlui.org/docs/reference/components/Tabs). -->
         <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
@@ -1275,6 +1300,7 @@
               cutSeed = [s, Math.min(end, s + 5)];
               lastCut = cutSeed;
             }
+            if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrAdding = false;
           }">
         <!-- Annotate: the current item's row (text, tail, In and Out where
              the recording view has Keep, Remove) and the take's items; click
@@ -1649,80 +1675,110 @@
             value="{'This pause falls inside the narration at ' + (narrs.value || []).filter((n) => playerTime > n.t_in + 0.04 &amp;&amp; playerTime &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
         </VStack>
         </TabItem>
-        <!-- Narrate over a stretch: two handles mark the clip, as on the Cut
-             row (narrSeed re-seeds them, narrClip follows them). Narrate plays
-             the clip muted, without the player's own controls, while the mic
-             records; the Timer below stops it at the clip's end (a Timer
-             waits for its handler before ticking again:
+        <!-- Narrate: the scene's narrations, and Add narration. Add opens the
+             adding row: the two-handle slider (narrSeed re-seeds it, narrClip
+             follows it) from the playhead, 10 s; Play, to hear what is there
+             now before narrating over it (playAudition); Narrate; Cancel.
+             Narrate plays the clip muted, without the player's own controls,
+             while the mic records; the Timer after the Tabs stops it at the
+             clip's end (a Timer waits for its handler before ticking again:
              https://www.xmlui.org/docs/reference/components/Timer), or Stop
-             does earlier. The take's audio there is then replaced; Undo, on
-             the History tab, takes it back. While narrating, a row under the slider
-             shows the clip's start and end with a ProgressBar between them
-             (value 0 to 1:
-             https://www.xmlui.org/docs/reference/components/ProgressBar)
-             following the playhead, and the Stop button counts down the
-             seconds left, since the player's own controls are hidden then. -->
+             does earlier, and the scene's audio there is replaced (Undo, on
+             the History tab, takes it back). While narrating, the clip's
+             start and end show with a ProgressBar between them
+             (https://www.xmlui.org/docs/reference/components/ProgressBar) and
+             Stop counts down, since the player's own controls are hidden.
+             Once it lands, the adding row closes and the new narration is
+             selected (narrSelAt: its start, until the list has its row). A
+             narration's row selects it (and moves the playhead to its start);
+             the selected one shows Play, Intro 3s, Outro 3s and its ✕. -->
         <TabItem label="Narrate">
         <VStack>
-          <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
-            initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
-            valueFormat="{(v) => v.toFixed(2) + 's'}"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onDidChange="(v) => {
+          <Button label="Add narration" size="xs" variant="outlined" when="{!narrAdding}"
+            tooltip="Mark a stretch from the playhead to narrate over"
+            enabled="{!narrBusy}"
+            onClick="
+              const end = takePlayer.duration || editDur;
+              const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.52));
               audition = null;
-              takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
-              narrClip = v;
-            }" />
-          <HStack when="{!!narrating}" verticalAlignment="center">
-            <Text value="{narrating ? narrating[0].toFixed(2) + ' s' : ''}" />
-            <ProgressBar width="*"
-              value="{narrating ? Math.max(0, Math.min(1, (playerTime - narrating[0]) / (narrating[1] - narrating[0]))) : 0}" />
-            <Text value="{narrating ? narrating[1].toFixed(2) + ' s' : ''}" />
-          </HStack>
-          <HStack verticalAlignment="center">
-          <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
-            size="xs" themeColor="attention"
-            tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this clip muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
-            enabled="{!narrBusy &amp;&amp; !capturing &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
-            handlerTimeoutMs:onClick="0"
-            onClick="narrating ? stopNarration() : startNarration();" />
-          <Spinner when="{narrBusy}" />
-          </HStack>
-          <!-- The take's narrations, one row each. The ✕ puts back the audio
-               a narration replaced (/narrate/remove), at any time; Undo on the
-               History tab restores it. The buttons hear what was narrated, as
-               judell/av plays a clip, its intro and its outro
-               (https://github.com/judell/av av.js): whole, or just its first or
-               last 3 s when it's longer than you want to listen to
-               (playAudition). -->
-          <Items data="{narrs.value || []}">
+              narrSeed = [s, Math.min(end, s + 10)];
+              narrClip = narrSeed;
+              narrAdding = true;
+            " />
+          <VStack when="{narrAdding}">
+            <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
+              initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
+              valueFormat="{(v) => v.toFixed(2) + 's'}"
+              enabled="{!narrating &amp;&amp; !narrBusy}"
+              onDidChange="(v) => {
+                audition = null;
+                takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
+                narrClip = v;
+              }" />
+            <HStack when="{!!narrating}" verticalAlignment="center">
+              <Text value="{narrating ? narrating[0].toFixed(2) + ' s' : ''}" />
+              <ProgressBar width="*"
+                value="{narrating ? Math.max(0, Math.min(1, (playerTime - narrating[0]) / (narrating[1] - narrating[0]))) : 0}" />
+              <Text value="{narrating ? narrating[1].toFixed(2) + ' s' : ''}" />
+            </HStack>
             <HStack verticalAlignment="center">
-              <Button icon="close" size="xs" variant="ghost"
+              <Button label="{audition &amp;&amp; audition.kind === 'narr-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+                tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="audition &amp;&amp; audition.kind === 'narr-preview' ? stopAudition() : playAudition(narrClip[0], narrClip[1], 'narr-preview')" />
+              <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+                size="xs" themeColor="attention"
+                tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
+                enabled="{!narrBusy &amp;&amp; !capturing &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
+                handlerTimeoutMs:onClick="0"
+                onClick="narrating ? stopNarration() : startNarration();" />
+              <Button label="Cancel" size="xs" variant="ghost" when="{!narrating}" enabled="{!narrBusy}"
+                onClick="audition = null; narrAdding = false;" />
+              <Spinner when="{narrBusy}" />
+            </HStack>
+          </VStack>
+          <!-- The scene's narrations, one row each; the ✕ puts back the audio a
+               narration replaced (/narrate/remove), at any time, and Undo on the
+               History tab restores it. Play, Intro and Outro hear it as judell/av
+               plays a clip, its intro and its outro
+               (https://github.com/judell/av av.js). -->
+          <Items data="{narrs.value || []}">
+            <HStack verticalAlignment="center"
+              var.sel="{narrSel === $item.id || (narrSel === null &amp;&amp; narrSelAt !== null &amp;&amp; Math.abs($item.t_in - narrSelAt) &lt; 0.06)}">
+              <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
+                label="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="
+                  audition = null;
+                  narrSel = $item.id;
+                  narrSelAt = null;
+                  takePlayer.seek($item.t_in);
+                " />
+              <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'clip' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+                tooltip="Play this narration from start to end"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="audition &amp;&amp; audition.kind === 'clip' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? stopAudition() : playAudition($item.t_in, $item.t_out, 'clip')" />
+              <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'intro' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Intro 3s'}" size="xs" variant="outlined"
+                tooltip="Play this narration's first 3 seconds"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="audition &amp;&amp; audition.kind === 'intro' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? stopAudition() : playAudition($item.t_in, Math.min($item.t_in + 3, $item.t_out), 'intro')" />
+              <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'outro' &amp;&amp; Math.abs(audition.stop - $item.t_out) &lt; 0.05 ? 'Stop' : 'Outro 3s'}" size="xs" variant="outlined"
+                tooltip="Play this narration's last 3 seconds"
+                enabled="{!narrating &amp;&amp; !narrBusy}"
+                onClick="audition &amp;&amp; audition.kind === 'outro' &amp;&amp; Math.abs(audition.stop - $item.t_out) &lt; 0.05 ? stopAudition() : playAudition(Math.max($item.t_out - 3, $item.t_in), $item.t_out, 'outro')" />
+              <Button when="{sel}" icon="close" size="xs" variant="ghost"
                 aria-label="Remove this narration"
                 tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
                 enabled="{!removeNarration.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
                 handlerTimeoutMs:onClick="0"
                 onClick="
                   audition = null;
+                  narrSel = null;
+                  narrSelAt = null;
                   removeNarration.execute($item.id);
                   cutSeq = cutSeq + 1;
-                  narrs.refetch();
-                  edits.refetch();
-                  takes.refetch();
+                  narrs.refetch(); edits.refetch(); takes.refetch();
                 " />
-              <Text value="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}" />
-              <Button label="Play clip" size="xs" variant="outlined"
-                tooltip="Play this narration from start to end"
-                enabled="{!narrating &amp;&amp; !narrBusy}"
-                onClick="playAudition($item.t_in, $item.t_out, 'clip')" />
-              <Button label="Intro 3s" size="xs" variant="outlined"
-                tooltip="Play this narration's first 3 seconds"
-                enabled="{!narrating &amp;&amp; !narrBusy}"
-                onClick="playAudition($item.t_in, Math.min($item.t_in + 3, $item.t_out), 'intro')" />
-              <Button label="Outro 3s" size="xs" variant="outlined"
-                tooltip="Play this narration's last 3 seconds"
-                enabled="{!narrating &amp;&amp; !narrBusy}"
-                onClick="playAudition(Math.max($item.t_out - 3, $item.t_in), $item.t_out, 'outro')" />
             </HStack>
           </Items>
         </VStack>
@@ -1880,6 +1936,7 @@
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
                 audition = null;
+                narrAdding = false; narrSel = null; narrSelAt = null;
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"
