@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -173,7 +173,7 @@
     // shows a spinner until it answers.
     function startNarration() {
       try {
-        cutPreview = null; audition = null;
+        audition = null;
         takePlayer.pause();
         takePlayer.seek(narrClip[0]);
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
@@ -208,10 +208,9 @@
     }
     // An audition plays a bounded stretch of the take and stops, as judell/av
     // does (https://github.com/judell/av, av.js playIntro/playOutro/playClip):
-    // seek to start, set where to stop, play. The Timer beside Preview's
-    // pauses once the playhead reaches stop; whatever ends Preview (a handle
-    // moved, a tab switched, an edit, another take) ends an audition too, as
-    // does pausing the player. Each stop is logged (/audition/log) with where
+    // seek to start, set where to stop, play. Its Timer (after the Tabs)
+    // pauses once the playhead reaches stop. A handle moved, a tab switched,
+    // an edit or another take ends an audition, as does pausing the player. Each stop is logged (/audition/log) with where
     // the playhead actually stopped, to measure how close the 40 ms Timer
     // gets. invalidates: [] keeps the log call from refetching every list.
     // (Not from / to: the markup's script parser rejects from as a name.)
@@ -221,10 +220,26 @@
                   at: Math.max(0, start), atMs: Date.now() };
       // No pause before the seek: a pause cuts off a play() still starting
       // (a quick second click), which the page shows as an error.
-      cutPreview = null;
       takePlayer.seek(a.start);
       audition = a;
       takePlayer.play();
+    }
+    // Cut's nudges: move one end of the marked stretch by delta seconds,
+    // re-place the handles by re-seeding cutSeed (which fires no slider
+    // events), and show that frame, as dragging a handle does. The stretch
+    // stays within the take and at least 0.12 s long, as the slider's
+    // minStepsBetweenThumbs keeps it.
+    function nudgeCut(which, delta) {
+      const end = takePlayer.duration || editDur;
+      const c = lastCut;
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round((c[0] + delta) * 100) / 100, c[1] - 0.12)) : c[0];
+      const e = which === 'end' ? Math.min(end, Math.max(Math.round((c[1] + delta) * 100) / 100, c[0] + 0.12)) : c[1];
+      audition = null;
+      if (s !== c[0] || e !== c[1]) {
+        cutSeed = [s, e];
+        lastCut = cutSeed;
+      }
+      takePlayer.seek(which === 'start' ? s : e);
     }
     // The user scrubbed during an audition: let go without pausing, so the
     // player does what they asked, and log where the playhead went.
@@ -1280,13 +1295,13 @@
              row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a
              slider mounted again would show its last seed (initialValue), not
              where its handles were dragged, while lastCut / pauseAt / narrClip
-             still held the dragged values. Switching tabs ends Preview, whose
-             button would be out of sight. The Theme makes the tab strip
-             compact. The two Timers stay outside: Tabs shows only TabItems. -->
+             still held the dragged values. Switching tabs ends an audition,
+             whose buttons would be out of sight. The Theme makes the tab strip
+             compact. The Timers stay outside: Tabs shows only TabItems. -->
         <Theme paddingVertical-trigger-Tabs="$space-1" paddingHorizontal-trigger-Tabs="$space-3"
           paddingTop-TabItem="$space-2">
         <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
-          onDidChange="cutPreview = null; audition = null">
+          onDidChange="audition = null">
         <!-- Annotate: the current item's row (text, tail, In and Out where
              the recording view has Keep, Remove) and the take's items; click
              a name to make that item current and move the playhead to its
@@ -1502,9 +1517,9 @@
         <!-- Cut a stretch out of the take: the slider's two handles mark its
              start and end (https://www.xmlui.org/docs/reference/components/Slider),
              in one-frame steps; moving a handle seeks the player to it (lastCut
-             tells which one moved). While Preview is on, playback skips the
-             stretch, with a 40 ms Timer watching the playhead (the player's
-             timeUpdate is too coarse); nothing changes on disk until Cut. A cut
+             tells which one moved); nudges move either end. Play clip, Intro
+             and Outro hear the marked stretch; nothing changes on disk until
+             Cut. A cut
              re-encodes two files, so its click has no handler timeout
              (https://www.xmlui.org/docs/managed-react/cooperative-concurrency). -->
         <TabItem label="Cut">
@@ -1520,47 +1535,62 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!cutTake.inProgress}"
             onDidChange="(v) => {
-              cutPreview = null; audition = null;
+              audition = null;
               takePlayer.seek(v[0] !== lastCut[0] ? v[0] : v[1]);
               lastCut = v;
             }" />
+          <!-- The cut's ends, one group each: « » move it 1 s, ‹ › one frame
+               (nudgeCut), and the player shows the frame there, as dragging
+               a handle does. Nothing here reads the playhead: the handles and
+               nudges set the cut, the player only shows it, and its own
+               controls stay yours. The groups are tight inside ($space-1),
+               as In and Out are on the Annotate tab. -->
           <HStack verticalAlignment="center">
-          <Button label="Set start" size="xs" variant="outlined"
-            tooltip="Move the cut's start to the playhead"
-            onClick="
-              cutSeed = [Math.min(takePlayer.getCurrentTime(), lastCut[1] - 0.12), lastCut[1]];
-              lastCut = cutSeed;
-            " />
-          <Button label="Set end" size="xs" variant="outlined"
-            tooltip="Move the cut's end to the playhead"
-            onClick="
-              cutSeed = [lastCut[0], Math.max(takePlayer.getCurrentTime(), lastCut[0] + 0.12)];
-              lastCut = cutSeed;
-            " />
-          <!-- Preview is a mode: while it's on (the button reads Previewing),
-               playback skips the marked stretch and otherwise just plays. It
-               starts from the playhead, or from 2 s before the cut when the
-               playhead is already in or past it. Off again: the button, moving
-               a handle, Cut, or choosing another take. -->
-          <Button label="{cutPreview ? 'Previewing' : 'Preview'}" size="xs"
-            variant="{cutPreview ? 'solid' : 'outlined'}"
-            tooltip="{cutPreview ? 'Stop skipping the marked stretch' : 'Play from the playhead, skipping the marked stretch. Nothing is changed.'}"
-            onClick="
-              if (cutPreview) {
-                cutPreview = null; audition = null;
-                takePlayer.pause();
-              } else {
-                cutPreview = lastCut; audition = null;
-                if (takePlayer.getCurrentTime() >= lastCut[0]) takePlayer.seek(Math.max(0, lastCut[0] - 2));
-                takePlayer.play();
-              }
-            " />
+            <HStack verticalAlignment="center" gap="$space-1">
+              <Button label="«" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="Start 1 second earlier" onClick="nudgeCut('start', -1)" />
+              <Button label="‹" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="Start one frame earlier" onClick="nudgeCut('start', -0.04)" />
+              <Text value="{'Start ' + lastCut[0].toFixed(2) + 's'}" />
+              <Button label="›" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="Start one frame later" onClick="nudgeCut('start', 0.04)" />
+              <Button label="»" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="Start 1 second later" onClick="nudgeCut('start', 1)" />
+            </HStack>
+            <HStack verticalAlignment="center" gap="$space-1">
+              <Button label="«" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="End 1 second earlier" onClick="nudgeCut('end', -1)" />
+              <Button label="‹" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="End one frame earlier" onClick="nudgeCut('end', -0.04)" />
+              <Text value="{'End ' + lastCut[1].toFixed(2) + 's'}" />
+              <Button label="›" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="End one frame later" onClick="nudgeCut('end', 0.04)" />
+              <Button label="»" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+                tooltip="End 1 second later" onClick="nudgeCut('end', 1)" />
+            </HStack>
+          </HStack>
+          <HStack verticalAlignment="center">
+          <!-- Hear the stretch the cut would remove (playAudition), as the
+               Narrate tab's rows hear a narration: whole, or its first or last
+               3 s. Nothing changes on disk until Cut. -->
+          <Button label="Play clip" size="xs" variant="outlined"
+            tooltip="Play the marked stretch from start to end. Nothing is changed."
+            enabled="{!cutTake.inProgress}"
+            onClick="playAudition(lastCut[0], lastCut[1], 'cut-clip')" />
+          <Button label="Intro 3s" size="xs" variant="outlined"
+            tooltip="Play the marked stretch's first 3 seconds"
+            enabled="{!cutTake.inProgress}"
+            onClick="playAudition(lastCut[0], Math.min(lastCut[0] + 3, lastCut[1]), 'cut-intro')" />
+          <Button label="Outro 3s" size="xs" variant="outlined"
+            tooltip="Play the marked stretch's last 3 seconds"
+            enabled="{!cutTake.inProgress}"
+            onClick="playAudition(Math.max(lastCut[1] - 3, lastCut[0]), lastCut[1], 'cut-outro')" />
           <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
             tooltip="Remove this stretch from the take (Undo brings it back)"
             enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
-              cutPreview = null; audition = null;
+              audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               calloutText.setValue(''); calloutTail.setValue('none');
@@ -1598,7 +1628,7 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!pauseTake.inProgress}"
             onDidChange="(v) => {
-              cutPreview = null; audition = null;
+              audition = null;
               pauseAt = v;
               takePlayer.seek(v);
             }" />
@@ -1622,7 +1652,7 @@
             enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
-              cutPreview = null; audition = null;
+              audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               calloutText.setValue(''); calloutTail.setValue('none');
@@ -1663,7 +1693,7 @@
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!narrating &amp;&amp; !narrBusy}"
             onDidChange="(v) => {
-              cutPreview = null; audition = null;
+              audition = null;
               takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
               narrClip = v;
             }" />
@@ -1740,7 +1770,7 @@
               enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
               handlerTimeoutMs:onClick="0"
               onClick="
-                cutPreview = null; audition = null;
+                audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
                 calloutText.setValue(''); calloutTail.setValue('none');
@@ -1759,7 +1789,7 @@
               enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
               handlerTimeoutMs:onClick="0"
               onClick="
-                cutPreview = null; audition = null;
+                audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
                 calloutText.setValue(''); calloutTail.setValue('none');
@@ -1807,11 +1837,6 @@
              item set to 2.0-5.0 s was on screen 2.32-5.37 s). -->
         <Timer interval="40" enabled="{!takePlayer.paused}"
           onTick="playerTime = takePlayer.getCurrentTime()" />
-        <Timer interval="40" enabled="{!!cutPreview}"
-          onTick="
-            const t = takePlayer.getCurrentTime();
-            if (t >= cutPreview[0] &amp;&amp; t &lt; cutPreview[1]) takePlayer.seek(cutPreview[1]);
-          " />
         <!-- An audition stops at its end (playAudition), and yields to the
              player, whose scrubber and play/pause are always live: a pause
              ends it (one in its first 300 ms is the play() still starting,
@@ -1880,7 +1905,7 @@
                 narrClip = [0, 1]; narrSeed = [0, 1];
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
-                cutPreview = null; audition = null;
+                audition = null;
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"
