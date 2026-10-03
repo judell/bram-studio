@@ -879,6 +879,21 @@
         <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
           placeholder="Choose a source"
           width="260px" onDidChange="audition = null; playing = '';" />
+        <!-- Scene callouts (/scenes/callouts): each scene gets at most one
+             3 s callout of its name at the top right, an ordinary item to
+             edit on the Annotate tab, burned in only by Apply. The button
+             previews (dryRun) and the dialog confirms. -->
+        <Button label="Scene callouts" variant="outlined" size="sm"
+          tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Apply"
+          enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
+          onClick="
+            try {
+              calloutsDialog.open(Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post',
+                                                    invalidates: [], body: { dryRun: true } }));
+            } catch (e) {
+              toast.error(e.message);
+            }
+          " />
         <Button label="Export" variant="outlined" size="sm"
           tooltip="Join all scenes, in list order, into one video (first checking that their callouts are applied)"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
@@ -891,24 +906,6 @@
               toast.error(e.message);
             }
           " />
-        <!-- Scene callouts (/scenes/callouts): each scene without one gets a
-             3 s callout of its name at the top right, an ordinary item to
-             edit on the Annotate tab, burned in only by Apply (and only then
-             in an Export, which joins the scenes' files as they are). -->
-        <Button label="Scene callouts" variant="outlined" size="sm"
-          tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Apply"
-          enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
-          onClick="
-            try {
-              const r = Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post', invalidates: [], body: {} });
-              toast.success((r.added ? 'Added callouts to ' + r.added + ' scene' + (r.added === 1 ? '' : 's') + (r.had ? '; ' + r.had + ' already had one' : '') : 'Every scene already has a callout') + (r.refit ? ' (' + r.refit + ' resized to fit on one line)' : ''));
-            } catch (e) {
-              toast.error(e.message);
-            }
-            callouts.refetch();
-            savedSprites.refetch();
-            applyState.refetch();
-          " />
       </HStack>
       <!-- Export's check (/scenes/apply-status): a scene's file has its items
            only as of its last Apply, and Export joins the files as they are,
@@ -917,6 +914,33 @@
            in the video. Apply and export applies each scene that needs it,
            one at a time (/overlay/render re-encodes it), then exports; a
            failed Apply names its scene and nothing is exported. -->
+      <!-- Scene callouts' confirmation: every scene, the callout it has (and
+           whether it is applied), the one it would get, and any exact copies
+           that would be removed; the button carries the plan out. -->
+      <ModalDialog id="calloutsDialog" title="Scene callouts">
+        <Text value="{$param &amp;&amp; ($param.add || $param.remove) ? 'Each scene gets one 3 s callout of its name at the top right, to edit before you Apply.' : 'Every scene has its callout; there is nothing to add or remove.'}" />
+        <Items data="{$param ? $param.scenes : []}">
+          <Text value="{$item.name + ': ' + ($item.has ? 'has &quot;' + $item.has.text + '&quot; ' + ($item.has.applied ? '✓ applied' : '✗ not applied') : 'would add &quot;' + $item.add + '&quot;') + ($item.remove ? '; ' + $item.remove + ' duplicate' + ($item.remove === 1 ? '' : 's') + ' would be removed' : '')}" />
+        </Items>
+        <HStack>
+          <Button when="{$param &amp;&amp; ($param.add || $param.remove)}" themeColor="primary"
+            label="{$param ? [$param.add ? 'Add ' + $param.add + ' callout' + ($param.add === 1 ? '' : 's') : '', $param.remove ? 'Remove ' + $param.remove + ' duplicate' + ($param.remove === 1 ? '' : 's') : ''].filter((x) => x).join(' and ') : ''}"
+            onClick="
+              try {
+                const r = Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post', invalidates: [], body: {} });
+                toast.success([r.add ? 'Added ' + r.add + ' callout' + (r.add === 1 ? '' : 's') : '', r.remove ? 'removed ' + r.remove + ' duplicate' + (r.remove === 1 ? '' : 's') : ''].filter((x) => x).join(', ') || 'Nothing to change');
+              } catch (e) {
+                toast.error(e.message);
+              }
+              calloutsDialog.close();
+              callouts.refetch();
+              savedSprites.refetch();
+              applyState.refetch();
+            " />
+          <Button label="{$param &amp;&amp; ($param.add || $param.remove) ? 'Cancel' : 'Close'}" variant="ghost"
+            onClick="calloutsDialog.close()" />
+        </HStack>
+      </ModalDialog>
       <ModalDialog id="exportDialog" title="Some scenes have items that aren't applied">
         <Text value="Export joins each scene's video as it was last applied, so these differences would be left out." />
         <Items data="{$param ? $param.scenes : []}">

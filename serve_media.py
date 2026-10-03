@@ -144,6 +144,14 @@ def take_levels(path):
     return result
 
 
+# One item's entry as Apply records it (overlay.APPLIED_SQL joins these
+# with |): made with the same SQL so numbers format identically, for telling
+# whether an item is in its scene's video as it is now.
+APPLIED_ENTRY = ("id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 "
+                 "|| char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) "
+                 "|| ifnull(shape, char(45))")
+
+
 def scene_callout_box(file, text):
     # A scene callout's box (scene_callouts): the name laid out as overlay.py
     # draws it in the widest box allowed, then the box's left edge moved in
@@ -2007,37 +2015,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"id": row[0], "name": row[1], "duration": row[2]})
 
     def scene_callouts(self):
-        # The scenes screen's Scene callouts: each scene without one gets a
-        # callout of its current name at the top right for its first 3 s, an
-        # ordinary item to move, edit or remove, burned in only by Apply. A
-        # scene has one when a callout starts at 0 s in the picture's
-        # top-right quarter, so pressing it again adds nothing.
-        # Its box: up to two-thirds of the width (from 0.31 to 0.97) and a
-        # little taller than a caption, so the name sits on one line in a
-        # large font (overlay.layout sets text at the largest size that fits
-        # its box); then the left edge comes in to the text's width, so a
-        # short name still sits at the top right (a callout's text starts at
-        # its box's left edge). A callout still in the box an earlier version
-        # gave (0.74, 0.03 - 0.97, 0.12, never moved) is refitted the same way.
+        # The scenes screen's Scene callouts, previewed ({dryRun: true}) and
+        # then carried out. Each scene gets at most one scene callout: its
+        # current name at the top right for its first 3 s (or the whole of a
+        # shorter scene), an ordinary item to move, edit or remove, burned in
+        # only by Apply. A scene has one when a callout starts at 0 s reaching
+        # the top right (x2 >= 0.9, y1 <= 0.25), however wide its box (a long
+        # name's starts left of center). Exact copies of one (same text, box
+        # and times) are extras, removed keeping the oldest. For each scene:
+        # has {text, applied} or null, add (the text it would get) or null,
+        # remove (how many extras).
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        dry = bool(body.get("dryRun"))
         db = sqlite3.connect(DB)
         overlay.ensure_schema(db)
-        added, had, refit = 0, 0, 0
-        for tid, name, dur, file in db.execute("SELECT id, name, duration_s, file FROM takes").fetchall():
-            old = db.execute("SELECT id, text, x1, y1, x2, y2 FROM overlays WHERE take_id = ? AND kind = 'callout' "
-                             "AND t_in < 0.05 AND x1 >= 0.5 AND y1 <= 0.25", (tid,)).fetchone()
-            if old:
-                had += 1
-                if (round(old[2], 3), round(old[3], 3), round(old[4], 3), round(old[5], 3)) == (0.74, 0.03, 0.97, 0.12):
-                    db.execute("UPDATE overlays SET x1 = ?, y1 = ?, x2 = ?, y2 = ? WHERE id = ?",
-                               (*scene_callout_box(file, old[1]), old[0]))
-                    refit += 1
-                continue
-            db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
-                       "VALUES (?, 'callout', ?, ?, ?, ?, ?, 0, ?, NULL, NULL)",
-                       (tid, name, *scene_callout_box(file, name), min(3.0, dur or 3.0)))
-            added += 1
-        db.commit()
-        self.send_json(200, {"added": added, "had": had, "refit": refit})
+        plan = []
+        for tid, name, dur, file, record in db.execute(
+                "SELECT id, name, duration_s, file, overlay_applied FROM takes "
+                "ORDER BY position, created_at DESC").fetchall():
+            applied = set((record or "").split("|")) if record else set()
+            found = db.execute(f"SELECT id, text, x1, y1, x2, y2, t_in, t_out, {APPLIED_ENTRY} FROM overlays "
+                               "WHERE take_id = ? AND kind = 'callout' AND t_in < 0.05 AND x2 >= 0.9 AND y1 <= 0.25 "
+                               "ORDER BY id", (tid,)).fetchall()
+            seen, extras = set(), []
+            for r in found:
+                key = tuple(r[1:8])
+                if key in seen:
+                    extras.append(r[0])
+                else:
+                    seen.add(key)
+            keep = next((r for r in found if r[0] not in extras), None)
+            plan.append({"id": tid, "name": name, "file": file, "dur": dur, "extras": extras,
+                         "has": {"text": keep[1], "applied": keep[8] in applied} if keep else None,
+                         "add": None if keep else name})
+        if not dry:
+            for p in plan:
+                for oid in p["extras"]:
+                    db.execute("DELETE FROM overlays WHERE id = ?", (oid,))
+                if p["add"]:
+                    db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
+                               "VALUES (?, 'callout', ?, ?, ?, ?, ?, 0, ?, NULL, NULL)",
+                               (p["id"], p["add"], *scene_callout_box(p["file"], p["add"]), min(3.0, p["dur"] or 3.0)))
+            db.commit()
+        scenes = [{"id": p["id"], "name": p["name"], "has": p["has"], "add": p["add"], "remove": len(p["extras"])}
+                  for p in plan]
+        self.send_json(200, {"scenes": scenes, "dryRun": dry, "add": sum(1 for p in plan if p["add"]),
+                             "remove": sum(len(p["extras"]) for p in plan)})
 
     def rename_take(self):
         # {id, name}: a scene's name, as the list shows it (the file keeps its
@@ -2502,9 +2525,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # |), so each item's entry is made with the same SQL expression and
         # looked up in that record. needsApply: the record differs from the
         # items now, as the editor's Apply button reckons it.
-        entry = ("id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 "
-                 "|| char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) "
-                 "|| ifnull(shape, char(45))")
+        entry = APPLIED_ENTRY
         shapes = {"rect": "Box", "ellipse": "Oval", "arrow": "Arrow", "line": "Line", "pointer": "Pointer"}
         def label(text, shape):
             return shapes.get(shape, "Shape") if shape and shape != "-" else f'Callout "{text}"'
