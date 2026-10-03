@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -214,15 +214,39 @@
     // the playhead actually stopped, to measure how close the 40 ms Timer
     // gets. invalidates: [] keeps the log call from refetching every list.
     // (Not from / to: the markup's script parser rejects from as a name.)
-    function playAudition(start, stop, kind) {
-      const end = takePlayer.duration || editDur;
+    function playAudition(start, stop, kind, src) {
+      // src: the capture view's source player, else the take player.
+      const P = src ? sourcePlayer : takePlayer;
+      const end = src ? (sourcePlayer.duration || srcDur) : (takePlayer.duration || editDur);
       const a = { start: Math.max(0, start), stop: Math.min(end, stop), kind, startedMs: Date.now(),
-                  at: Math.max(0, start), atMs: Date.now() };
+                  at: Math.max(0, start), atMs: Date.now(), src: !!src };
       // No pause before the seek: a pause cuts off a play() still starting
       // (a quick second click), which the page shows as an error.
-      takePlayer.seek(a.start);
+      P.seek(a.start);
       audition = a;
-      takePlayer.play();
+      P.play();
+    }
+    // The capture view's nudges: move one end of the clip by delta seconds,
+    // re-place the handles by re-seeding capSeed (which fires no slider
+    // events), and show that frame, as on the Cut tab. The clip stays within
+    // the source and at least 0.52 s long (a take must be 0.5 s).
+    function nudgeCap(which, delta) {
+      const end = sourcePlayer.duration || srcDur;
+      const c = capClip;
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round((c[0] + delta) * 100) / 100, c[1] - 0.52)) : c[0];
+      const e = which === 'end' ? Math.min(end, Math.max(Math.round((c[1] + delta) * 100) / 100, c[0] + 0.52)) : c[1];
+      audition = null;
+      if (s !== c[0] || e !== c[1]) {
+        capSeed = [s, e];
+        capClip = capSeed;
+      }
+      sourcePlayer.seek(which === 'start' ? s : e);
+    }
+    // m:ss.ss for the capture view's times (sources run to minutes).
+    function mmss(t) {
+      const m = Math.floor(t / 60);
+      const r = (t - m * 60).toFixed(2);
+      return m + ':' + (r.length === 4 ? '0' + r : r);
     }
     // The audio strip's bars (under the take player): one per slice of
     // /takes/levels, px tall for its level from -60 dB (1 px) to 0 dB (24 px),
@@ -270,9 +294,10 @@
     }
     function endAudition() {
       const a = audition;
-      takePlayer.pause();
+      const P = a.src ? sourcePlayer : takePlayer;
+      P.pause();
       audition = null;
-      const stoppedAt = takePlayer.getCurrentTime();
+      const stoppedAt = P.getCurrentTime();
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
                           body: { kind: a.kind, start: a.start, stop: a.stop, stoppedAt } });
@@ -829,87 +854,7 @@
         <H2>Sources</H2>
         <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
           placeholder="Choose a source"
-          width="260px" />
-        <!-- Record shows the source player (paused at 0:00, logged as the start
-             row) and starts OFF the air (a recpause right after it), so the time
-             spent getting ready is cut and never rendered; Start recording goes on
-             the air. Every play/pause/seeked/ended is logged until Stop. -->
-        <Button label="Record" when="{!capturing}"
-          enabled="{!!sourceChoice.value &amp;&amp; !startRecording.inProgress &amp;&amp; !(recStatus.value &amp;&amp; recStatus.value.phase)}"
-          onClick="
-            playing = '';
-            recPaused = true;
-            liveTick = null;
-            onAirYet = false;
-            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
-            liveAnnots = [];
-            liveCur = null;
-            liveDrag = null;
-            liveFrom = null;
-            lastLiveSprites = null;
-            capturing = true;
-            try {
-              startRecording.execute({ source: sourceChoice.value });
-            } catch (e) {
-              capturing = false;
-            }
-          " />
-        <!-- Off the air: everything between Pause and Resume is cut from the
-             take's picture and voice (render.py); the player is yours to set
-             up the next spot meanwhile. -->
-        <!-- Pauses the recording, not the video (the player's own controls do
-             that); "Pause" alone was mistaken for the video's pause. -->
-        <Button label="{recPaused ? (onAirYet ? 'Resume recording' : 'Start recording') : 'Pause recording'}"
-          variant="{onAirYet ? 'outlined' : 'solid'}" when="{capturing}"
-          enabled="{!!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
-          onClick="
-            if (recPaused) {
-              logEvents([{ event: 'recresume', wallMs: Date.now() }]);
-              recPaused = false;
-              liveTick = null;
-              onAirYet = true;
-            } else {
-              logEvents([{ event: 'recpause', wallMs: Date.now() }]);
-              recPaused = true;
-              liveTick = null;
-              sourcePlayer.pause();
-            }
-          " />
-        <Button label="Restart" variant="outlined" when="{capturing}"
-          enabled="{!restartRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
-          tooltip="Discard this take and start again from 0:00"
-          onClick="
-            sourcePlayer.pause();
-            sourcePlayer.seek(0);
-            restartRecording.execute({ source: sourceChoice.value });
-            recPaused = true;
-            liveTick = null;
-            onAirYet = false;
-            recEvents = [{ event: 'start', currentTime: 0, playing: false, wallMs: Date.now() }, { event: 'recpause', wallMs: Date.now() }];
-            liveAnnots = [];
-            liveCur = null;
-            liveDrag = null;
-            liveFrom = null;
-            lastLiveSprites = null;
-          " />
-        <Button label="Stop" themeColor="attention" when="{capturing}"
-          enabled="{!stopRecording.inProgress &amp;&amp; !!recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}"
-          onClick="
-            const playerEvents = recEvents.filter(e => ['play', 'pause', 'seeked', 'ended'].includes(e.event)).length;
-            const inkEvents = recEvents.filter(e => e.event === 'stroke' || e.event === 'shape' || e.event === 'pointer').length;
-            const diag = { duration: sourcePlayer.duration, paused: sourcePlayer.paused,
-                           currentTime: sourcePlayer.getCurrentTime(), playerEvents, inkEvents };
-            if (!onAirYet) {
-              toast('Nothing was recorded: you never clicked Start recording.');
-            } else if (playerEvents === 0 &amp;&amp; inkEvents === 0) {
-              toast('No player activity in this take, so the picture is a still of 0:00.');
-            }
-            stopRecording.execute({ events: recEvents, diag });
-            capturing = false;
-            recPaused = false;
-            liveTick = null;
-            recEvents = [];
-          " />
+          width="260px" onDidChange="audition = null; playing = '';" />
         <Button label="Export" variant="outlined" size="sm"
           tooltip="Join all takes, in list order, into one video"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
@@ -931,248 +876,105 @@
         <Button label="Discard" variant="outlined" themeColor="attention"
           enabled="{!cancelRecording.inProgress}" onClick="cancelRecording.execute()" />
       </HStack>
-      <HStack verticalAlignment="center" when="{recStatus.value &amp;&amp; recStatus.value.phase}">
-        <Spinner />
-        <Text value="{recPaused ? (onAirYet ? 'Recording paused: nothing is recorded until you click Resume recording' : 'Ready: set up the video, then click Start recording') : recStatus.value.label}" />
-      </HStack>
-      <!-- The source movie you narrate over. MediaPlayer is the experimental
-           component from xmlui-org/xmlui#3913 (vendor/); its events are the
-           take's picture path (render.py's events input). -->
-      <!-- One player at a time: the source player exists only while recording
-           (Record clears any loaded take; Stop removes it). -->
-      <!-- Annotations while recording: the take editor's layer on the source
-           player. A placed callout or shape appears at once and stays until
-           removed; add, changes and removal go into the event log (annotAdd,
-           annotSet, annotRemove), and render.py/register.py make them editable
-           items on the take (their on-air spans, last positions winning).
-           liveAnnots: the items up now; liveCur: the current one (placed while
-           the source was paused, or clicked), whose frame and handles show it
-           is being edited and whose text and tail the row below edits.
-           Pressing play lets go of it, so while the source plays the items
-           look as they will in the take. Sprites come from
-           /annotations/sprites (sized from the source), the last set kept
-           while the next loads so a dragged anchor never vanishes. -->
-      <VStack when="{capturing}"
-        var.liveCurItem="{liveAnnots.find((a) => a.cid === liveCur) || null}"
-        var.liveSpritesNow="{liveAnnots.length ? (liveSprites.value || lastLiveSprites || []).filter((s) => liveAnnots.some((a) => a.cid === s.cid)) : []}"
-        var.liveHandleBox="{liveCurItem ? (!liveCurItem.shape &amp;&amp; liveCurItem.x2 - liveCurItem.x1 &lt; 0.001 &amp;&amp; liveSpritesNow.find((s) => s.cid === liveCur) ? { x1: liveSpritesNow.find((s) => s.cid === liveCur).x, y1: liveSpritesNow.find((s) => s.cid === liveCur).y, x2: liveSpritesNow.find((s) => s.cid === liveCur).x + liveSpritesNow.find((s) => s.cid === liveCur).width, y2: liveSpritesNow.find((s) => s.cid === liveCur).y + liveSpritesNow.find((s) => s.cid === liveCur).height } : liveCurItem) : null}"
-        var.liveHandles="{liveHandleBox &amp;&amp; sourceAspect &amp;&amp; !liveDrag &amp;&amp; liveCurItem.shape !== 'pointer' ? ((liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line') ? [['a', liveHandleBox.x1, liveHandleBox.y1], ['b', liveHandleBox.x2, liveHandleBox.y2]] : [['nw', liveHandleBox.x1, liveHandleBox.y1], ['n', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y1], ['ne', liveHandleBox.x2, liveHandleBox.y1], ['e', liveHandleBox.x2, (liveHandleBox.y1 + liveHandleBox.y2) / 2], ['se', liveHandleBox.x2, liveHandleBox.y2], ['s', (liveHandleBox.x1 + liveHandleBox.x2) / 2, liveHandleBox.y2], ['sw', liveHandleBox.x1, liveHandleBox.y2], ['w', liveHandleBox.x1, (liveHandleBox.y1 + liveHandleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * sourceAspect, width: 0.018, height: 0.018 * sourceAspect })) : []}">
-        <!-- Items last 3 s of on-air time (placing and typing while paused don't
-             count), unless kept; an expiring item is taken down exactly as
-             Remove does, so the take matches the screen. The countdown uses
-             the clock, not a fixed 0.25 per tick: a Timer waits for its handler
-             before ticking again
-             (https://www.xmlui.org/docs/reference/components/Timer) and the page
-             runs handlers one at a time, so busy stretches (typing into a
-             callout, pointer traffic) stretched the ticks and a 3 s item was
-             measured lasting 3.76 s (2026-10-01). liveTick is the previous
-             tick's wall-clock ms, null while the countdown is idle, so idle or
-             off-air time is never charged to an item; one tick charges at most
-             2 s. Typing into a callout restarts its 3 s (the text box's
-             handler sets left back to 3 and clears liveTick): while keys are
-             typed the Timer gets no turn at all, each keystroke's handler
-             taking about 100 ms, so a callout could never go on time while
-             being typed into (measured 6.96 s for 52 characters); now it stays
-             while you type and for 3 s after the last key. -->
-        <Timer interval="250" enabled="{capturing &amp;&amp; !recPaused &amp;&amp; liveAnnots.some((a) => !a.kept)}"
-          onTick="
-            const now = Date.now();
-            const dt = liveTick ? Math.min(2, (now - liveTick) / 1000) : 0.25;
-            const expired = liveAnnots.filter((a) => !a.kept &amp;&amp; a.left &lt;= dt);
-            const rest = liveAnnots.filter((a) => a.kept || a.left > dt).map((a) => a.kept ? a : { ...a, left: a.left - dt });
-            liveAnnots = rest;
-            liveTick = rest.some((a) => !a.kept) ? now : null;
-            if (expired.length) {
-              logEvents(expired.map((a) => ({ event: 'annotRemove', cid: a.cid, expired: true, wallMs: Date.now() })));
-              if (expired.some((a) => a.cid === liveCur)) {
-                liveCur = null;
-                liveText.setValue('');
-                liveTail.setValue('none');
-              }
-            }
-          " />
-        <DataSource id="liveSprites" url="http://127.0.0.1:8765/annotations/sprites" method="POST"
-          when="{liveAnnots.length > 0}"
-          body="{{ source: sourceChoice.value, items: liveAnnots.map((a) => ({ cid: a.cid, shape: a.shape, text: a.text, tail: a.tail, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, frame: a.cid === liveCur })) }}"
-          onLoaded="(d) => { lastLiveSprites = d; liveDrag = null; }" />
-        <!-- What Command-drag places: a callout or a shape, each an editable
-             item. The selected tool is solid. (Freehand ink, which wasn't an
-             item, was dropped 2026-10-01; render.py still draws the strokes
-             of sessions recorded before then.) -->
-        <HStack verticalAlignment="center">
-          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
-            <Button label="{$item[1]}" size="xs"
-              variant="{inkTool === $item[0] ? 'solid' : 'outlined'}"
-              tooltip="Hold Command (⌘) and drag to place (click, for Pointer). An item stays 3 s on the air unless you Keep it."
-              onClick="inkTool = $item[0]" />
-          </Items>
-        </HStack>
-        <PointerLayer id="ink" contentAspect="{sourceAspect}" enabled="{capturing}" pointerShape="arrow" anchorDrag="true"
-          tool="{inkTool === 'callout' ? 'rect' : inkTool}"
-          anchors="{liveSpritesNow.map((s) => ({ id: s.cid, url: s.url, x: liveDrag &amp;&amp; liveDrag.cid === s.cid ? liveDrag.x : s.x, y: liveDrag &amp;&amp; liveDrag.cid === s.cid ? liveDrag.y : s.y, width: s.width, height: s.height })).concat(liveHandles)}"
-          onAnchorDragStart="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
-            if (edges) {
-              liveFrom = liveHandleBox;
-            } else {
-              const it = liveAnnots.find((a) => a.cid === e.id);
-              liveCur = e.id;
-              liveText.setValue(it ? it.text : '');
-              liveTail.setValue(it &amp;&amp; it.tail ? it.tail : 'none');
-            }
-          }"
-          onAnchorDragMove="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
-            if (edges &amp;&amp; liveFrom &amp;&amp; liveCurItem) {
-              const b = liveFrom;
-              const free = liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line';
-              const x1 = free ? Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)) : Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
-              const y1 = free ? Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)) : Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
-              const x2 = free ? Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)) : Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
-              const y2 = free ? Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) : Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
-              liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, x1: x1, y1: y1, x2: x2, y2: y2 } : a);
-            } else if (!edges) {
-              liveDrag = { cid: e.id, x: e.x, y: e.y };
-            }
-          }"
-          onAnchorDragEnd="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
-            if (edges &amp;&amp; liveFrom &amp;&amp; liveCurItem) {
-              const b = liveFrom;
-              const free = liveCurItem.shape === 'arrow' || liveCurItem.shape === 'line';
-              const x1 = free ? Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)) : Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
-              const y1 = free ? Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)) : Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
-              const x2 = free ? Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)) : Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
-              const y2 = free ? Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) : Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
-              liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, x1: x1, y1: y1, x2: x2, y2: y2 } : a);
-              logEvents([{ event: 'annotSet', cid: liveCur, x1: x1, y1: y1, x2: x2, y2: y2, wallMs: Date.now() }]);
-            } else if (!edges) {
-              const it = liveAnnots.find((a) => a.cid === e.id);
-              if (it) {
-                const dx = Math.min(Math.max(e.dx, -Math.min(it.x1, it.x2)), 1 - Math.max(it.x1, it.x2));
-                const dy = Math.min(Math.max(e.dy, -Math.min(it.y1, it.y2)), 1 - Math.max(it.y1, it.y2));
-                liveAnnots = liveAnnots.map((a) => a.cid === e.id ? { ...a, x1: it.x1 + dx, y1: it.y1 + dy, x2: it.x2 + dx, y2: it.y2 + dy } : a);
-                logEvents([{ event: 'annotSet', cid: e.id, x1: it.x1 + dx, y1: it.y1 + dy, x2: it.x2 + dx, y2: it.y2 + dy, wallMs: Date.now() }]);
-              }
-            }
-            liveFrom = null;
-          }"
-          onShapeEnd="(e) => {
-            if (capturing) {
-              const cid = liveSeq + 1;
-              const pt = inkTool === 'pointer';
-              const a = { cid: cid, shape: inkTool === 'callout' ? null : inkTool, text: '', tail: 'none', x1: e.x1, y1: e.y1, x2: pt ? e.x1 : e.x2, y2: pt ? e.y1 : e.y2, left: 3, kept: false };
-              liveSeq = cid;
-              if (!liveAnnots.some((a) => !a.kept)) liveTick = null;
-              liveAnnots = liveAnnots.concat([a]);
-              // Placing while paused is setup: the new item is current, to
-              // type into. Placing while the source plays is performing: it
-              // goes up as it will be in the take, current only if clicked.
-              if (sourcePlayer.paused) {
-                liveCur = cid;
-                liveText.setValue('');
-                liveTail.setValue('none');
-              }
-              logEvents([{ event: 'annotAdd', cid: cid, shape: a.shape, text: '', tail: 'none', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, wallMs: Date.now() }]);
-            }
-          }"
-          onPointerMove="(e) => { if (capturing) recEvents = [...recEvents, { event: 'pointer', x: e.x, y: e.y, buttons: e.buttons, wallMs: e.time }] }">
+      <!-- Capture: a take is a stretch of a source movie (/takes/clip), to be
+           sequenced and then edited in the take editor (narration, pauses,
+           annotations, cuts). The slider's two handles and the nudges set the
+           stretch and the player only shows it, as on the Cut tab; the
+           player's own scrubber and play/pause stay yours. Play clip, Intro
+           and Outro hear it (playAudition, for this player). Shown for the
+           chosen source while no take is open: one player at a time. -->
+      <VStack when="{!!sourceChoice.value &amp;&amp; !playing}">
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
-          onLoadedMetadata="(e) => sourceAspect = e.videoWidth / e.videoHeight"
-          onPlay="(e) => {
-            if (capturing) logEvents([{ event: 'play', currentTime: e.currentTime, wallMs: Date.now() }]);
-            if (liveCur !== null) {
-              liveCur = null;
-              liveText.setValue('');
-              liveTail.setValue('none');
-            }
-          }"
-          onPause="(e) => { if (capturing) logEvents([{ event: 'pause', currentTime: e.currentTime, wallMs: Date.now() }]) }"
-          onSeeked="(e) => { if (capturing) logEvents([{ event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }]) }"
-          onEnded="(e) => { if (capturing) logEvents([{ event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }]) }" />
-          <property name="anchorTemplate">
-            <Image src="{$item.url}" width="100%" />
-          </property>
-        </PointerLayer>
-        <!-- The current item's text and tail (a callout's), and removal, which
-             ends its span in the take. Always rendered (dimmed with nothing
-             current) so setValue always has a component to reach. -->
+          onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; capSeed = [0, Math.min(10, e.duration || 1)]; capClip = capSeed; }" />
+        <Slider id="capSlider" width="100%" minValue="{0}" maxValue="{srcDur || 1}" step="{0.04}"
+          initialValue="{capSeed}" minStepsBetweenThumbs="{13}"
+          valueFormat="{(v) => mmss(v)}"
+          enabled="{srcDur > 0 &amp;&amp; !clipBusy}"
+          onDidChange="(v) => {
+            audition = null;
+            sourcePlayer.seek(v[0] !== capClip[0] ? v[0] : v[1]);
+            capClip = v;
+          }" />
         <HStack verticalAlignment="center">
-          <TextBox id="liveText" width="*" enabled="{!!liveCurItem &amp;&amp; !liveCurItem.shape}"
-            placeholder="{!liveCurItem ? 'Hold Command and drag to place a callout or shape' : liveCurItem.shape ? 'Shapes have no text' : 'Callout text (or fill it in after the take)'}"
-            onDidChange="(v) => {
-              if (liveCurItem &amp;&amp; !liveCurItem.shape &amp;&amp; v !== liveCurItem.text) {
-                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, text: v, left: 3 } : a);
-                liveTick = null;
-                logEvents([{ event: 'annotSet', cid: liveCur, text: v, wallMs: Date.now() }]);
-              }
-            }" />
-          <Select id="liveTail" initialValue="none" width="130px" enabled="{!!liveCurItem &amp;&amp; !liveCurItem.shape}"
-            onDidChange="(v) => {
-              if (liveCurItem &amp;&amp; !liveCurItem.shape &amp;&amp; v !== liveCurItem.tail) {
-                liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, tail: v } : a);
-                logEvents([{ event: 'annotSet', cid: liveCur, tail: v, wallMs: Date.now() }]);
-              }
-            }">
-            <Option value="none" label="No tail" />
-            <Option value="nw" label="Tail ↖ nw" />
-            <Option value="n" label="Tail ↑ n" />
-            <Option value="ne" label="Tail ↗ ne" />
-            <Option value="e" label="Tail → e" />
-            <Option value="se" label="Tail ↘ se" />
-            <Option value="s" label="Tail ↓ s" />
-            <Option value="sw" label="Tail ↙ sw" />
-            <Option value="w" label="Tail ← w" />
-          </Select>
-          <Button label="{liveCurItem &amp;&amp; liveCurItem.kept ? 'Kept' : 'Keep'}" size="xs"
-            variant="{liveCurItem &amp;&amp; liveCurItem.kept ? 'solid' : 'outlined'}" enabled="{!!liveCurItem}"
-            tooltip="Keep this item up until you remove it, instead of 3 seconds on the air (click again to let it expire)"
-            onClick="
-              if (!liveAnnots.some((a) => !a.kept)) liveTick = null;
-              logEvents([{ event: 'annotKeep', cid: liveCur, kept: !liveCurItem.kept, wallMs: Date.now() }]);
-              liveAnnots = liveAnnots.map((a) => a.cid === liveCur ? { ...a, kept: !a.kept, left: 3 } : a);
-            " />
-          <Button label="Remove" size="xs" variant="outlined" enabled="{!!liveCurItem}"
-            tooltip="Take this item down now (its span in the take ends here)"
-            onClick="
-              logEvents([{ event: 'annotRemove', cid: liveCur, wallMs: Date.now() }]);
-              liveAnnots = liveAnnots.filter((a) => a.cid !== liveCur);
-              liveCur = null;
-              liveText.setValue('');
-              liveTail.setValue('none');
-            " />
-        </HStack>
-        <!-- Items up now: click one to make it current (again to let go of
-             it), ✕ to take it down. -->
-        <Items data="{liveAnnots}">
-          <HStack verticalAlignment="center">
-            <Button size="xs" variant="{$item.cid === liveCur ? 'solid' : 'ghost'}"
-              label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ($item.kept ? ' · kept' : ' · ' + Math.ceil($item.left) + ' s')}"
-              onClick="
-                if (liveCur === $item.cid) {
-                  liveCur = null;
-                  liveText.setValue('');
-                  liveTail.setValue('none');
-                } else {
-                  liveCur = $item.cid;
-                  liveText.setValue($item.text);
-                  liveTail.setValue($item.tail || 'none');
-                }
-              " />
-            <Button icon="close" size="xs" variant="ghost" aria-label="Take this item down"
-              onClick="
-                logEvents([{ event: 'annotRemove', cid: $item.cid, wallMs: Date.now() }]);
-                liveAnnots = liveAnnots.filter((a) => a.cid !== $item.cid);
-                if (liveCur === $item.cid) {
-                  liveCur = null;
-                  liveText.setValue('');
-                  liveTail.setValue('none');
-                }
-              " />
+          <HStack verticalAlignment="center" gap="$space-1">
+            <Button label="«" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="Start 1 second earlier" onClick="nudgeCap('start', -1)" />
+            <Button label="‹" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="Start one frame earlier" onClick="nudgeCap('start', -0.04)" />
+            <Text value="{'Start ' + mmss(capClip[0])}" />
+            <Button label="›" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="Start one frame later" onClick="nudgeCap('start', 0.04)" />
+            <Button label="»" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="Start 1 second later" onClick="nudgeCap('start', 1)" />
           </HStack>
-        </Items>
+          <HStack verticalAlignment="center" gap="$space-1">
+            <Button label="«" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="End 1 second earlier" onClick="nudgeCap('end', -1)" />
+            <Button label="‹" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="End one frame earlier" onClick="nudgeCap('end', -0.04)" />
+            <Text value="{'End ' + mmss(capClip[1])}" />
+            <Button label="›" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="End one frame later" onClick="nudgeCap('end', 0.04)" />
+            <Button label="»" size="xs" variant="ghost" enabled="{srcDur > 0}"
+              tooltip="End 1 second later" onClick="nudgeCap('end', 1)" />
+          </HStack>
+        </HStack>
+        <HStack verticalAlignment="center">
+          <Button label="Play clip" size="xs" variant="outlined" enabled="{srcDur > 0}"
+            tooltip="Play the clip from start to end"
+            onClick="playAudition(capClip[0], capClip[1], 'capture-clip', true)" />
+          <Button label="Intro 3s" size="xs" variant="outlined" enabled="{srcDur > 0}"
+            tooltip="Play the clip's first 3 seconds"
+            onClick="playAudition(capClip[0], Math.min(capClip[0] + 3, capClip[1]), 'capture-intro', true)" />
+          <Button label="Outro 3s" size="xs" variant="outlined" enabled="{srcDur > 0}"
+            tooltip="Play the clip's last 3 seconds"
+            onClick="playAudition(Math.max(capClip[1] - 3, capClip[0]), capClip[1], 'capture-outro', true)" />
+          <Button label="{'Make take · ' + mmss(capClip[1] - capClip[0])}" size="xs" themeColor="primary"
+            tooltip="Add this clip to the takes, with the source's own sound (rename it in the list)"
+            enabled="{srcDur > 0 &amp;&amp; !clipBusy}"
+            handlerTimeoutMs:onClick="0"
+            onClick="
+              audition = null;
+              clipBusy = true;
+              try {
+                const r = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/clip', method: 'post', invalidates: [],
+                                            body: { source: sourceChoice.value, start: capClip[0], end: capClip[1] } });
+                toast.success('Added ' + (r &amp;&amp; r.name ? r.name : 'the take'));
+              } catch (e) {
+                toast.error(e.message);
+              }
+              clipBusy = false;
+              takes.refetch();
+            " />
+          <Spinner when="{clipBusy}" />
+        </HStack>
       </VStack>
+      <!-- At page level, so it runs for the capture view and the take editor
+           alike (audition.src: the source player). An audition stops at its end (playAudition), and yields to the
+           player, whose scrubber and play/pause are always live: a pause
+           ends it (one in its first 300 ms is the play() still starting,
+           not the user), and so does a scrub, seen as the playhead more
+           than 0.3 s from where playing would have taken it: audition.at
+           (where it was found) plus the time since (audition.atMs). While
+           paused, audition.at follows the playhead, so a slow start isn't
+           taken for a scrub (one was, 0.33 s, 2026-10-02 21:35:54). A
+           yield is logged (yieldAudition), to check the detection. -->
+      <Timer interval="40" enabled="{!!audition}"
+        onTick="
+          const P = audition &amp;&amp; audition.src ? sourcePlayer : takePlayer;
+          const t = P.getCurrentTime();
+          const now = Date.now();
+          if (audition &amp;&amp; P.paused) {
+            audition = now - audition.startedMs > 300 ? null : { ...audition, at: t, atMs: now };
+          } else if (audition &amp;&amp; Math.abs(t - (audition.at + (now - audition.atMs) / 1000)) > 0.3) {
+            yieldAudition(t);
+          } else if (audition &amp;&amp; t >= audition.stop) {
+            endAudition();
+          } else {
+            audition = { ...audition, at: t, atMs: now };
+          }
+        " />
       <!-- The take loaded in the take player (its URL); hidden while recording. -->
       <!-- calloutHandles: the edited callout's eight resize handles (anchors
            named by compass point), centered on its box's corners and edge
@@ -1932,29 +1734,6 @@
              item set to 2.0-5.0 s was on screen 2.32-5.37 s). -->
         <Timer interval="40" enabled="{!takePlayer.paused}"
           onTick="playerTime = takePlayer.getCurrentTime()" />
-        <!-- An audition stops at its end (playAudition), and yields to the
-             player, whose scrubber and play/pause are always live: a pause
-             ends it (one in its first 300 ms is the play() still starting,
-             not the user), and so does a scrub, seen as the playhead more
-             than 0.3 s from where playing would have taken it: audition.at
-             (where it was found) plus the time since (audition.atMs). While
-             paused, audition.at follows the playhead, so a slow start isn't
-             taken for a scrub (one was, 0.33 s, 2026-10-02 21:35:54). A
-             yield is logged (yieldAudition), to check the detection. -->
-        <Timer interval="40" enabled="{!!audition}"
-          onTick="
-            const t = takePlayer.getCurrentTime();
-            const now = Date.now();
-            if (audition &amp;&amp; takePlayer.paused) {
-              audition = now - audition.startedMs > 300 ? null : { ...audition, at: t, atMs: now };
-            } else if (audition &amp;&amp; Math.abs(t - (audition.at + (now - audition.atMs) / 1000)) > 0.3) {
-              yieldAudition(t);
-            } else if (audition &amp;&amp; t >= audition.stop) {
-              endAudition();
-            } else {
-              audition = { ...audition, at: t, atMs: now };
-            }
-          " />
       </VStack>
       <!-- Takes as a drag-reorderable list (DndItems, the xmlui-dnd-list extension
            Bram's queue uses): only the grip drags, so the row's buttons stay live.

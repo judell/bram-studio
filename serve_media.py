@@ -1387,6 +1387,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.undelete_take()
         if self.path == "/takes/cut":
             return self.cut_take()
+        if self.path == "/takes/clip":
+            return self.clip_take()
         if self.path == "/takes/pause":
             return self.pause_take()
         if self.path == "/takes/undo":
@@ -1921,6 +1923,64 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db.commit()
         os.remove(path)
         self.send_json(200, {"restored": take_id, "name": take["name"], "overlays": len(saved["overlays"])})
+
+    def clip_take(self):
+        # {source, start, end}: a new take that is that stretch of a source
+        # movie, the capture view's Make take. Encoded as render.py encodes
+        # takes (its ENC and FPS; AAC 160k, 48 kHz stereo), so Export can still
+        # join takes by stream copy. The source's own audio comes along; a
+        # source without audio gets a silent track, so every take has one.
+        # register.py adds it at the top of the takes list, named for its
+        # source and stretch (rename it in the list).
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        path = source_paths().get(str(body.get("source") or ""))
+        if not path:
+            return self.send_json(404, {"error": f"no source movie named {body.get('source')!r}"})
+        try:
+            start, end = float(body.get("start")), float(body.get("end"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "start and end must be numbers"})
+        dur = float(probe(path, "format=duration") or 0)
+        start, end = max(0.0, start), min(dur, end)
+        if end - start < 0.5:
+            return self.send_json(400, {"error": "a take must be at least 0.5 s"})
+        channels = probe(path, "stream=channels", "a:0")
+        has_audio = bool(channels)
+        # A mono source goes to both sides at its own level (ffmpeg's own
+        # upmix pans it 3 dB down).
+        mono = ["-af", "pan=stereo|c0=c0|c1=c0"] if channels.strip() == "1" else []
+        # Unique even for clips made in the same second (a second one would
+        # otherwise overwrite the first and both rows share its file).
+        stamp, n = time.strftime('%Y%m%d-%H%M%S'), 1
+        fname = f"take-{stamp}-clip.mp4"
+        while os.path.exists(os.path.join(ROOT, fname)):
+            n += 1
+            fname = f"take-{stamp}-clip{n}.mp4"
+        dest = os.path.join(ROOT, fname)
+        tmp = os.path.join(ROOT, f".{fname}")
+        audio_in = [] if has_audio else ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
+                            "-i", path, *audio_in, "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-tune", "stillimage",
+                            "-pix_fmt", "yuv420p", "-r", "25",
+                            *mono, "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-shortest",
+                            "-f", "mp4", tmp], capture_output=True, text=True)
+        if r.returncode:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["the clip failed"])[-1]})
+        os.replace(tmp, dest)
+        def mmss(t):
+            return f"{int(t // 60)}:{t % 60:05.2f}".replace(".00", "")
+        name = f"{os.path.splitext(os.path.basename(path))[0]} · {mmss(start)}–{mmss(end)}"
+        reg = subprocess.run([sys.executable, os.path.join(HERE, "register.py"), dest, name,
+                              f"{start:.3f}", f"{end:.3f}", os.path.basename(path)],
+                             capture_output=True, text=True)
+        if reg.returncode:
+            return self.send_json(500, {"error": (reg.stderr.strip().splitlines() or ["registering failed"])[-1]})
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT id, name, duration_s FROM takes WHERE file = ?", (fname,)).fetchone()
+        self.send_json(200, {"id": row[0], "name": row[1], "duration": row[2]} if row else {"file": fname})
 
     def cut_take(self):
         # {id, start, end}: remove that stretch from a take. The same cut is
