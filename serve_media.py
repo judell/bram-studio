@@ -483,15 +483,85 @@ def shared_stray():
     return found
 
 
+# Safekeeping (the Projects page): a copy of a project, in a folder the user
+# names (a OneDrive folder, say; nothing here knows which service), of what
+# can't be made again and what re-mixing needs. The categories it copies; the
+# database and project.json are added by copy_project. Undo history, deleted
+# takes, discarded files, stray files and the shared source movies stay out.
+KEEP = ("takes", "remix", "exports", "logs")
+SAFE_LOCK = threading.Lock()  # one copy at a time
+
+
+def read_project(folder):
+    try:
+        with open(os.path.join(folder, "project.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_project(folder, info):
+    tmp = os.path.join(folder, ".project.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(info, f, indent=1)
+    os.replace(tmp, os.path.join(folder, "project.json"))
+
+
+def keep_files(folder, usage=None):
+    # [(path, path within the project)] of every file a safekeeping copy takes,
+    # but the database (taken with SQLite's backup) and project.json. The
+    # previews' cache and a recording's state files are left out.
+    usage = usage or project_usage(folder)
+    out = []
+    for kind in KEEP:
+        for p in usage["_paths"].get(kind, []):
+            n = os.path.basename(p)
+            if n == ".preview" or n.startswith(".record-") or n.startswith("studio.db") or n == "project.json":
+                continue
+            if os.path.isdir(p) and not os.path.islink(p):
+                for root, _, names in os.walk(p):
+                    out += [(os.path.join(root, f), os.path.relpath(os.path.join(root, f), folder))
+                            for f in names if f != ".DS_Store"]
+            else:
+                out.append((p, os.path.relpath(p, folder)))
+    return out
+
+
+def same_file(a, b):
+    # Already safe: the copy has the same size and modification time
+    # (shutil.copy2 carries the time over). Exact: a two-second allowance for
+    # folders that round times skipped a file changed within two seconds; a
+    # folder that rounds now gets its files copied again, never missed.
+    try:
+        sa, sb = os.stat(a), os.stat(b)
+    except OSError:
+        return False
+    return sa.st_size == sb.st_size and abs(sa.st_mtime - sb.st_mtime) < 0.001
+
+
+def safekeeping_state(folder, info, usage):
+    # What the Projects page shows: the location, the last copy, and whether
+    # the project has changed since (a kept file newer than the copy, or
+    # one not copied yet).
+    last, loc = info.get("last_copy"), info.get("safekeeping") or ""
+    changed = None
+    if last:
+        at = last.get("at_s", 0)
+        changed = any(os.path.getmtime(p) > at for p, _ in keep_files(folder, usage)) or \
+            os.path.getmtime(os.path.join(folder, "studio.db")) > at
+    copy_path = os.path.join(loc, os.path.basename(folder)) if loc else ""
+    return {"location": loc, "exists": bool(loc) and os.path.isdir(loc), "last": last, "changed_since": changed,
+            "copy_path": copy_path, "copy_exists": bool(copy_path) and os.path.isdir(copy_path)}
+
+
 def project_info(slug):
     # One row of the Projects page, or None for a folder that isn't a project
     # (no project.json). Its takes are counted from its own database.
     folder = os.path.join(studio_paths.PROJECTS, slug)
-    try:
-        with open(os.path.join(folder, "project.json")) as f:
-            name = json.load(f).get("name") or slug
-    except (OSError, ValueError):
+    info = read_project(folder)
+    if info is None:
         return None
+    name = info.get("name") or slug
     takes, seconds, changed, db_path = 0, 0.0, None, os.path.join(folder, "studio.db")
     try:
         changed = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(db_path)))
@@ -516,7 +586,7 @@ def project_info(slug):
                         for label, days, warning in CLEAN.get(c["key"], [])
                         if clean_paths(folder, c["key"], days, full)]
     return {"slug": slug, "name": name, "takes": takes, "seconds": round(seconds, 1), "changed": changed,
-            "open": folder == studio_paths.PROJECT, **usage}
+            "open": folder == studio_paths.PROJECT, "safekeeping": safekeeping_state(folder, info, full), **usage}
 
 
 def list_projects():
@@ -1215,6 +1285,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_stray()
         if self.path == "/projects/clean":
             return self.clean_project()
+        if self.path == "/projects/safekeeping":
+            return self.set_safekeeping()
+        if self.path == "/projects/copy":
+            return self.copy_project()
+        if self.path == "/projects/safekeeping/clear":
+            return self.clear_safekeeping()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -2483,6 +2559,156 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(500, {"error": f"Couldn't move {path} to the Trash: {e}"})
         print(f"stray: moved {os.path.join(base, path)} to {dest}", flush=True)
         self.send_json(200, {"trashed": path, "bytes": item["bytes"], "as": os.path.basename(dest)})
+
+    def project_folder(self, body):
+        # (slug, folder) of an existing project named in a request, or None
+        # after answering 404.
+        slug = body.get("slug")
+        folder = os.path.join(studio_paths.PROJECTS, str(slug))
+        if (not isinstance(slug, str) or not slug or os.path.basename(slug) != slug or slug.startswith(".")
+                or not os.path.isfile(os.path.join(folder, "project.json"))):
+            self.send_json(404, {"error": f"no project named {slug!r}"})
+            return None
+        return slug, folder
+
+    def set_safekeeping(self):
+        # {slug, location, create}: where this project's safekeeping copies
+        # go, saved in its project.json. A folder, written to as
+        # <location>/<slug>/; not inside Studio's own projects folder, where
+        # a copy would be counted as stray. "" forgets it. A missing folder
+        # isn't an error: the answer says so ({missing, location}) without
+        # saving, so the page can ask, and create: true then makes it. Only
+        # the last folder of the path is made, so a mistyped parent is
+        # refused rather than made into a new tree.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        found = self.project_folder(body)
+        if not found:
+            return
+        slug, folder = found
+        loc = os.path.expanduser(str(body.get("location") or "").strip())
+        if loc:
+            loc = os.path.abspath(loc)
+            real, projects = os.path.realpath(loc), os.path.realpath(studio_paths.PROJECTS)
+            if real == projects or real.startswith(projects + os.sep):
+                return self.send_json(400, {"error": "Safekeeping can't be inside Studio's projects folder"})
+            if not os.path.isdir(loc):
+                parent = os.path.dirname(loc)
+                if not os.path.isdir(parent):
+                    return self.send_json(400, {"error": f"There is no folder at {parent} to make it in"})
+                if not body.get("create"):
+                    return self.send_json(200, {"slug": slug, "location": loc, "missing": True})
+                try:
+                    os.mkdir(loc)
+                except OSError as e:
+                    return self.send_json(400, {"error": f"Couldn't make {loc}: {e}"})
+                print(f"safekeeping: made {loc} for {slug}", flush=True)
+            real = os.path.realpath(loc)
+            if real == projects or real.startswith(projects + os.sep):
+                return self.send_json(400, {"error": "Safekeeping can't be inside Studio's projects folder"})
+            if not os.access(loc, os.W_OK):
+                return self.send_json(400, {"error": f"Studio can't write to {loc}"})
+        info = read_project(folder)
+        if loc != info.get("safekeeping"):
+            # The last copy was to the old location (its copies stay there,
+            # untouched); a new location, or none, starts its record afresh.
+            info.pop("last_copy", None)
+        info["safekeeping"] = loc
+        write_project(folder, info)
+        self.send_json(200, {"slug": slug, "location": loc})
+
+    def clear_safekeeping(self):
+        # {slug}: a fresh start for the project's safekeeping. Its copy,
+        # <location>/<slug>/, goes to the system Trash (trash_path; a
+        # mistake is recoverable until the Trash is emptied), the record of
+        # the last copy is forgotten, and the location stays, so the next
+        # copy copies everything again.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        found = self.project_folder(body)
+        if not found:
+            return
+        slug, folder = found
+        info = read_project(folder)
+        loc = info.get("safekeeping")
+        dest = os.path.join(loc, slug) if loc else ""
+        if not dest or not os.path.isdir(dest):
+            return self.send_json(404, {"error": "There is no safekeeping copy to clear"})
+        if not SAFE_LOCK.acquire(blocking=False):
+            return self.send_json(409, {"error": "A copy is running"})
+        try:
+            to = trash_path(f"Bram Studio - {info.get('name') or slug} - safekeeping copy")
+            os.rename(dest, to)
+        except OSError as e:
+            return self.send_json(500, {"error": f"Couldn't move {dest} to the Trash: {e}"})
+        finally:
+            SAFE_LOCK.release()
+        info.pop("last_copy", None)
+        write_project(folder, info)
+        print(f"safekeeping: cleared {dest} to {to}", flush=True)
+        self.send_json(200, {"cleared": dest, "as": os.path.basename(to)})
+
+    def copy_project(self):
+        # {slug}: copy the project to its safekeeping location, as
+        # <location>/<slug>/ laid out like the project folder, so bringing it
+        # back would be a plain copy the other way. A file already there with
+        # the same size and time is skipped; nothing there is ever deleted,
+        # and files there that the project no longer has are counted. The
+        # database is taken with SQLite's backup, so it is consistent.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        found = self.project_folder(body)
+        if not found:
+            return
+        slug, folder = found
+        info = read_project(folder)
+        loc = info.get("safekeeping")
+        if not loc:
+            return self.send_json(409, {"error": "Set a safekeeping location first"})
+        if not os.path.isdir(loc):
+            return self.send_json(409, {"error": f"The safekeeping location isn't there: {loc}"})
+        why = self.busy() if folder == studio_paths.PROJECT else None
+        if why:
+            return self.send_json(409, {"error": f"Can't copy the open project now: {why}"})
+        if not SAFE_LOCK.acquire(blocking=False):
+            return self.send_json(409, {"error": "A copy is already running"})
+        try:
+            started, dest = time.time(), os.path.join(loc, slug)
+            files = keep_files(folder)
+            copied = skipped = size = 0
+            for src, rel in files:
+                to = os.path.join(dest, rel)
+                size += os.path.getsize(src)
+                if same_file(src, to):
+                    skipped += 1
+                    continue
+                os.makedirs(os.path.dirname(to), exist_ok=True)
+                tmp = os.path.join(os.path.dirname(to), f".{os.path.basename(to)}.part")
+                shutil.copy2(src, tmp)
+                os.replace(tmp, to)
+                copied += 1
+            os.makedirs(dest, exist_ok=True)
+            tmp = os.path.join(dest, ".studio.db.part")
+            src_db, dst_db = sqlite3.connect(os.path.join(folder, "studio.db")), sqlite3.connect(tmp)
+            try:
+                src_db.backup(dst_db)
+            finally:
+                dst_db.close()
+                src_db.close()
+            os.replace(tmp, os.path.join(dest, "studio.db"))
+            size += os.path.getsize(os.path.join(dest, "studio.db"))
+            kept = {rel for _, rel in files} | {"studio.db", "project.json"}
+            extra = sum(1 for root, _, names in os.walk(dest) for n in names
+                        if not n.startswith(".") and os.path.relpath(os.path.join(root, n), dest) not in kept)
+            info["last_copy"] = {"at": time.strftime("%Y-%m-%d %H:%M", time.localtime(started)), "at_s": started,
+                                 "to": dest, "files": len(files) + 2, "bytes": size, "copied": copied + 2,
+                                 "skipped": skipped, "extra": extra, "seconds": round(time.time() - started, 1)}
+            write_project(folder, info)
+            shutil.copy2(os.path.join(folder, "project.json"), os.path.join(dest, "project.json"))
+        except (OSError, sqlite3.Error) as e:
+            return self.send_json(500, {"error": f"The copy didn't finish: {e}"})
+        finally:
+            SAFE_LOCK.release()
+        print(f"safekeeping: {slug} to {dest}: {copied} copied, {skipped} unchanged, {extra} there not in the "
+              f"project, {info['last_copy']['seconds']}s", flush=True)
+        self.send_json(200, info["last_copy"])
 
     def clean_project(self):
         # {slug, what, days, dry}: a clean-up button of the Projects page.

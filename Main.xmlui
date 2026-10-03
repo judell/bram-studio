@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutPreview="{null}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -216,8 +216,104 @@
     function projectFacts(p) {
       const facts = [p.takes + (p.takes === 1 ? ' take' : ' takes'), p.seconds + ' s', formatFileSizeInBytes(p.bytes)];
       if (p.changed) facts.push('changed ' + p.changed.substring(5));
+      if (p.safekeeping.last) facts.push('copied ' + p.safekeeping.last.at.substring(5)
+        + (p.safekeeping.changed_since ? ' (changed since)' : ''));
       if (p.stray.length) facts.push(p.stray.length + (p.stray.length === 1 ? ' stray item' : ' stray items'));
       return facts.join(' · ');
+    }
+    // Safekeeping (the Projects page): where a project's copies go, what the
+    // last copy was, and making one (set_safekeeping and copy_project in
+    // serve_media.py). The copy runs while you wait; copyingProject shows it.
+    function safekeepingNote(s) {
+      if (!s.location) return 'No safekeeping location yet.';
+      if (!s.exists) return 'The location isn\'t there now: ' + s.location;
+      if (!s.last) return 'Not copied yet.';
+      return 'Last copied ' + s.last.at.substring(5) + ': ' + s.last.files + ' files, '
+        + formatFileSizeInBytes(s.last.bytes) + (s.changed_since ? '. The project has changed since.' : '. Unchanged since.')
+        + (s.last.extra ? ' ' + s.last.extra + (s.last.extra === 1 ? ' file' : ' files')
+          + ' there are no longer in the project (copies never delete).' : '');
+    }
+    // The location's button: Change (a location is saved, not being
+    // edited), Set (the box differs from what's saved) or Cancel (it
+    // doesn't). The page's state is passed in, so the expressions that call
+    // these follow it.
+    function safeEditing(p, editing) { return !p.safekeeping.location || editing === p.slug; }
+    function safeDraft(p, drafts) {
+      const d = drafts[p.slug];
+      return (d === undefined ? (p.safekeeping.location || '') : d).trim();
+    }
+    function setSafeDraft(slug, v) {
+      const d = Object.assign({}, safeDrafts);
+      d[slug] = v;
+      safeDrafts = d;
+    }
+    function safeButtonLabel(p, editing, drafts) {
+      if (!safeEditing(p, editing)) return 'Change';
+      return p.safekeeping.location && safeDraft(p, drafts) === p.safekeeping.location ? 'Cancel' : 'Set';
+    }
+    function safeButtonEnabled(p, editing, drafts) {
+      return safeButtonLabel(p, editing, drafts) !== 'Set' || safeDraft(p, drafts) !== '';
+    }
+    function safeButton(p) {
+      const label = safeButtonLabel(p, editingSafe, safeDrafts);
+      if (label === 'Change') {
+        setSafeDraft(p.slug, p.safekeeping.location);
+        editingSafe = p.slug;
+      } else if (label === 'Cancel') {
+        editingSafe = '';
+      } else if (setSafekeeping(p.slug, safeDraft(p, safeDrafts))) {
+        editingSafe = '';
+      }
+    }
+    // Saves a location; true once saved. A folder that isn't there yet is
+    // offered to be made (the server asks for create: true before making it).
+    function setSafekeeping(slug, location, create) {
+      let saved = false;
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/safekeeping', method: 'post',
+          body: { slug: slug, location: location, create: !!create }, invalidates: [] });
+        if (r.missing) {
+          const yes = confirm('Make the folder?', 'There is no folder at ' + r.location + ' yet. Make it, and send copies there?',
+            'Make it', 'Cancel');
+          return yes ? setSafekeeping(slug, location, true) : false;
+        }
+        toast.success(r.location ? 'Copies will go to ' + r.location + '.'
+          : 'No safekeeping location now. Copies already made are still where they were.');
+        saved = true;
+      } catch (e) {
+        toast.error(e.message);
+      }
+      projects.refetch();
+      return saved;
+    }
+    function clearSafekeepingQuestion(p) {
+      const s = p.safekeeping;
+      return 'Move the safekeeping copy of ' + p.name + ' (' + s.copy_path
+        + (s.last ? ', ' + s.last.files + ' files, ' + formatFileSizeInBytes(s.last.bytes) : '')
+        + ') to the Trash? The location stays set; the next Copy to safekeeping copies everything again.';
+    }
+    function clearSafekeeping(p) {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/projects/safekeeping/clear', method: 'post',
+          body: { slug: p.slug }, invalidates: [] });
+        toast.success('The safekeeping copy of ' + p.name + ' is in the Trash.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      projects.refetch();
+    }
+    function copyToSafekeeping(p) {
+      copyingProject = p.slug;
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/copy', method: 'post',
+          body: { slug: p.slug }, invalidates: [] });
+        toast.success('Copied ' + p.name + ': ' + (r.copied - 2) + ' files new or changed, ' + r.skipped
+          + ' unchanged, ' + formatFileSizeInBytes(r.bytes) + ' in all.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      copyingProject = '';
+      projects.refetch();
     }
     // A stray item's Delete (the Projects page): the question the click asks
     // first, and the move to the macOS Trash once the answer is yes.
@@ -522,6 +618,45 @@
               " />
           </HStack>
         </Items>
+        <!-- Safekeeping, last in the project: a copy of the project in a
+             folder you name (a OneDrive folder, say), of what can't be made
+             again and what re-mixing needs (KEEP in serve_media.py). Copy is
+             dimmed while nothing has changed since the last copy. -->
+        <VStack gap="$space-1" paddingLeft="$space-4" paddingVertical="$space-2">
+          <!-- The saved location reads as text with Change; Change turns it
+               into a box, and the button becomes Set once the text differs
+               (Cancel while it doesn't). With no location yet, the box shows.
+               The box's text is kept per project in safeDrafts, through its
+               onDidChange, as the Exports notes are (noteBuffer). -->
+          <HStack verticalAlignment="center">
+            <Text value="Safekeeping" width="170px" />
+            <Text when="{!safeEditing($item, editingSafe)}" value="{$item.safekeeping.location}" width="*" />
+            <TextBox when="{safeEditing($item, editingSafe)}" width="*" initialValue="{$item.safekeeping.location}"
+              placeholder="A folder for copies, such as ~/Library/CloudStorage/OneDrive-Personal"
+              onDidChange="(v) => setSafeDraft($item.slug, v)" />
+            <Button label="{safeButtonLabel($item, editingSafe, safeDrafts)}" variant="outlined" size="sm"
+              enabled="{safeButtonEnabled($item, editingSafe, safeDrafts)}"
+              onClick="safeButton($item)" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Spinner when="{copyingProject === $item.slug}" />
+            <Text variant="secondary" width="*"
+              value="{copyingProject === $item.slug ? 'Copying…' : safekeepingNote($item.safekeeping)}" />
+            <Button label="Copy to safekeeping" variant="outlined" size="sm"
+              enabled="{$item.safekeeping.exists &amp;&amp; $item.safekeeping.changed_since !== false &amp;&amp; !copyingProject &amp;&amp; !capturing}"
+              tooltip="{$item.safekeeping.changed_since === false ? 'Nothing has changed since the last copy' : 'Copy the takes, their re-mix ingredients, exports and logs; unchanged files are skipped'}"
+              onClick="copyToSafekeeping($item)" />
+            <!-- A fresh start: the copy goes to the Trash (after asking), the
+                 location stays, and the next Copy copies everything again. -->
+            <Button label="Clear safekeeping" variant="outlined" size="sm" themeColor="attention"
+              enabled="{$item.safekeeping.copy_exists &amp;&amp; !copyingProject &amp;&amp; !capturing}"
+              tooltip="Move this project's safekeeping copy to the Trash, for a fresh start"
+              onClick="
+                const yes = confirm('Clear safekeeping', clearSafekeepingQuestion($item), 'Move to Trash', 'Keep');
+                if (yes) clearSafekeeping($item);
+              " />
+          </HStack>
+        </VStack>
         </VStack>
         </ExpandableItem>
         <!-- The summary's own top padding (padding-summary-ExpandableItem),

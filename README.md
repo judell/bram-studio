@@ -73,6 +73,13 @@ deleted more than 7 days ago; Studio can no longer restore them afterwards), and
 the category, so the space comes back when you empty the Trash. Takes, re-mix
 ingredients and exports have no button.
 
+Projects aren't committed (they are recordings of your screen and voice, and they change
+with every edit), so each one can name a **safekeeping** folder, a OneDrive or other synced
+folder, say. **Copy to safekeeping** copies the takes, their re-mix ingredients, the exports,
+the logs and a consistent copy of the database into `<folder>/<project>/`, laid out as the
+project is. A later copy skips unchanged files and never deletes anything there. Undo
+history, deleted and discarded files, stray files and the source movies aren't copied.
+
 A Studio from before projects keeps working from the repo's own `studio.db`, `media/`
 and `work/`. To move it into a project, stop `serve_media.py` and run
 `python3 migrate_project.py <folder-name> "<Name>"`.
