@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseAt="{0}" var.pauseSeed="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -1333,7 +1333,7 @@
              in each, the slider at full width, then its controls on a second
              row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a
              slider mounted again would show its last seed (initialValue), not
-             where its handles were dragged, while lastCut / pauseAt / narrClip
+             where its handles were dragged, while lastCut / narrClip
              still held the dragged values. Switching tabs ends an audition,
              whose buttons would be out of sight. The Theme makes the tab strip
              compact. The Timers stay outside: Tabs shows only TabItems. -->
@@ -1654,30 +1654,25 @@
             value="{'This cut goes through the narration at ' + (narrs.value || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
         </VStack>
         </TabItem>
-        <!-- Insert a pause: one handle marks where (moving it seeks the player
-             to the frame that will be held), a NumberBox says how long. The
-             length is remembered in localStorage as the next default
-             (https://www.xmlui.org/docs/globals#local-storage-utilities). The
-             handle is placed from the playhead by re-seeding initialValue
-             (pauseSeed), as for the cut slider. -->
+        <!-- Insert a pause at the playhead: the handle is the player's
+             playhead (playerTime, which follows the player every 40 ms while
+             it plays and on every seek, re-seeds initialValue, which fires no
+             events: https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain),
+             and dragging it seeks the player, so the two are one position. A
+             NumberBox says how long; the length is remembered in localStorage
+             as the next default
+             (https://www.xmlui.org/docs/globals#local-storage-utilities). -->
         <TabItem label="Pause">
         <VStack>
           <Slider id="pauseSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
-            initialValue="{pauseSeed}"
+            initialValue="{playerTime}"
             valueFormat="{(v) => v.toFixed(2) + 's'}"
             enabled="{!pauseTake.inProgress}"
             onDidChange="(v) => {
               audition = null;
-              pauseAt = v;
               takePlayer.seek(v);
             }" />
           <HStack verticalAlignment="center">
-          <Button label="Set at playhead" size="xs" variant="outlined"
-            tooltip="Put the pause at the playhead"
-            onClick="
-              pauseSeed = takePlayer.getCurrentTime();
-              pauseAt = pauseSeed;
-            " />
           <NumberBox width="110px" initialValue="{pauseSecs}" minValue="{0.5}" maxValue="{30}" step="{0.5}"
             endText="s" tooltip="How long the pause lasts (remembered as the default)"
             onDidChange="(v) => {
@@ -1687,7 +1682,7 @@
               }
             }" />
           <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
-            tooltip="{'Hold the frame at ' + pauseAt.toFixed(2) + ' s for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
+            tooltip="{'Hold the frame at ' + playerTime.toFixed(2) + ' s (the playhead) for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
             enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
@@ -1695,7 +1690,7 @@
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               calloutText.setValue(''); calloutTail.setValue('none');
-              pauseTake.execute({ id: editTake, at: pauseAt, seconds: pauseSecs });
+              pauseTake.execute({ id: editTake, at: takePlayer.getCurrentTime(), seconds: pauseSecs });
               cutSeq = cutSeq + 1;
               edits.refetch();
               narrs.refetch();
@@ -1708,8 +1703,8 @@
           </HStack>
           <!-- The same warning for a pause that falls inside a narration. -->
           <Text color="$color-warn-700"
-            when="{(narrs.value || []).some((n) => pauseAt > n.t_in + 0.04 &amp;&amp; pauseAt &lt; n.t_out - 0.04)}"
-            value="{'This pause falls inside the narration at ' + (narrs.value || []).filter((n) => pauseAt > n.t_in + 0.04 &amp;&amp; pauseAt &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
+            when="{(narrs.value || []).some((n) => playerTime > n.t_in + 0.04 &amp;&amp; playerTime &lt; n.t_out - 0.04)}"
+            value="{'This pause falls inside the narration at ' + (narrs.value || []).filter((n) => playerTime > n.t_in + 0.04 &amp;&amp; playerTime &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
         </VStack>
         </TabItem>
         <!-- Narrate over a stretch: two handles mark the clip, as on the Cut
@@ -1939,7 +1934,6 @@
                 playing = $item.url;
                 editTake = $item.id;
                 editFile = $item.file;
-                pauseAt = 0; pauseSeed = 0;
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 narrClip = [0, 1]; narrSeed = [0, 1];
                 editCallout = null; calloutBox = null; lastSprite = null;
