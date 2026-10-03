@@ -13,7 +13,9 @@ queries from its studio.db. /tests/<name> serves the Audio bench's shared
 recordings. GET /projects lists the project folders, with what each one's
 disk space is for and what in it isn't Studio's (project_usage);
 POST /projects/stray/delete {slug, path} moves such a stray item to the
-macOS Trash; POST /projects/open
+system Trash, and POST /projects/clean {slug, what, days, dry} does the same
+for a project's discarded files, deleted takes (restorable ones), or undo
+history; POST /projects/open
 {slug} and /projects/new {name} switch to one, by starting this server over
 on it (refused while a take, narration, render, export or edit is under way).
 
@@ -153,24 +155,76 @@ def push(message):
 USAGE = (("takes", "Takes", "the takes, their clean copies, replaced narration audio, previews"),
          ("remix", "Re-mix ingredients", "sessions and tracks of the takes in the list"),
          ("exports", "Exports", "everything on the Exports page"),
+         ("logs", "Logs", "logs Studio wrote, kept for tracing what happened"),
          ("undo", "Undo history", "what the History tab can still restore"),
-         ("deleted", "Deleted", "deleted takes and exports, and those takes' recordings"),
-         ("discarded", "Discarded recordings", "sessions of takes no longer in the list, and render leftovers"),
+         ("deleted", "Deleted takes", "takes you deleted that Studio can still restore, with their recordings"),
+         ("discarded", "Discarded", "what nothing in Studio uses or can restore: deleted exports, takes deleted "
+          "before Undo delete existed, abandoned recordings, render leftovers"),
          ("stray", "Stray", "not Studio's: listed below"))
 MOVIES = (".mp4", ".mov", ".m4v")
 # In media/.trash/: a step of a take's edit history (apply_take_edit, remix_take.py).
 HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|pause|narrate|unnarrate|remix)-\d{8}-\d{6}\.\w+$")
 
 
+# The clean-up buttons on the Projects page, per category: (label, days, what
+# the confirmation says is lost). days: only what was deleted at least that
+# long ago. Takes, re-mix ingredients and exports have none.
+CLEAN = {"discarded": [("Clean up", 0, "Nothing in Studio uses these or can restore them; the takes in the list "
+                        "aren't affected.")],
+         # Every category's button is "Clean up"; deleted takes also offer the
+         # older ones alone, while there are any.
+         "deleted": [("Clean up", 0, "These deleted takes can then no longer be restored in Studio."),
+                     ("Only older than 7 days", 7, "Takes deleted more than 7 days ago can then no longer "
+                      "be restored in Studio.")],
+         "undo": [("Clean up", 0, "The takes stay as they are now. Their History starts over, so the edits made "
+                   "so far can no longer be undone.")]}
+
+
+# What each clean-up costs, said beside its button and first in its
+# confirmation, so it is plain which ones end an undo and which end nothing.
+# (Re-mixing survives all three: remix_take.py --regate replays a take's cuts
+# and pauses from its own JSON, not from the undo history.)
+LOSES = {"undo": "Undo for every edit made so far",
+         "deleted": "Undo delete for these takes",
+         "discarded": "nothing Studio uses"}
+
+
+# What depends on the operating system is in these three functions.
+def disk_size(st):
+    # A file's size on disk, from its stat. Python has st_blocks on macOS and
+    # Linux, not on Windows: there, the file's length.
+    return st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+
+
+def trashed_at(path):
+    # When something was moved into a project's .trash. A move changes the
+    # file's change time (st_ctime) on macOS and Linux and leaves its
+    # modification time alone. (On Windows st_ctime is the creation time;
+    # nothing is cleaned by age there until trash_path has a Windows answer.)
+    return os.lstat(path).st_ctime
+
+
+def trash_path(name):
+    # Where something called `name` goes in the system Trash, with the time
+    # in its name so it can't land on something already there. A move within
+    # the disk is instant whatever the size, and a wrong click is recoverable
+    # until the Trash is emptied. macOS only so far: the Windows Recycle Bin
+    # and Linux's trash folder each need their own answer here.
+    if sys.platform != "darwin":
+        raise OSError("Studio can only move things to the Trash on macOS for now")
+    stem, ext = os.path.splitext(name)
+    return os.path.expanduser(f"~/.Trash/{stem} {time.strftime('%Y-%m-%d %H.%M.%S')}{ext}")
+
+
 def tree_size(path):
     # (bytes on disk, files) under a file or a folder; links aren't followed.
     if os.path.islink(path) or not os.path.isdir(path):
-        return os.lstat(path).st_blocks * 512, 1
+        return disk_size(os.lstat(path)), 1
     size = files = 0
     for root, _, names in os.walk(path):
         for n in names:
             try:
-                size += os.lstat(os.path.join(root, n)).st_blocks * 512
+                size += disk_size(os.lstat(os.path.join(root, n)))
                 files += 1
             except OSError:
                 pass
@@ -205,7 +259,14 @@ def project_usage(folder):
     # accounted for by name; what is left is stray: an editor's project
     # folder, a file dropped in. In exports/ an .mp4 is expected whoever
     # wrote it (an edited export is saved there); anything else is stray.
-    live_files, deleted_files = set(), set()
+    # For the clean-up buttons (clean_project) it also returns _paths, each
+    # category's files and folders, and _when, when each deleted one was
+    # deleted.
+    # Deleted means restorable: a take Studio's Undo delete can bring back,
+    # from its record in .trash. Anything else in .trash (a deleted export,
+    # which has no undo; a take deleted before Undo delete existed) is
+    # discarded, with what else nothing uses.
+    live_files, deleted_files, deleted_at, restorable = set(), set(), {}, set()
     try:
         db = sqlite3.connect(f"file:{urllib.parse.quote(os.path.join(folder, 'studio.db'))}?mode=ro", uri=True)
         try:
@@ -228,17 +289,32 @@ def project_usage(folder):
         if n.endswith(".json") and not n.startswith(".") and not HISTORY_FILE.match(n):
             try:
                 with open(os.path.join(trash, n)) as fh:
-                    deleted_files.add(json.load(fh)["take"]["file"])
+                    record = json.load(fh)
+                file = record["take"]["file"]
+                deleted_files.add(file)
+                restorable |= {n, *record.get("files", {}).values()}  # the record and what it restores
+                # Its recordings in work/ were deleted when it was.
+                _, names, sessions = take_keys(folder, [file])
+                for key in names | sessions:
+                    deleted_at[key] = trashed_at(os.path.join(trash, n))
             except (OSError, ValueError, KeyError, TypeError):
                 pass
     live_media, live_work, live_sessions = take_keys(folder, live_files)
     _, deleted_work, deleted_sessions = take_keys(folder, deleted_files - live_files)
     size, count, stray = collections.Counter(), collections.Counter(), []
+    paths, when = collections.defaultdict(list), {}
 
     def add(kind, path):
         b, n = tree_size(path)
         size[kind] += b
         count[kind] += n
+        paths[kind].append(path)
+        if kind == "deleted":
+            name = os.path.basename(path)
+            if os.path.dirname(path) == trash:
+                when[path] = trashed_at(path)
+            else:
+                when[path] = next((t for key, t in deleted_at.items() if name == key or of_take(name, [key])), 0)
         if kind == "stray":
             stray.append({"path": os.path.relpath(path, folder), "bytes": b,
                           "folder": os.path.isdir(path) and not os.path.islink(path)})
@@ -257,7 +333,8 @@ def project_usage(folder):
         elif n == ".trash":
             for c in entries(p):
                 m = HISTORY_FILE.match(c)
-                add("undo" if c == ".undo-floor" or (m and m.group(1) in live_media) else "deleted", os.path.join(p, c))
+                add("undo" if m and m.group(1) in live_media else "deleted" if c in restorable else "discarded",
+                    os.path.join(p, c))
         elif n == "exports":
             for c in entries(p):
                 cp = os.path.join(p, c)
@@ -279,12 +356,104 @@ def project_usage(folder):
             # Renders on their way to media/ and overlay.py's scratch folders:
             # nothing reads them once the take is registered.
             add("discarded", p)
+        elif n.endswith(".log") and os.path.isfile(p):
+            # A log (serve_media.log ran here before it moved to the repo):
+            # kept for forensics, so neither stray nor offered for clean-up.
+            add("logs", p)
         else:
             add("stray", p)
     return {"bytes": sum(size.values()),
             "categories": [{"key": k, "label": label, "about": about, "bytes": size[k], "files": count[k]}
                            for k, label, about in USAGE],
-            "stray": stray}
+            "stray": stray, "_paths": paths, "_when": when}
+
+
+def clean_paths(folder, what, days, usage=None):
+    # What a clean-up button would remove: that category's files and folders,
+    # for "deleted" only those deleted at least `days` days ago. usage: the
+    # folder's project_usage, when it is already at hand.
+    usage = usage or project_usage(folder)
+    found = usage["_paths"].get(what, []) if what in CLEAN else []
+    if what == "deleted" and days:
+        found = [p for p in found if usage["_when"].get(p, 0) <= time.time() - days * 86400]
+    return found
+
+
+TAKE_NAME = re.compile(r"(take-\d{8}-\d{6}|perf-\d+)")  # the take a work/ or .trash file is part of
+# What each folder in a clean-up's "What would go" holds, one sentence, for
+# its hover: by clean-up (what), then folder; "*" for any clean-up.
+FOLDER_ABOUT = {
+    "*": {"work/sessions/": "One folder per recording: the microphone recording, the player's event log "
+                            "and the recorder's own output.",
+          "work/takes/": "Each take's separate voice and source tracks, which re-mixing its sound starts from.",
+          "work/narrated/": "What rendering leaves behind: the clips a take was stitched from, ink drawn "
+                            "frame by frame, and a copy of each finished take (the one in use is in media/)."},
+    "discarded": {"media/.trash/": "Files from the project's trash that Studio can't bring back: deleted "
+                                   "exports and takes deleted before Undo delete existed."},
+    "deleted": {"media/.trash/": "The deleted takes' videos and the records Undo delete restores them from."},
+    "undo": {"media/.trash/": "A copy of each take from before each edit, and the records the History tab "
+                              "undoes them from."}}
+TREE_ITEMS = 100  # entries listed per folder in the confirmation; the rest are counted
+
+
+def clean_summary(folder, what, found):
+    # (summary, tree) for a clean-up's confirmation. The summary counts what
+    # means something (sessions, takes, edits), not files: a take recorded
+    # with ink leaves a picture per frame, so files run to the thousands. The
+    # tree is two levels: the folders things go from, largest first, and in
+    # each what goes (a folder moved whole, like work/narrated, lists what is
+    # in it), largest first.
+    rel = [os.path.relpath(p, folder) for p in found]
+
+    def takes_in(names):
+        return {m.group(1) for m in (TAKE_NAME.match(os.path.basename(n)) for n in names) if m}
+
+    sessions = [r for r in rel if os.path.dirname(r) == os.path.join("work", "sessions")]
+    if what == "discarded":
+        tracks = takes_in(r for r in rel if os.path.dirname(r) == os.path.join("work", "takes"))
+        renders = set()
+        for p in found:
+            if os.path.basename(p) == "narrated" and os.path.isdir(p):
+                for root, dirs, names in os.walk(p):
+                    renders |= takes_in(dirs + names)
+        parts = []  # only what there is: no "0 recording sessions"
+        trashed = [r for r in rel if os.path.dirname(r) == os.path.join("media", ".trash")]
+        if trashed:
+            parts.append(f"{len(trashed)} file{'s' * (len(trashed) != 1)} from the project's trash that Studio "
+                         "can't restore (deleted exports, takes deleted before Undo delete)")
+        if sessions:
+            parts.append(f"{len(sessions)} recording session{'s' * (len(sessions) != 1)} of takes no longer in the list")
+        if tracks:
+            parts.append(f"the separate tracks of {len(tracks)} take{'s' * (len(tracks) != 1)} no longer in the list")
+        if renders:
+            parts.append(f"the render leftovers of {len(renders)} take{'s' * (len(renders) != 1)}")
+        parts = parts or ["leftover files"]
+        summary = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1]
+    elif what == "deleted":
+        records = [r for r in rel if os.path.dirname(r) == os.path.join("media", ".trash") and r.endswith(".json")]
+        summary = (f"{len(records)} deleted take{'s' * (len(records) != 1)}"
+                   + (f", with the recordings of {len(sessions)} of them" if sessions else ""))
+    else:
+        edits = [r for r in rel if r.endswith(".json")]
+        takes = {HISTORY_FILE.match(os.path.basename(r)).group(1) for r in edits if HISTORY_FILE.match(os.path.basename(r))}
+        summary = (f"the undo history of {len(takes)} take{'s' * (len(takes) != 1)}: "
+                   f"{len(edits)} edit{'s' * (len(edits) != 1)} and the copies of the take from before each")
+    groups = collections.defaultdict(list)
+    for p, r in zip(found, rel):
+        if os.path.isdir(p) and not os.path.islink(p) and os.path.dirname(r) == "work":
+            for c in sorted(os.listdir(p)):
+                groups[r].append(os.path.join(p, c))
+        else:
+            groups[os.path.dirname(r)].append(p)
+    tree = []
+    for g, ps in groups.items():
+        items = sorted(({"name": os.path.basename(p), "folder": os.path.isdir(p) and not os.path.islink(p),
+                         **dict(zip(("bytes", "files"), tree_size(p)))} for p in ps), key=lambda i: -i["bytes"])
+        about = FOLDER_ABOUT.get(what, {}).get(g + "/") or FOLDER_ABOUT["*"].get(g + "/", "")
+        tree.append({"path": g + "/", "about": about,
+                     "bytes": sum(i["bytes"] for i in items), "files": sum(i["files"] for i in items),
+                     "count": len(items), "items": items[:TREE_ITEMS], "more": max(0, len(items) - TREE_ITEMS)})
+    return summary, sorted(tree, key=lambda t: -t["bytes"])
 
 
 def shared_stray():
@@ -333,9 +502,19 @@ def project_info(slug):
             db.close()
     except (OSError, sqlite3.Error):
         pass
-    usage = project_usage(folder)
+    full = project_usage(folder)
+    usage = {k: v for k, v in full.items() if not k.startswith("_")}
     for s in usage["stray"]:
         s["slug"] = slug  # each row of the page's list says whose it is
+    for c in usage["categories"]:
+        # Its clean-up buttons, each saying what it is for (clean_project):
+        # only those that would remove something now, so "older than 7 days"
+        # goes away once nothing deleted is that old.
+        c["loses"] = LOSES.get(c["key"], "")
+        c["actions"] = [{"slug": slug, "project": name, "what": c["key"], "category": c["label"], "label": label,
+                         "days": days, "warning": warning, "loses": c["loses"]}
+                        for label, days, warning in CLEAN.get(c["key"], [])
+                        if clean_paths(folder, c["key"], days, full)]
     return {"slug": slug, "name": name, "takes": takes, "seconds": round(seconds, 1), "changed": changed,
             "open": folder == studio_paths.PROJECT, **usage}
 
@@ -1034,6 +1213,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.new_project()
         if self.path == "/projects/stray/delete":
             return self.delete_stray()
+        if self.path == "/projects/clean":
+            return self.clean_project()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -2295,14 +2476,61 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         item = next((s for s in (project_usage(base)["stray"] if slug else shared_stray()) if s["path"] == path), None)
         if not item:
             return self.send_json(404, {"error": f"{path} isn't a stray item (it may already be gone)"})
-        stem, ext = os.path.splitext(os.path.basename(path))
-        dest = os.path.expanduser(f"~/.Trash/{stem} {time.strftime('%Y-%m-%d %H.%M.%S')}{ext}")
         try:
+            dest = trash_path(os.path.basename(path))
             os.rename(os.path.join(base, path), dest)
         except OSError as e:
             return self.send_json(500, {"error": f"Couldn't move {path} to the Trash: {e}"})
         print(f"stray: moved {os.path.join(base, path)} to {dest}", flush=True)
         self.send_json(200, {"trashed": path, "bytes": item["bytes"], "as": os.path.basename(dest)})
+
+    def clean_project(self):
+        # {slug, what, days, dry}: a clean-up button of the Projects page.
+        # what is a category with buttons (CLEAN): "discarded", "deleted"
+        # (those deleted at least `days` days ago; 0 for all) or "undo".
+        # dry: only say what would go, {files, bytes}, for the confirmation.
+        # Otherwise everything goes to the system Trash as one folder named
+        # for the project and the category, laid out as it was in the
+        # project, so a mistake can be put back by hand. Nothing in the takes
+        # list, its re-mix ingredients or the exports is ever among it.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        slug, what, dry = body.get("slug"), body.get("what"), bool(body.get("dry"))
+        folder = os.path.join(studio_paths.PROJECTS, str(slug))
+        if (not isinstance(slug, str) or not slug or os.path.basename(slug) != slug or slug.startswith(".")
+                or not os.path.isfile(os.path.join(folder, "project.json"))):
+            return self.send_json(404, {"error": f"no project named {slug!r}"})
+        try:
+            days = max(0.0, float(body.get("days") or 0))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "days must be a number"})
+        if what not in CLEAN:
+            return self.send_json(400, {"error": f"nothing to clean called {what!r}"})
+        # The open project's recordings and history are in use while a take
+        # is being recorded or rendered, or an edit is being saved.
+        why = self.busy() if folder == studio_paths.PROJECT else None
+        if why and not dry:
+            return self.send_json(409, {"error": f"Can't clean up the open project now: {why}"})
+        with EDIT_LOCK:
+            found = clean_paths(folder, what, days)
+            sizes = [tree_size(p) for p in found]
+            total = {"files": sum(n for _, n in sizes), "bytes": sum(b for b, _ in sizes)}
+            if dry or not found:
+                summary, tree = clean_summary(folder, what, found) if dry and found else ("", [])
+                return self.send_json(200, {**total, "dry": dry, "summary": summary, "tree": tree})
+            try:
+                with open(os.path.join(folder, "project.json")) as f:
+                    name = json.load(f).get("name") or slug
+                dest = trash_path(f"Bram Studio - {name} - {dict((k, l) for k, l, _ in USAGE)[what]}")
+                for p in found:
+                    to = os.path.join(dest, os.path.relpath(p, folder))
+                    os.makedirs(os.path.dirname(to), exist_ok=True)
+                    os.rename(p, to)
+            except (OSError, ValueError) as e:
+                return self.send_json(500, {"error": f"Couldn't move it all to the Trash: {e}"})
+        print(f"clean: moved {total['files']} files ({total['bytes']} bytes) of {slug} {what} to {dest}", flush=True)
+        if folder == studio_paths.PROJECT:
+            notify("takes")  # an open History tab refetches
+        self.send_json(200, {**total, "as": os.path.basename(dest)})
 
     def new_project(self):
         # {name}: a new, empty project folder (studio_paths.py), then open it.

@@ -56,12 +56,22 @@ empty one; the open project's name shows at the top of the nav panel. Switching 
 export is under way.
 
 Each project is one line; expand it to see what its disk space is for: takes, re-mix ingredients,
-exports, undo history, deleted takes and exports, discarded recordings. Anything in a
+exports, logs (kept, never offered for clean-up), undo history, deleted takes (ones Studio can still restore), and discarded (what
+nothing in Studio uses or can restore). Anything in a
 project's folder that Studio didn't put there is listed as **stray**, with a count on the
 project's line: an editor's project folder saved beside an export, say.
 In the exports folder an `.mp4` is expected whoever wrote it; anything else is stray.
 **Delete** asks first, then moves the item to the macOS Trash. **Refresh** works the
 sizes out again.
+
+Three categories can be cleaned up from the same page, each with a button that says what
+it will move and asks first, and lets you look through it: **discarded** (the largest:
+deleted exports, takes deleted before Undo delete existed, abandoned recordings and
+render leftovers, none of which anything uses), **deleted takes** (all, or only those
+deleted more than 7 days ago; Studio can no longer restore them afterwards), and
+**undo history** (the takes stay as they are; their History starts over). What is removed goes to the Trash as one folder named for the project and
+the category, so the space comes back when you empty the Trash. Takes, re-mix
+ingredients and exports have no button.
 
 A Studio from before projects keeps working from the repo's own `studio.db`, `media/`
 and `work/`. To move it into a project, stop `serve_media.py` and run

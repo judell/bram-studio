@@ -212,6 +212,13 @@
     // https://www.xmlui.org/docs/globals) stops the refetch of every list
     // that would otherwise follow the call and land while the server is
     // starting over, each failing with a toast.
+    // A project's line on the Projects page, after its name.
+    function projectFacts(p) {
+      const facts = [p.takes + (p.takes === 1 ? ' take' : ' takes'), p.seconds + ' s', formatFileSizeInBytes(p.bytes)];
+      if (p.changed) facts.push('changed ' + p.changed.substring(5));
+      if (p.stray.length) facts.push(p.stray.length + (p.stray.length === 1 ? ' stray item' : ' stray items'));
+      return facts.join(' · ');
+    }
     // A stray item's Delete (the Projects page): the question the click asks
     // first, and the move to the macOS Trash once the answer is yes.
     function strayQuestion(item) {
@@ -222,6 +229,38 @@
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/projects/stray/delete', method: 'post',
           body: { slug: item.slug, path: item.path }, invalidates: [] });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      projects.refetch();
+    }
+    // A category's clean-up button (the Projects page). cleanPlan asks the
+    // server what the button would remove, without removing it ({files,
+    // bytes}; null, with a note, when that is nothing); cleanQuestion words
+    // the confirmation from it; cleanProject does it.
+    function cleanPlan(action) {
+      try {
+        const plan = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/clean', method: 'post',
+          body: { slug: action.slug, what: action.what, days: action.days, dry: true }, invalidates: [] });
+        if (!plan.files) {
+          toast(action.days ? 'Nothing here was deleted more than ' + action.days + ' days ago.' : 'Nothing to clean up.');
+          return null;
+        }
+        return plan;
+      } catch (e) {
+        toast.error(e.message);
+        return null;
+      }
+    }
+    function cleanQuestion(action, plan) {
+      return 'Move ' + plan.summary + ' (' + formatFileSizeInBytes(plan.bytes) + ') from ' + action.project
+        + ' to the Trash? ' + action.warning + ' The space comes back when you empty the Trash.';
+    }
+    function cleanProject(action) {
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/clean', method: 'post',
+          body: { slug: action.slug, what: action.what, days: action.days }, invalidates: [] });
+        toast.success('Moved ' + formatFileSizeInBytes(r.bytes) + ' to the Trash, as ' + r.as + '.');
       } catch (e) {
         toast.error(e.message);
       }
@@ -359,6 +398,50 @@
          Both go through switchProject (above). Rows are laid out like the
          Exports page's. -->
     <Page url="/projects">
+      <!-- A clean-up's confirmation, opened with {action, plan}
+           (https://www.xmlui.org/docs/howto/choose-between-imperative-and-state-driven-modal-dialogs):
+           the plan's summary counts what means something (sessions, takes,
+           edits), not files, which a take recorded with ink runs into the
+           thousands; below it, the folders things would go from, largest
+           first, each an expander listing what in it would go
+           (clean_summary in serve_media.py). Nothing moves until Move to
+           Trash. -->
+      <ModalDialog id="cleanDialog" title="{$param ? 'Clean up: ' + $param.action.category : ''}">
+        <Text variant="strong" value="{$param ? 'You lose: ' + $param.action.loses + '.' : ''}" />
+        <Text value="{$param ? cleanQuestion($param.action, $param.plan) : ''}" />
+        <Text variant="strong" value="What would go" />
+        <Items data="{$param ? $param.plan.tree : []}">
+          <!-- Hover says, in a sentence, what the folder holds
+               (FOLDER_ABOUT in serve_media.py). -->
+          <ExpandableItem iconPosition="start" fullWidthSummary="true" tooltip="{$item.about}">
+            <property name="summary">
+              <HStack width="100%" verticalAlignment="center">
+                <Text value="{$item.path}" width="*" />
+                <Text value="{$item.count + ($item.count === 1 ? ' item' : ' items')}" width="90px" />
+                <Text value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
+              </HStack>
+            </property>
+            <VStack gap="0">
+              <Items data="{$item.items}">
+                <HStack>
+                  <Text variant="secondary" value="{$item.name + ($item.folder ? '/' : '')}" width="*" />
+                  <Text variant="secondary" value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
+                </HStack>
+              </Items>
+              <Text when="{$item.more > 0}" variant="secondary" value="{'and ' + $item.more + ' more'}" />
+            </VStack>
+          </ExpandableItem>
+        </Items>
+        <HStack horizontalAlignment="end">
+          <Button label="Keep" variant="ghost" onClick="cleanDialog.close()" />
+          <Button label="Move to Trash" themeColor="attention"
+            onClick="
+              const action = $param.action;
+              cleanDialog.close();
+              cleanProject(action);
+            " />
+        </HStack>
+      </ModalDialog>
       <!-- Sizes are worked out when the list is fetched (project_usage in
            serve_media.py): at load, after a switch, and on Refresh. -->
       <HStack verticalAlignment="center">
@@ -382,28 +465,52 @@
         <HStack verticalAlignment="start">
         <ExpandableItem width="*" iconPosition="start" fullWidthSummary="true">
           <property name="summary">
-            <HStack verticalAlignment="center" width="100%">
-              <HStack width="*" verticalAlignment="center" gap="$space-2">
-                <Text value="{$item.name}" variant="{$item.open ? 'strong' : 'inherit'}" />
-                <Text when="{$item.stray.length > 0}"
-                  value="{$item.stray.length + ($item.stray.length === 1 ? ' stray item' : ' stray items')}" />
-              </HStack>
-              <Text value="{$item.takes + ($item.takes === 1 ? ' take' : ' takes')}" width="90px" />
-              <Text value="{$item.seconds + 's'}" width="90px" />
-              <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
-              <Text variant="secondary" value="{$item.changed ? 'changed ' + $item.changed.substring(5) : ''}" width="170px" />
+            <!-- One run of text, not columns: spaced out, the facts read as
+                 headers for the rows below, which they aren't. -->
+            <HStack verticalAlignment="center" width="100%" gap="$space-2">
+              <Text value="{$item.name}" variant="{$item.open ? 'strong' : 'inherit'}" />
+              <Text variant="secondary" value="{projectFacts($item)}" />
             </HStack>
           </property>
-        <VStack gap="$space-1">
+        <!-- Rows are parted by a light rule and a little padding, not a gap
+             (borderBottom, as in
+             https://www.xmlui.org/docs/howto/dock-elements-to-panel-edges). -->
+        <VStack gap="0">
         <Items data="{$item.categories}">
-          <HStack verticalAlignment="center" paddingLeft="$space-4" when="{$item.key !== 'stray' || $item.bytes > 0}">
-            <Text value="{$item.label}" width="190px" />
-            <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+          <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
+            borderBottom="1px solid $color-surface-200" when="{($item.key !== 'stray' &amp;&amp; $item.key !== 'logs') || $item.bytes > 0}">
+            <Text value="{$item.label}" width="170px" />
+            <Text value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
             <Text variant="secondary" value="{$item.about}" width="*" />
+            <!-- The category's clean-up buttons (CLEAN in serve_media.py;
+                 none for takes, re-mix ingredients and exports). A click
+                 first asks the server what would go, then asks you in
+                 cleanDialog (below), which says what is lost and lets you
+                 look through what would go. -->
+            <!-- A column of its own on every row, buttons or not, so the
+                 descriptions keep their width and the buttons line up. Two
+                 buttons stack rather than sit side by side, which kept the
+                 column narrow enough for a narrow window. The server sends
+                 only buttons that would remove something now. -->
+            <VStack width="210px" horizontalAlignment="end" gap="$space-1">
+              <Items data="{$item.actions}">
+                <Button label="{$item.label}" variant="outlined" size="sm" themeColor="attention"
+                  enabled="{!capturing}" tooltip="Move these to the Trash"
+                  onClick="
+                    const plan = cleanPlan($item);
+                    if (plan) cleanDialog.open({ action: $item, plan: plan });
+                  " />
+              </Items>
+              <!-- What the clean-up costs (LOSES in serve_media.py), under its
+                   button, so which ones end an undo is plain before a click. -->
+              <Text when="{$item.actions.length > 0}" variant="secondary" textAlign="end"
+                value="{'You lose: ' + $item.loses}" />
+            </VStack>
           </HStack>
         </Items>
         <Items data="{$item.stray}">
-          <HStack verticalAlignment="center" paddingLeft="$space-4">
+          <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
+            borderBottom="1px solid $color-surface-200">
             <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
             <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
             <!-- Asks first (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete). -->
