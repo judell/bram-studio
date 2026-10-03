@@ -589,6 +589,18 @@ def project_info(slug):
             "open": folder == studio_paths.PROJECT, "safekeeping": safekeeping_state(folder, info, full), **usage}
 
 
+ORDER = os.path.join(studio_paths.PROJECTS, ".order")  # the Projects page's drag order: a JSON list of slugs
+
+
+def read_order():
+    try:
+        with open(ORDER) as f:
+            order = json.load(f)
+        return [s for s in order if isinstance(s, str)] if isinstance(order, list) else []
+    except (OSError, ValueError):
+        return []
+
+
 def list_projects():
     # {open, name, projects, shared_stray, stray_count}: every project folder,
     # by name, with what its disk space is for (project_usage), and which one
@@ -599,6 +611,18 @@ def list_projects():
     except OSError:
         slugs = []
     projects = sorted(filter(None, map(project_info, slugs)), key=lambda p: p["name"].lower())
+    order = read_order()
+    if order:
+        # The Projects page's drag order (projects/.order). Projects it
+        # doesn't name yet (made since, or copied in) come first, newest
+        # first, as new takes go to the top of the Takes list.
+        def made(p):
+            st = os.stat(os.path.join(studio_paths.PROJECTS, p["slug"]))
+            return getattr(st, "st_birthtime", st.st_mtime)
+        new = sorted((p for p in projects if p["slug"] not in order), key=made, reverse=True)
+        projects = new + sorted((p for p in projects if p["slug"] in order), key=lambda p: order.index(p["slug"]))
+    for p in projects:
+        p["id"] = p["slug"]  # what the page's drag list keys rows by
     current = next((p for p in projects if p["open"]), None)
     shared = [{**s, "slug": ""} for s in shared_stray()]
     return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
@@ -1291,6 +1315,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.copy_project()
         if self.path == "/projects/safekeeping/clear":
             return self.clear_safekeeping()
+        if self.path == "/projects/reorder":
+            return self.reorder_projects()
         if self.path == "/record":
             return self.start_recording()
         if self.path == "/record/restart":
@@ -2615,6 +2641,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         info["safekeeping"] = loc
         write_project(folder, info)
         self.send_json(200, {"slug": slug, "location": loc})
+
+    def reorder_projects(self):
+        # {slugs}: the Projects page's drag order, saved to projects/.order
+        # (list_projects sorts by it). Only existing projects are kept.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        slugs = [s for s in body.get("slugs") or [] if isinstance(s, str) and os.path.basename(s) == s
+                 and not s.startswith(".") and os.path.isfile(os.path.join(studio_paths.PROJECTS, s, "project.json"))]
+        tmp = ORDER + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(slugs, f)
+        os.replace(tmp, ORDER)
+        self.send_json(200, {"order": slugs})
 
     def clear_safekeeping(self):
         # {slug}: a fresh start for the project's safekeeping. Its copy,

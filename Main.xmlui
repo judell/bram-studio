@@ -386,6 +386,10 @@
   <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
+  <!-- The Projects page's drag order, saved to projects/.order. -->
+  <APICall id="reorderProjects" method="post" url="http://127.0.0.1:8765/projects/reorder"
+    body="{$param}" invalidates="{[]}"
+    errorNotificationMessage="{$error.message}" />
   <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
        a take (overlay.py). Add/delete edit the list; render burns them in from
        the take's clean copy. -->
@@ -556,9 +560,15 @@
            summary, so clicking it doesn't also toggle the details. The inner
            lists have their own $item
            (https://www.xmlui.org/docs/reference/components/Items), so a stray
-           row carries its project's slug itself. -->
-      <Items data="{projects.value ? projects.value.projects : []}">
-        <HStack verticalAlignment="start">
+           row carries its project's slug itself. The list is a drag list like
+           the Takes list (DndItems, the xmlui-dnd-list extension): only the
+           grip drags, and the order is saved to projects/.order. -->
+      <DndItems data="{projects.value ? projects.value.projects : []}" dragHandle="true"
+        onReorder="(newOrder) => {
+          reorderProjects.execute({ slugs: newOrder.map(p => p.slug) });
+          projects.refetch();
+        }">
+        <HStack verticalAlignment="start" width="100%">
         <ExpandableItem width="*" iconPosition="start" fullWidthSummary="true">
           <property name="summary">
             <!-- One run of text, not columns: spaced out, the facts read as
@@ -669,7 +679,7 @@
             onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
         </HStack>
         </HStack>
-      </Items>
+      </DndItems>
       <!-- The same for what projects share: sources/ and the repo's media/. -->
       <H3 when="{projects.value &amp;&amp; projects.value.shared_stray.length > 0}">Stray items in shared folders</H3>
       <Items data="{projects.value ? projects.value.shared_stray : []}">
