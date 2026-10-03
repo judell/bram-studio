@@ -224,6 +224,21 @@
       audition = a;
       takePlayer.play();
     }
+    // The audio strip's bars (under the take player): one per slice of
+    // /takes/levels, px tall for its level from -60 dB (1 px) to 0 dB (24 px),
+    // narr when its middle falls inside a narration, t0-t1 the slice's
+    // time (for the playhead mark), and tip, what hovering it says.
+    function levelBars(lv, narrations) {
+      return lv.levels.map((db, i) => {
+        const t = (i + 0.5) * lv.binSecs;
+        const n = narrations.find((r) => t >= r.t_in && !(t > r.t_out));
+        const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Take audio';
+        const level = db > -60 ? Math.round(db) + ' dB' : 'silence';
+        return { px: Math.max(1, Math.round(Math.min(1, (db + 60) / 60) * 24)), narr: !!n,
+                 t0: i * lv.binSecs, t1: (i + 1) * lv.binSecs,
+                 tip: what + ' · ' + level + ' at ' + t.toFixed(2) + ' s' };
+      });
+    }
     // Cut's nudges: move one end of the marked stretch by delta seconds,
     // re-place the handles by re-seeding cutSeed (which fires no slider
     // events), and show that frame, as dragging a handle does. The stretch
@@ -491,6 +506,9 @@
        edit, undo and redo and whenever the takes change. undoEdit and
        redoEdit step back and forth through it. -->
   <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + (editTake || 0)}" />
+  <!-- The edited take's sound level per slice, for the audio strip under its
+       player; cutSeq (bumped by every edit) makes an edited take refetch. -->
+  <DataSource id="takeLevels" url="{'http://127.0.0.1:8765/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}" />
   <APICall id="undoEdit" method="post" url="http://127.0.0.1:8765/takes/undo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -1290,6 +1308,27 @@
             <Image src="{$item.url}" width="100%" />
           </property>
         </PointerLayer>
+        <!-- Where the take's audio lives: one bar per slice of the take
+             (takeLevels, serve_media.py's /takes/levels), its height the
+             slice's level from -60 dB (none) to 0 dB, coloured as a narration
+             or the take's own sound; the bar under the playhead (playerTime,
+             which follows the player while it plays and on every seek) is
+             drawn full height and dark. A take with no audio (every slice
+             under -60 dB) shows no strip. Hovering a bar says which, and the level
+             there (the tooltip behavior works on any visual component:
+             https://www.xmlui.org/docs/behaviors#tooltip). The strip spans the
+             editor; the player's scrubber has its own margins, so the two line
+             up roughly, not exactly. -->
+        <HStack when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!takeLevels.value &amp;&amp; takeLevels.value.levels.some((db) => db > -60)}"
+          height="24px" gap="0" verticalAlignment="end">
+          <Items data="{levelBars(takeLevels.value, narrs.value || [])}">
+            <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
+              <Stack when="{playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1}" height="24px" backgroundColor="$color-surface-900" />
+              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; $item.narr}" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
+              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; !$item.narr}" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
+            </VStack>
+          </Items>
+        </HStack>
         <!-- The take's edits, one per tab (https://www.xmlui.org/docs/reference/components/Tabs):
              in each, the slider at full width, then its controls on a second
              row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a

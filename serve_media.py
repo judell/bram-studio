@@ -108,6 +108,41 @@ def probe(path, entries, stream=None):
     return subprocess.run(args, capture_output=True, text=True).stdout.strip()
 
 
+# The take editor's audio strip: a take's sound level in LEVEL_BINS equal
+# slices, measured from the file its player plays (the clean copy, as
+# /clean/ serves it, or the take). RMS per slice in dB, by ffmpeg's astats
+# over 16 kHz mono (the recipe an earlier level check used); a silent slice
+# reads -inf, sent as -120. Cached by path and mtime: every edit rewrites
+# the file, so an edited take is measured again and an unchanged one isn't.
+LEVEL_BINS = 200
+LEVELS_CACHE = {}
+
+
+def take_levels(path):
+    key = (path, os.path.getmtime(path))
+    if key in LEVELS_CACHE:
+        return LEVELS_CACHE[key]
+    dur = float(probe(path, "format=duration") or 0)
+    if dur <= 0:
+        return {"binSecs": 0, "levels": []}
+    per = max(1, round(dur * 16000 / LEVEL_BINS))
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-af",
+                          f"aresample=16000,asetnsamples=n={per}:p=0,astats=metadata=1:reset=1,"
+                          "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+                          "-f", "null", "-"], capture_output=True, text=True).stdout
+    levels = []
+    for m in re.finditer(r"RMS_level=(\S+)", out):
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            v = -120.0
+        levels.append(round(max(v, -120.0), 1) if v == v else -120.0)
+    result = {"binSecs": round(per / 16000, 4), "levels": levels}
+    LEVELS_CACHE.clear()  # one take is edited at a time; keep only the latest
+    LEVELS_CACHE[key] = result
+    return result
+
+
 def stream_signature(path):
     # What must match for a stream-copy join: codecs, size, rates, channels.
     return probe(path, "stream=codec_name,width,height,r_frame_rate,sample_rate,channels")
@@ -1249,6 +1284,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.dictation_engine()
         if self.path.startswith("/takes/edits"):
             return self.list_edits()
+        if self.path.startswith("/takes/levels"):
+            return self.take_levels_route()
         if self.path == "/narrate/status":
             with DICTATION_LOCK:
                 n = narration["current"]
@@ -2313,6 +2350,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         return db, db.execute("SELECT * FROM takes WHERE id = ?", (take_id,)).fetchone()
+
+    def take_levels_route(self):
+        # GET /takes/levels?id=<take>: {binSecs, levels: [dB, ...]} for the
+        # take editor's audio strip (take_levels).
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            take_id = int(query.get("id", [""])[0])
+        except ValueError:
+            return self.send_json(200, {"binSecs": 0, "levels": []})
+        _, row = self.take_row(take_id)
+        if not row:
+            return self.send_json(200, {"binSecs": 0, "levels": []})
+        clean = os.path.join(ROOT, ".clean", row["file"])
+        path = clean if os.path.isfile(clean) else os.path.join(ROOT, row["file"])
+        if not os.path.isfile(path):
+            return self.send_json(200, {"binSecs": 0, "levels": []})
+        self.send_json(200, take_levels(path))
 
     def list_edits(self):
         # GET /takes/edits?id=<take>: the take's edit history for the History
