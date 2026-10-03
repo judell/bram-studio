@@ -1214,8 +1214,21 @@
              compact. The Timers stay outside: Tabs shows only TabItems. -->
         <Theme paddingVertical-trigger-Tabs="$space-1" paddingHorizontal-trigger-Tabs="$space-3"
           paddingTop-TabItem="$space-2">
+        <!-- Arriving on Cut starts the cut at the playhead and offers 5 s
+             (to the scene's end; at least the cut's 0.12 s), re-seeding
+             cutSeed, which fires no slider events. didChange passes the new
+             tab's index, id and label
+             (https://www.xmlui.org/docs/reference/components/Tabs). -->
         <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
-          onDidChange="audition = null">
+          onDidChange="(index, id, label) => {
+            audition = null;
+            if (label === 'Cut') {
+              const end = takePlayer.duration || editDur;
+              const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.12));
+              cutSeed = [s, Math.min(end, s + 5)];
+              lastCut = cutSeed;
+            }
+          }">
         <!-- Annotate: the current item's row (text, tail, In and Out where
              the recording view has Keep, Remove) and the take's items; click
              a name to make that item current and move the playhead to its
@@ -1487,8 +1500,8 @@
           <!-- Hear the stretch the cut would remove (playAudition), as the
                Narrate tab's rows hear a narration: whole, or its first or last
                3 s. Nothing changes on disk until Cut. -->
-          <Button label="Play clip" size="xs" variant="outlined"
-            tooltip="Play the marked stretch from start to end. Nothing is changed."
+          <Button label="Play cut" size="xs" variant="outlined"
+            tooltip="Play the stretch the cut would remove, from start to end. Nothing is changed."
             enabled="{!cutTake.inProgress}"
             onClick="playAudition(lastCut[0], lastCut[1], 'cut-clip')" />
           <Button label="Intro 3s" size="xs" variant="outlined"
