@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.applyingScene="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -259,8 +259,9 @@
       capClip = capSeed;
       sourcePlayer.seek(s);
     }
-    // Export: join all scenes into one video (Export's button, or the
-    // export check's dialog once it has had its say).
+    // Export: join all scenes into one video. The server applies any scene
+    // whose items changed since its last Apply first, so what each scene's
+    // list shows is what goes out.
     function startExport() {
       navigate('/exports');
       exportTakes.execute();
@@ -895,25 +896,10 @@
             }
           " />
         <Button label="Export" variant="outlined" size="sm"
-          tooltip="Join all scenes, in list order, into one video (first checking that their callouts are applied)"
+          tooltip="Join all scenes, in list order, into one video (any scene whose items changed since its last Apply is applied first)"
           enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
-          onClick="
-            try {
-              const st = Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/apply-status', method: 'get', invalidates: [] });
-              if (st &amp;&amp; st.needsApply) exportDialog.open(st);
-              else startExport();
-            } catch (e) {
-              toast.error(e.message);
-            }
-          " />
+          onClick="startExport()" />
       </HStack>
-      <!-- Export's check (/scenes/apply-status): a scene's file has its items
-           only as of its last Apply, and Export joins the files as they are,
-           so before exporting, every scene and its items are listed as
-           applied, not applied (new or changed since), or removed but still
-           in the video. Apply and export applies each scene that needs it,
-           one at a time (/overlay/render re-encodes it), then exports; a
-           failed Apply names its scene and nothing is exported. -->
       <!-- Scene callouts' confirmation: every scene, the callout it has (and
            whether it is applied), the one it would get, and any exact copies
            that would be removed; the button carries the plan out. -->
@@ -939,46 +925,6 @@
             " />
           <Button label="{$param &amp;&amp; ($param.add || $param.remove) ? 'Cancel' : 'Close'}" variant="ghost"
             onClick="calloutsDialog.close()" />
-        </HStack>
-      </ModalDialog>
-      <ModalDialog id="exportDialog" title="Some scenes have items that aren't applied">
-        <Text value="Export joins each scene's video as it was last applied, so these differences would be left out." />
-        <Items data="{$param ? $param.scenes : []}">
-          <VStack gap="$space-1" paddingVertical="$space-1">
-            <Text variant="strong" value="{$item.name + ($item.needsApply ? ' · needs Apply' : '')}" />
-            <Text when="{$item.items.length === 0}" variant="secondary" value="No callouts or shapes" />
-            <Items data="{$item.items}">
-              <Text value="{($item.status === 'applied' ? '✓ ' : '✗ ') + $item.label + ', ' + $item.t_in.toFixed(1) + '–' + $item.t_out.toFixed(1) + ' s: ' + $item.status}"
-                color="{$item.status === 'applied' ? '$color-surface-600' : '$color-warn-700'}" />
-            </Items>
-          </VStack>
-        </Items>
-        <Text when="{!!applyingScene}" value="{'Applying ' + applyingScene + '…'}" />
-        <HStack>
-          <Button label="Apply and export" themeColor="primary" enabled="{!applyingScene}"
-            handlerTimeoutMs:onClick="0"
-            onClick="
-              const todo = $param.scenes.filter((sc) => sc.needsApply);
-              let failed = false;
-              for (let i = 0; i &lt; todo.length &amp;&amp; !failed; i++) {
-                applyingScene = todo[i].name;
-                try {
-                  Actions.callApi({ url: 'http://127.0.0.1:8765/overlay/render', method: 'post', invalidates: [],
-                                    body: { id: todo[i].id } });
-                } catch (e) {
-                  failed = true;
-                  toast.error('Apply failed on ' + todo[i].name + ': ' + e.message + '. Nothing was exported.');
-                }
-              }
-              applyingScene = null;
-              takes.refetch();
-              applyState.refetch();
-              exportDialog.close();
-              if (!failed) startExport();
-            " />
-          <Button label="Export as is" variant="outlined" enabled="{!applyingScene}"
-            onClick="exportDialog.close(); startExport();" />
-          <Button label="Cancel" variant="ghost" enabled="{!applyingScene}" onClick="exportDialog.close()" />
         </HStack>
       </ModalDialog>
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
