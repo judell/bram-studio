@@ -945,9 +945,11 @@
            removed; add, changes and removal go into the event log (annotAdd,
            annotSet, annotRemove), and render.py/register.py make them editable
            items on the take (their on-air spans, last positions winning).
-           liveAnnots: the items up now; liveCur: the current one (last placed
-           or clicked), whose handles resize it and whose text and tail the row
-           below edits. Sprites come from
+           liveAnnots: the items up now; liveCur: the current one (placed while
+           the source was paused, or clicked), whose frame and handles show it
+           is being edited and whose text and tail the row below edits.
+           Pressing play lets go of it, so while the source plays the items
+           look as they will in the take. Sprites come from
            /annotations/sprites (sized from the source), the last set kept
            while the next loads so a dragged anchor never vanishes. -->
       <VStack when="{capturing}"
@@ -1063,9 +1065,14 @@
               liveSeq = cid;
               if (!liveAnnots.some((a) => !a.kept)) liveTick = null;
               liveAnnots = liveAnnots.concat([a]);
-              liveCur = cid;
-              liveText.setValue('');
-              liveTail.setValue('none');
+              // Placing while paused is setup: the new item is current, to
+              // type into. Placing while the source plays is performing: it
+              // goes up as it will be in the take, current only if clicked.
+              if (sourcePlayer.paused) {
+                liveCur = cid;
+                liveText.setValue('');
+                liveTail.setValue('none');
+              }
               logEvents([{ event: 'annotAdd', cid: cid, shape: a.shape, text: '', tail: 'none', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, wallMs: Date.now() }]);
             }
           }"
@@ -1073,7 +1080,14 @@
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => sourceAspect = e.videoWidth / e.videoHeight"
-          onPlay="(e) => { if (capturing) logEvents([{ event: 'play', currentTime: e.currentTime, wallMs: Date.now() }]) }"
+          onPlay="(e) => {
+            if (capturing) logEvents([{ event: 'play', currentTime: e.currentTime, wallMs: Date.now() }]);
+            if (liveCur !== null) {
+              liveCur = null;
+              liveText.setValue('');
+              liveTail.setValue('none');
+            }
+          }"
           onPause="(e) => { if (capturing) logEvents([{ event: 'pause', currentTime: e.currentTime, wallMs: Date.now() }]) }"
           onSeeked="(e) => { if (capturing) logEvents([{ event: 'seeked', currentTime: e.currentTime, wallMs: Date.now() }]) }"
           onEnded="(e) => { if (capturing) logEvents([{ event: 'ended', currentTime: e.currentTime, wallMs: Date.now() }]) }" />
@@ -1129,15 +1143,22 @@
               liveTail.setValue('none');
             " />
         </HStack>
-        <!-- Items up now: click one to make it current, ✕ to take it down. -->
+        <!-- Items up now: click one to make it current (again to let go of
+             it), ✕ to take it down. -->
         <Items data="{liveAnnots}">
           <HStack verticalAlignment="center">
             <Button size="xs" variant="{$item.cid === liveCur ? 'solid' : 'ghost'}"
               label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ($item.kept ? ' · kept' : ' · ' + Math.ceil($item.left) + ' s')}"
               onClick="
-                liveCur = $item.cid;
-                liveText.setValue($item.text);
-                liveTail.setValue($item.tail || 'none');
+                if (liveCur === $item.cid) {
+                  liveCur = null;
+                  liveText.setValue('');
+                  liveTail.setValue('none');
+                } else {
+                  liveCur = $item.cid;
+                  liveText.setValue($item.text);
+                  liveTail.setValue($item.tail || 'none');
+                }
               " />
             <Button icon="close" size="xs" variant="ghost" aria-label="Take this item down"
               onClick="
