@@ -1062,15 +1062,16 @@
            or dragging an item on the picture, or its name in the list, makes
            it current. annotKind is only the tool: what the next Command-drag
            places. A cut, a pause or Undo retimes items on the server, so
-           each of those lets go of the current item. curShown: paused, the
-           current item is always on the picture, with its handles, so it can
-           be edited from any playhead position; playing, it obeys its In and
-           Out like the rest, so Play always previews the take as it will be.
+           each of those lets go of the current item. curShown: the current
+           item is on the picture, with its handles, only within its In and
+           Out, paused or playing, as it will be in the take (shown at every
+           paused position, it looked on screen where it isn't). Picking it,
+           its In/Out nudges and placing it all put the playhead inside it.
            Clicking the current item's name in the list again lets go of it. -->
       <VStack when="{playing &amp;&amp; !capturing}"
         var.editDur="{((takes.value || []).find((t) => t.id === editTake) || { duration_s: 0 }).duration_s}"
         var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
-        var.curShown="{!!editCallout &amp;&amp; (takePlayer.paused || (playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut))}"
+        var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}"
         var.handleBox="{curShown &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (curShown ? calloutBox : null)}"
         var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
         <!-- The tools, above the player as when recording, and the player's
