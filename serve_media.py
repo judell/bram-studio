@@ -144,6 +144,19 @@ def take_levels(path):
     return result
 
 
+def scene_callout_box(file, text):
+    # A scene callout's box (scene_callouts): the name laid out as overlay.py
+    # draws it in the widest box allowed, then the box's left edge moved in
+    # to the text's width so it hugs the top-right corner. The text keeps its
+    # size, since it still fits exactly.
+    try:
+        W, H = overlay.video_size(os.path.join(ROOT, file))
+    except Exception:
+        return 0.31, 0.03, 0.97, 0.14
+    L = overlay.layout({"kind": "callout", "text": text, "x1": 0.31, "y1": 0.03, "x2": 0.97, "y2": 0.14}, W, H)
+    return round(max(0.31, 0.97 - L["bw"] / W - 0.002), 4), 0.03, 0.97, 0.14
+
+
 def stream_signature(path):
     # What must match for a stream-copy join: codecs, size, rates, channels.
     return probe(path, "stream=codec_name,width,height,r_frame_rate,sample_rate,channels")
@@ -1391,6 +1404,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.clip_take()
         if self.path == "/takes/rename":
             return self.rename_take()
+        if self.path == "/scenes/callouts":
+            return self.scene_callouts()
         if self.path == "/takes/pause":
             return self.pause_take()
         if self.path == "/takes/undo":
@@ -1987,14 +2002,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         row = db.execute("SELECT id, name, duration_s FROM takes WHERE file = ?", (fname,)).fetchone()
         if not row:
             return self.send_json(200, {"file": fname})
-        # Each new scene opens with its name in a callout at the top right for
-        # 3 s: an ordinary item (move, edit or remove it; Apply burns it in).
-        overlay.ensure_schema(db)
-        db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
-                   "VALUES (?, 'callout', ?, 0.74, 0.03, 0.97, 0.12, 0, ?, NULL, NULL)",
-                   (row[0], row[1], min(3.0, row[2] or 3.0)))
-        db.commit()
         self.send_json(200, {"id": row[0], "name": row[1], "duration": row[2]})
+
+    def scene_callouts(self):
+        # The scenes screen's Scene callouts: each scene without one gets a
+        # callout of its current name at the top right for its first 3 s, an
+        # ordinary item to move, edit or remove, burned in only by Apply. A
+        # scene has one when a callout starts at 0 s in the picture's
+        # top-right quarter, so pressing it again adds nothing.
+        # Its box: up to two-thirds of the width (from 0.31 to 0.97) and a
+        # little taller than a caption, so the name sits on one line in a
+        # large font (overlay.layout sets text at the largest size that fits
+        # its box); then the left edge comes in to the text's width, so a
+        # short name still sits at the top right (a callout's text starts at
+        # its box's left edge). A callout still in the box an earlier version
+        # gave (0.74, 0.03 - 0.97, 0.12, never moved) is refitted the same way.
+        db = sqlite3.connect(DB)
+        overlay.ensure_schema(db)
+        added, had, refit = 0, 0, 0
+        for tid, name, dur, file in db.execute("SELECT id, name, duration_s, file FROM takes").fetchall():
+            old = db.execute("SELECT id, text, x1, y1, x2, y2 FROM overlays WHERE take_id = ? AND kind = 'callout' "
+                             "AND t_in < 0.05 AND x1 >= 0.5 AND y1 <= 0.25", (tid,)).fetchone()
+            if old:
+                had += 1
+                if (round(old[2], 3), round(old[3], 3), round(old[4], 3), round(old[5], 3)) == (0.74, 0.03, 0.97, 0.12):
+                    db.execute("UPDATE overlays SET x1 = ?, y1 = ?, x2 = ?, y2 = ? WHERE id = ?",
+                               (*scene_callout_box(file, old[1]), old[0]))
+                    refit += 1
+                continue
+            db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
+                       "VALUES (?, 'callout', ?, ?, ?, ?, ?, 0, ?, NULL, NULL)",
+                       (tid, name, *scene_callout_box(file, name), min(3.0, dur or 3.0)))
+            added += 1
+        db.commit()
+        self.send_json(200, {"added": added, "had": had, "refit": refit})
 
     def rename_take(self):
         # {id, name}: a scene's name, as the list shows it (the file keeps its

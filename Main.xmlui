@@ -880,6 +880,24 @@
             exportTakes.execute();
             exports.refetch();
           " />
+        <!-- Scene callouts (/scenes/callouts): each scene without one gets a
+             3 s callout of its name at the top right, an ordinary item to
+             edit on the Annotate tab, burned in only by Apply (and only then
+             in an Export, which joins the scenes' files as they are). -->
+        <Button label="Scene callouts" variant="outlined" size="sm"
+          tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Apply"
+          enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
+          onClick="
+            try {
+              const r = Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post', invalidates: [], body: {} });
+              toast.success((r.added ? 'Added callouts to ' + r.added + ' scene' + (r.added === 1 ? '' : 's') + (r.had ? '; ' + r.had + ' already had one' : '') : 'Every scene already has a callout') + (r.refit ? ' (' + r.refit + ' resized to fit on one line)' : ''));
+            } catch (e) {
+              toast.error(e.message);
+            }
+            callouts.refetch();
+            savedSprites.refetch();
+            applyState.refetch();
+          " />
       </HStack>
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
         <Spinner />
