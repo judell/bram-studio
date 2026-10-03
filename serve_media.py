@@ -1308,6 +1308,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.list_edits()
         if self.path.startswith("/takes/levels"):
             return self.take_levels_route()
+        if self.path == "/scenes/apply-status":
+            return self.scenes_apply_status()
         if self.path == "/narrate/status":
             with DICTATION_LOCK:
                 n = narration["current"]
@@ -2490,6 +2492,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
         return db, db.execute("SELECT * FROM takes WHERE id = ?", (take_id,)).fetchone()
+
+    def scenes_apply_status(self):
+        # GET /scenes/apply-status, for Export: every scene in list order, and
+        # each of its items as applied (in the video exactly as it is now),
+        # not applied (new, or changed since the scene's last Apply), or
+        # removed but still in the video. Apply records the items it burned
+        # in as overlay.APPLIED_SQL's entries (id:text:x1:...:shape, joined by
+        # |), so each item's entry is made with the same SQL expression and
+        # looked up in that record. needsApply: the record differs from the
+        # items now, as the editor's Apply button reckons it.
+        entry = ("id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 "
+                 "|| char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) "
+                 "|| ifnull(shape, char(45))")
+        shapes = {"rect": "Box", "ellipse": "Oval", "arrow": "Arrow", "line": "Line", "pointer": "Pointer"}
+        def label(text, shape):
+            return shapes.get(shape, "Shape") if shape and shape != "-" else f'Callout "{text}"'
+        db = sqlite3.connect(DB)
+        overlay.ensure_schema(db)
+        out = []
+        for tid, name, record in db.execute(
+                "SELECT id, name, overlay_applied FROM takes ORDER BY position, created_at DESC").fetchall():
+            applied = set((record or "").split("|")) if record else set()
+            items, ids = [], set()
+            for oid, text, shape, t_in, t_out, sig in db.execute(
+                    f"SELECT id, text, shape, t_in, t_out, {entry} FROM overlays WHERE take_id = ? ORDER BY t_in, id",
+                    (tid,)).fetchall():
+                ids.add(str(oid))
+                items.append({"label": label(text, shape), "t_in": t_in, "t_out": t_out,
+                              "status": "applied" if sig in applied else "not applied"})
+            for e in sorted(applied):
+                parts = e.split(":")
+                if len(parts) >= 10 and parts[0] not in ids:
+                    text, shape = ":".join(parts[1:-8]), parts[-1]
+                    items.append({"label": label(text, shape), "t_in": float(parts[-4]), "t_out": float(parts[-3]),
+                                  "status": "removed, still in the video"})
+            now = db.execute(overlay.APPLIED_SQL, (tid,)).fetchone()[0]
+            out.append({"id": tid, "name": name, "items": items, "needsApply": (now or None) != (record or None)})
+        self.send_json(200, {"scenes": out, "needsApply": any(sc["needsApply"] for sc in out)})
 
     def take_levels_route(self):
         # GET /takes/levels?id=<take>: {binSecs, levels: [dB, ...]} for the
