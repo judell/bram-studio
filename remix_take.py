@@ -14,7 +14,9 @@ It replaces only the audio stream of media/<take>-raw.mp4 and of its clean
 copy in media/.clean/; the video is copied as-is, so burned-in callouts stay.
 The old files go to media/.trash/ first (<name>-before-remix-<stamp>). The
 take's JSON gets sourceLevel "anull", and its row's url a new ?v= so players
-reload it. A take whose source is at or above the floor is left alone.
+reload it. A take whose source is at or above the floor is left alone. A take
+cut or paused since it was rendered is refused (its tracks no longer line up
+with it), with a pointer to --regate, which replays those edits.
 
     python3 remix_take.py --regate [--dry-run] <take stamp> [...]
 
@@ -61,8 +63,12 @@ def remix(stamp, dry_run):
     meta = json.load(open(meta_path))
     if meta.get("cutsAfterRender"):
         # serve_media.py's /takes/cut shortens the take's MP4s, not these tracks.
-        return print(f"{take}: has been cut since it was rendered ({meta['cutsAfterRender']}); "
-                     "its tracks in work/takes/ no longer line up, so not re-mixed. Undo the cut first.")
+        # --regate replays those edits, without the undo history (which a
+        # Projects page clean-up may have cleared), so the refusal points there.
+        return print(f"{take}: has been cut or paused since it was rendered ({meta['cutsAfterRender']}), so its "
+                     "tracks in work/takes/ no longer line up and it isn't re-mixed this way. --regate rebuilds "
+                     "its sound from those tracks and replays the edits (unless it was narrated over): "
+                     f"python3 remix_take.py --regate {stamp} (add --dry-run to see first).")
     voice = os.path.join(WORK, "takes", meta.get("voiceFile") or f"{take}.wav")
     vlevel = meta.get("voiceLevel") or "anull"
     level = loudness(src_wav)
