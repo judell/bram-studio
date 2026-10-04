@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.openPlay="{false}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -274,6 +274,24 @@
       navigate('/exports');
       exportTakes.execute();
       exports.refetch();
+    }
+    // Open a scene in the editor (its name's link in the scenes list), paused
+    // at its start: nothing plays by itself. Per-scene state starts over.
+    function openScene(item) {
+      if (playing === item.url) return;
+      resumeAt = null;
+      lastLevels = null;
+      playing = item.url;
+      editTake = item.id;
+      editFile = item.file;
+      lastCut = [0, 1]; cutSeed = [0, 1];
+      narrClip = [0, 1]; narrSeed = [0, 1];
+      editCallout = null; calloutBox = null; lastSprite = null;
+      curShape = null; curText = ''; curTail = 'none';
+      audition = null;
+      narrAdding = false; narrSel = null; narrSelAt = null;
+      pauseAdding = false; pauseSel = null; pauseSelAt = null;
+      cutAdding = false; cutSel = null; cutSelAt = null;
     }
     // m:ss.ss for the capture view's times (sources run to minutes).
     function mmss(t) {
@@ -1309,8 +1327,8 @@
           }">
           <!-- After an edit the file reloads (cutSeq changes src); it goes
                back to where the edit was (resumeAt), paused, rather than
-               playing from 0:00. Opening a scene from the list plays it
-               (openPlay). Its height is fixed (the picture fits inside,
+               playing from 0:00. Nothing plays by itself: opening a scene
+               (its name's link) shows it paused at its start. Its height is fixed (the picture fits inside,
                letterboxed if need be): while the file reloads the player had no
                size of its own, so it vanished, came back short, then grew,
                moving everything below it twice. -->
@@ -1323,9 +1341,6 @@
                 takePlayer.seek(resumeAt);
                 takePlayer.pause();
                 resumeAt = null;
-              } else if (openPlay) {
-                openPlay = false;
-                takePlayer.play();
               }
             }"
             onTimeUpdate="(e) => playerTime = e.currentTime"
@@ -2026,16 +2041,24 @@
         onReorder="(newOrder) => {
           reorderTakes.execute({ ids: newOrder.map(t => t.id) });
         }">
-        <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2">
+        <!-- The open scene's row is tinted, as the History tab tints its
+             current edit. -->
+        <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2" paddingHorizontal="$space-2"
+          borderRadius="$space-1"
+          backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
           <!-- Empty take (no player events): record.sh's warning, with what the
                player reported at Stop. -->
           <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
-          <!-- The name, renamed in place: the pencil turns it into a text box,
-               which saves when it loses focus (TextBox has no Enter event:
+          <!-- The name is a link that opens the scene in the editor, paused at
+               its start (nothing plays by itself; Link's click event:
+               https://www.xmlui.org/docs/reference/components/Link). The pencil
+               turns it into a text box, which saves when it loses focus
+               (TextBox has no Enter event:
                https://www.xmlui.org/docs/reference/components/TextBox), if
                changed and not empty. One scene at a time. -->
-          <Text when="{renamingTake !== $item.id}" value="{$item.name}" overflowMode="flow" width="*" />
-          <TextBox when="{renamingTake === $item.id}" width="*" initialValue="{$item.name}" autoFocus="true"
+          <Link when="{renamingTake !== $item.id}" label="{$item.name}" tooltip="Open this scene"
+            onClick="openScene($item)" />
+          <TextBox when="{renamingTake === $item.id}" width="320px" initialValue="{$item.name}" autoFocus="true"
             onDidChange="(v) => renameDraft = v"
             onLostFocus="
               const name = renameDraft.trim();
@@ -2052,34 +2075,10 @@
           <Button icon="pencil" size="xs" variant="ghost" when="{renamingTake !== $item.id}"
             aria-label="Rename scene" tooltip="Rename this scene"
             onClick="renameDraft = $item.name; renamingTake = $item.id;" />
+          <SpaceFiller />
           <Text value="{$item.recorded}" width="110px" />
           <Text value="{$item.duration_s + 's'}" width="70px" />
           <Text value="{$item.source}" width="160px" />
-          <!-- Play/pause toggle: one slot, icon and tooltip name the next action. -->
-          <Button variant="ghost" enabled="{!capturing &amp;&amp; !narrating}"
-            icon="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'pause' : 'play'}"
-            tooltip="{playing === $item.url &amp;&amp; !takePlayer.paused ? 'Pause' : 'Play'}"
-            aria-label="Play or pause scene"
-            onClick="
-              if (playing === $item.url) {
-                takePlayer.paused ? takePlayer.play() : takePlayer.pause();
-              } else {
-                openPlay = true;
-                resumeAt = null;
-                lastLevels = null;
-                playing = $item.url;
-                editTake = $item.id;
-                editFile = $item.file;
-                lastCut = [0, 1]; cutSeed = [0, 1];
-                narrClip = [0, 1]; narrSeed = [0, 1];
-                editCallout = null; calloutBox = null; lastSprite = null;
-                curShape = null; curText = ''; curTail = 'none';
-                audition = null;
-                narrAdding = false; narrSel = null; narrSelAt = null;
-                pauseAdding = false; pauseSel = null; pauseSelAt = null;
-                cutAdding = false; cutSel = null; cutSelAt = null;
-              }
-            " />
           <Button icon="trash" variant="ghost" themeColor="attention"
             aria-label="Delete scene" tooltip="Delete this scene (moves the MP4 to media/.trash; Undo brings it back)"
             onClick="
