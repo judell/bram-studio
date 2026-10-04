@@ -1336,7 +1336,7 @@
              slice's level from -60 dB (none) to 0 dB, coloured as a narration
              or the take's own sound; the bar under the playhead (playerTime,
              which follows the player while it plays and on every seek) is
-             drawn full height and dark. A take with no audio (every slice
+             drawn as a dark 2 px line, full height. A take with no audio (every slice
              under -60 dB) shows no strip. Hovering a bar says which, and the level
              there (the tooltip behavior works on any visual component:
              https://www.xmlui.org/docs/behaviors#tooltip). The strip spans the
@@ -1345,10 +1345,10 @@
         <HStack when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}"
           height="24px" gap="0" verticalAlignment="end">
           <Items data="{levelBars(takeLevels.value || lastLevels, narrs.value || [])}">
-            <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
-              <Stack when="{playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1}" height="24px" backgroundColor="$color-surface-900" />
-              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; $item.narr}" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
-              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; !$item.narr}" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
+            <VStack width="*" height="100%" verticalAlignment="end" horizontalAlignment="center" tooltip="{$item.tip}">
+              <Stack when="{playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1}" width="2px" height="24px" backgroundColor="$color-surface-900" />
+              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; $item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
+              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; !$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
             </VStack>
           </Items>
         </HStack>
