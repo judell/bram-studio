@@ -434,9 +434,20 @@
     // https://www.xmlui.org/docs/globals) stops the refetch of every list
     // that would otherwise follow the call and land while the server is
     // starting over, each failing with a toast.
+    // A size on the Projects page, its dialogs and notices: binary units with
+    // three significant figures (5.95 MiB, 23.8 MiB, 448 MiB, 1.03 GiB), "-"
+    // for nothing. formatFileSizeInBytes gives one decimal at every size, so
+    // four files of 5.948 MiB read 5.9 each under a total of 23.8.
+    function sizeText(bytes) {
+      if (!bytes) return '-';
+      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+      const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+      const v = bytes / Math.pow(1024, i);
+      return i === 0 ? bytes + ' B' : v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2) + ' ' + units[i];
+    }
     // A project's line on the Projects page, after its name.
     function projectFacts(p) {
-      const facts = [p.takes + (p.takes === 1 ? ' take' : ' takes'), p.seconds + ' s', formatFileSizeInBytes(p.bytes)];
+      const facts = [p.takes + (p.takes === 1 ? ' take' : ' takes'), p.seconds + ' s', sizeText(p.bytes)];
       if (p.changed) facts.push('changed ' + p.changed.substring(5));
       if (p.safekeeping.last) facts.push('copied ' + p.safekeeping.last.at.substring(5)
         + (p.safekeeping.changed_since ? ' (changed since)' : ''));
@@ -451,7 +462,7 @@
       if (!s.exists) return 'The location isn\'t there now: ' + s.location;
       if (!s.last) return 'Not copied yet.';
       return 'Last copied ' + s.last.at.substring(5) + ': ' + s.last.files + ' files, '
-        + formatFileSizeInBytes(s.last.bytes) + (s.changed_since ? '. The project has changed since.' : '. Unchanged since.')
+        + sizeText(s.last.bytes) + (s.changed_since ? '. The project has changed since.' : '. Unchanged since.')
         + (s.last.extra ? ' ' + s.last.extra + (s.last.extra === 1 ? ' file' : ' files')
           + ' there are no longer in the project (copies never delete).' : '');
     }
@@ -513,7 +524,7 @@
     function deleteProjectQuestion(p) {
       const folder = projects.value ? projects.value.folder : 'projects';
       return 'Move ' + p.name + ' (' + p.takes + (p.takes === 1 ? ' take, ' : ' takes, ') + p.seconds + ' s, '
-        + formatFileSizeInBytes(p.bytes) + ') to the Trash? To bring it back, drag the folder ' + p.slug
+        + sizeText(p.bytes) + ') to the Trash? To bring it back, drag the folder ' + p.slug
         + ' from the Trash into ' + folder + ' and click Refresh.'
         + (p.safekeeping.copy_exists ? ' Its safekeeping copy in ' + p.safekeeping.copy_path + ' stays where it is.' : '');
     }
@@ -530,7 +541,7 @@
     function clearSafekeepingQuestion(p) {
       const s = p.safekeeping;
       return 'Move the safekeeping copy of ' + p.name + ' (' + s.copy_path
-        + (s.last ? ', ' + s.last.files + ' files, ' + formatFileSizeInBytes(s.last.bytes) : '')
+        + (s.last ? ', ' + s.last.files + ' files, ' + sizeText(s.last.bytes) : '')
         + ') to the Trash? The location stays set; the next Copy to safekeeping copies everything again.';
     }
     function clearSafekeeping(p) {
@@ -549,7 +560,7 @@
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/copy', method: 'post',
           body: { slug: p.slug }, invalidates: [] });
         toast.success('Copied ' + p.name + ': ' + (r.copied - 2) + ' files new or changed, ' + r.skipped
-          + ' unchanged, ' + formatFileSizeInBytes(r.bytes) + ' in all.');
+          + ' unchanged, ' + sizeText(r.bytes) + ' in all.');
       } catch (e) {
         toast.error(e.message);
       }
@@ -559,7 +570,7 @@
     // A stray item's Delete (the Projects page): the question the click asks
     // first, and the move to the macOS Trash once the answer is yes.
     function strayQuestion(item) {
-      return 'Move ' + item.path + ' (' + formatFileSizeInBytes(item.bytes) + ') to the Trash? '
+      return 'Move ' + item.path + ' (' + sizeText(item.bytes) + ') to the Trash? '
         + 'Its space comes back when you empty the Trash.';
     }
     function deleteStray(item) {
@@ -590,14 +601,14 @@
       }
     }
     function cleanQuestion(action, plan) {
-      return 'Move ' + plan.summary + ' (' + formatFileSizeInBytes(plan.bytes) + ') from ' + action.project
+      return 'Move ' + plan.summary + ' (' + sizeText(plan.bytes) + ') from ' + action.project
         + ' to the Trash? ' + action.warning + ' The space comes back when you empty the Trash.';
     }
     function cleanProject(action) {
       try {
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/clean', method: 'post',
           body: { slug: action.slug, what: action.what, days: action.days }, invalidates: [] });
-        toast.success('Moved ' + formatFileSizeInBytes(r.bytes) + ' to the Trash, as ' + r.as + '.');
+        toast.success('Moved ' + sizeText(r.bytes) + ' to the Trash, as ' + r.as + '.');
       } catch (e) {
         toast.error(e.message);
       }
@@ -771,14 +782,14 @@
               <HStack width="100%" verticalAlignment="center">
                 <Text value="{$item.path}" width="*" />
                 <Text value="{$item.count + ($item.count === 1 ? ' item' : ' items')}" width="90px" />
-                <Text value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
+                <Text value="{sizeText($item.bytes)}" width="90px" />
               </HStack>
             </property>
             <VStack gap="0">
               <Items data="{$item.items}">
                 <HStack>
                   <Text variant="secondary" value="{$item.name + ($item.folder ? '/' : '')}" width="*" />
-                  <Text variant="secondary" value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
+                  <Text variant="secondary" value="{sizeText($item.bytes)}" width="90px" />
                 </HStack>
               </Items>
               <Text when="{$item.more > 0}" variant="secondary" value="{'and ' + $item.more + ' more'}" />
@@ -839,7 +850,7 @@
           <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
             borderBottom="1px solid $color-surface-200" when="{($item.key !== 'stray' &amp;&amp; $item.key !== 'logs') || $item.bytes > 0}">
             <Text value="{$item.label}" width="170px" />
-            <Text value="{formatFileSizeInBytes($item.bytes)}" width="90px" />
+            <Text value="{sizeText($item.bytes)}" width="90px" />
             <Text variant="secondary" value="{$item.about}" width="*" />
             <!-- The category's clean-up buttons (CLEAN in serve_media.py;
                  none for takes, re-mix ingredients and exports). A click
@@ -871,7 +882,7 @@
           <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
             borderBottom="1px solid $color-surface-200">
             <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
-            <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+            <Text value="{sizeText($item.bytes)}" width="100px" />
             <!-- Asks first (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete). -->
             <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
               tooltip="Move this to the Trash"
@@ -952,7 +963,7 @@
       <Items data="{projects.value ? projects.value.shared_stray : []}">
         <HStack verticalAlignment="center" paddingLeft="$space-4">
           <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
-          <Text value="{formatFileSizeInBytes($item.bytes)}" width="100px" />
+          <Text value="{sizeText($item.bytes)}" width="100px" />
           <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
             tooltip="Move this to the Trash"
             onClick="
