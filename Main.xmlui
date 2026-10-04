@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.openPlay="{false}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.openPlay="{false}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -43,7 +43,7 @@
   <EventSource url="http://127.0.0.1:8765/events"
     onOpen="() => {
       dictating = window.studioDictationSync();
-      projects.refetch(); takes.refetch(); exports.refetch(); recStatus.refetch(); edits.refetch(); narrs.refetch(); pauses.refetch();
+      projects.refetch(); takes.refetch(); exports.refetch(); recStatus.refetch(); edits.refetch(); narrs.refetch(); pauses.refetch(); cuts.refetch();
       if (opening) { opening = ''; navigate('/'); }
     }"
     onMessage="(m) => {
@@ -212,7 +212,7 @@
       resumeAt = clip ? clip[0] : takePlayer.getCurrentTime();
       cutSeq = cutSeq + 1;
       edits.refetch();
-      narrs.refetch(); pauses.refetch();
+      narrs.refetch(); pauses.refetch(); cuts.refetch();
     }
     // An audition plays a bounded stretch of the take and stops, as judell/av
     // does (https://github.com/judell/av, av.js playIntro/playOutro/playClip):
@@ -626,6 +626,10 @@
        for the Pause tab's rows. -->
   <DataSource id="pauses" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, at, seconds FROM pauses WHERE take_id = ? ORDER BY at', params: [editTake] }}" />
+  <!-- The edited scene's cuts (serve_media.py's cuts table), for the Cut
+       tab's rows. -->
+  <DataSource id="cuts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT id, at, seconds FROM cuts WHERE take_id = ? ORDER BY at', params: [editTake] }}" />
   <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -1373,21 +1377,14 @@
              compact. The Timers stay outside: Tabs shows only TabItems. -->
         <Theme paddingVertical-trigger-Tabs="$space-1" paddingHorizontal-trigger-Tabs="$space-3"
           paddingTop-TabItem="$space-2">
-        <!-- Arriving on Cut starts the cut at the playhead and offers 5 s
-             (to the scene's end; at least the cut's 0.12 s), re-seeding
-             cutSeed, which fires no slider events. Leaving Narrate closes its
-             adding row, unless a narration is recording. didChange passes the new
+        <!-- Leaving a tab closes its adding row (Cut's, Pause's, and
+             Narrate's unless a narration is recording). didChange passes the new
              tab's index, id and label
              (https://www.xmlui.org/docs/reference/components/Tabs). -->
         <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
           onDidChange="(index, id, label) => {
             audition = null;
-            if (label === 'Cut') {
-              const end = takePlayer.duration || editDur;
-              const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.12));
-              cutSeed = [s, Math.min(end, s + 5)];
-              lastCut = cutSeed;
-            }
+            if (label !== 'Cut') cutAdding = false;
             if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrAdding = false;
             if (label !== 'Pause') pauseAdding = false;
           }">
@@ -1524,16 +1521,35 @@
           </Items>
         </VStack>
         </TabItem>
-        <!-- Cut a stretch out of the take: the slider's two handles mark its
-             start and end (https://www.xmlui.org/docs/reference/components/Slider),
-             in one-frame steps; moving a handle seeks the player to it (lastCut
-             tells which one moved); nudges move either end. Play clip, Intro
-             and Outro hear the marked stretch; nothing changes on disk until
-             Cut. A cut
-             re-encodes two files, so its click has no handler timeout
-             (https://www.xmlui.org/docs/managed-react/cooperative-concurrency). -->
+        <!-- Cut: the scene's cuts (serve_media.py's cuts table) and Add cut,
+             as on the Narrate and Pause tabs. Add opens the adding row: the
+             slider's two handles mark the stretch
+             (https://www.xmlui.org/docs/reference/components/Slider), from the
+             playhead, 5 s, in one-frame steps; moving a handle seeks the player
+             to it (lastCut tells which one moved); nudges move either end.
+             Play cut, Intro and Outro hear the marked stretch; nothing changes
+             on disk until Cut, which re-encodes two files, so its click has no
+             handler timeout
+             (https://www.xmlui.org/docs/managed-react/cooperative-concurrency).
+             After a cut the row closes and the new cut is selected (cutSelAt:
+             its seam, until the list has its row). A cut's row selects it and
+             moves the playhead to its seam; the selected one offers Play the
+             join (2 s either side of the seam) and its ✕, which puts the
+             removed stretch back (/cuts/restore; Undo takes that back). -->
         <TabItem label="Cut">
         <VStack>
+          <Button label="Add cut" size="xs" variant="outlined" when="{!cutAdding}"
+            tooltip="Mark a stretch from the playhead to remove"
+            enabled="{!cutTake.inProgress}"
+            onClick="
+              const end = takePlayer.duration || editDur;
+              const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.12));
+              audition = null;
+              cutSeed = [s, Math.min(end, s + 5)];
+              lastCut = cutSeed;
+              cutAdding = true;
+            " />
+          <VStack when="{cutAdding}">
           <!-- valueFormat is a sync callback: one arrow expression, in braces
                (https://www.xmlui.org/docs/howto/keep-sync-callbacks-to-one-expression).
                The handles are placed by re-seeding through initialValue
@@ -1605,14 +1621,19 @@
               curShape = null; curText = ''; curTail = 'none';
               cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
               resumeAt = lastCut[0];
+              cutAdding = false;
+              cutSel = null;
+              cutSelAt = lastCut[0];
               cutSeq = cutSeq + 1;
               lastCut = [0, 1]; cutSeed = [0, 1];
               edits.refetch();
-              narrs.refetch(); pauses.refetch();
+              narrs.refetch(); pauses.refetch(); cuts.refetch();
               callouts.refetch();
               savedSprites.refetch();
               applyState.refetch();
             " />
+          <Button label="Cancel" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
+            onClick="audition = null; cutAdding = false;" />
           <Spinner when="{cutTake.inProgress}" />
           </HStack>
           <!-- A cut through a narration takes away its ✕ (the audio kept for
@@ -1622,6 +1643,48 @@
           <Text color="$color-warn-700"
             when="{(narrs.value || []).some((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04)}"
             value="{'This cut goes through the narration at ' + (narrs.value || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
+          </VStack>
+          <Items data="{cuts.value || []}">
+            <HStack verticalAlignment="center"
+              var.sel="{cutSel === $item.id || (cutSel === null &amp;&amp; cutSelAt !== null &amp;&amp; Math.abs($item.at - cutSelAt) &lt; 0.06)}">
+              <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
+                label="{'Cut ' + $item.seconds.toFixed(2) + ' s at ' + $item.at.toFixed(2) + ' s'}"
+                enabled="{!cutTake.inProgress}"
+                onClick="
+                  audition = null;
+                  cutSel = $item.id;
+                  cutSelAt = null;
+                  takePlayer.seek($item.at);
+                " />
+              <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'cut-join' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? 'Stop' : 'Play the join'}"
+                size="xs" variant="outlined" tooltip="Play from 2 s before this cut's seam to 2 s after it"
+                onClick="audition &amp;&amp; audition.kind === 'cut-join' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? stopAudition() : playAudition(Math.max(0, $item.at - 2), $item.at + 2, 'cut-join')" />
+              <Button when="{sel}" icon="close" size="xs" variant="ghost"
+                aria-label="Restore this cut"
+                tooltip="Put the removed stretch back at this seam (Undo takes it out again)"
+                enabled="{!cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
+                handlerTimeoutMs:onClick="0"
+                onClick="
+                  audition = null;
+                  editCallout = null; calloutBox = null; lastSprite = null;
+                  curShape = null; curText = ''; curTail = 'none';
+                  try {
+                    Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: $item.id } });
+                  } catch (e) {
+                    toast.error(e.message);
+                  }
+                  cutSel = null;
+                  cutSelAt = null;
+                  resumeAt = $item.at;
+                  cutSeq = cutSeq + 1;
+                  edits.refetch();
+                  narrs.refetch(); pauses.refetch(); cuts.refetch();
+                  callouts.refetch();
+                  savedSprites.refetch();
+                  applyState.refetch();
+                " />
+            </HStack>
+          </Items>
         </VStack>
         </TabItem>
         <!-- Pause: the scene's pauses (serve_media.py's pauses table) and Add
@@ -1695,7 +1758,7 @@
                   resumeAt = at;
                   cutSeq = cutSeq + 1;
                   edits.refetch();
-                  narrs.refetch(); pauses.refetch();
+                  narrs.refetch(); pauses.refetch(); cuts.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
                   applyState.refetch();
@@ -1743,7 +1806,7 @@
                   resumeAt = $item.at;
                   cutSeq = cutSeq + 1;
                   edits.refetch();
-                  narrs.refetch(); pauses.refetch();
+                  narrs.refetch(); pauses.refetch(); cuts.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
                   applyState.refetch();
@@ -1855,7 +1918,7 @@
                   removeNarration.execute($item.id);
                   resumeAt = $item.t_in;
                   cutSeq = cutSeq + 1;
-                  narrs.refetch(); pauses.refetch(); edits.refetch();
+                  narrs.refetch(); pauses.refetch(); cuts.refetch(); edits.refetch();
                 " />
             </HStack>
           </Items>
@@ -1888,7 +1951,7 @@
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 edits.refetch();
-                narrs.refetch(); pauses.refetch();
+                narrs.refetch(); pauses.refetch(); cuts.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
                 applyState.refetch();
@@ -1906,7 +1969,7 @@
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 edits.refetch();
-                narrs.refetch(); pauses.refetch();
+                narrs.refetch(); pauses.refetch(); cuts.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
                 applyState.refetch();
@@ -2014,6 +2077,7 @@
                 audition = null;
                 narrAdding = false; narrSel = null; narrSelAt = null;
                 pauseAdding = false; pauseSel = null; pauseSelAt = null;
+                cutAdding = false; cutSel = null; cutSelAt = null;
               }
             " />
           <Button icon="trash" variant="ghost" themeColor="attention"

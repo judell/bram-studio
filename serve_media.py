@@ -240,7 +240,7 @@ USAGE = (("takes", "Takes", "the takes, their clean copies, replaced narration a
          ("stray", "Stray", "not Studio's: listed below"))
 MOVIES = (".mp4", ".mov", ".m4v")
 # In media/.trash/: a step of a take's edit history (apply_take_edit, remix_take.py).
-HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|pause|unpause|narrate|unnarrate|remix)-\d{8}-\d{6}\.\w+$")
+HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|uncut|pause|unpause|narrate|unnarrate|remix)-\d{8}-\d{6}\.\w+$")
 
 
 # The clean-up buttons on the Projects page, per category: (label, days, what
@@ -760,7 +760,7 @@ def watch_changes():
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
 # A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
-EDIT_SIDECAR = re.compile(r"-before-(cut|pause|unpause|narrate|unnarrate)-\d{8}-\d{6}\.json$")
+EDIT_SIDECAR = re.compile(r"-before-(cut|uncut|pause|unpause|narrate|unnarrate)-\d{8}-\d{6}\.json$")
 # A take's narrations (the Narrate tab), so each can be listed and removed at
 # any time, not only while it is the take's last edit: the stretch it covers
 # and, in media/.narrated/, the audio it replaced. A later cut or pause before
@@ -780,6 +780,22 @@ NARRATIONS_SQL = """CREATE TABLE IF NOT EXISTS narrations (
 # its held stretch drops the row. A pause inserted before it moves it; one
 # inside its held stretch lengthens it. Removing one cuts its held stretch
 # out (/pauses/remove). The page lists them through /query.
+# A scene's cuts (the Cut tab), so each can be listed, its join replayed and
+# the removed stretch restored at any time: where the seam is now (at), how
+# long the stretch was, and where to find it: the cut's undo record
+# (sidecar), which names the scene's files from before the cut, and where the
+# stretch starts in them (src_start). A later cut before the seam moves it;
+# one containing it drops the row. A pause or a restored stretch before it
+# moves it later. Restoring splices the stretch back (/cuts/restore).
+CUTS_SQL = """CREATE TABLE IF NOT EXISTS cuts (
+  id INTEGER PRIMARY KEY,
+  take_id INTEGER NOT NULL,
+  at REAL NOT NULL,
+  seconds REAL NOT NULL,
+  sidecar TEXT NOT NULL,
+  src_start REAL NOT NULL,
+  created_at TEXT NOT NULL
+)"""
 PAUSES_SQL = """CREATE TABLE IF NOT EXISTS pauses (
   id INTEGER PRIMARY KEY,
   take_id INTEGER NOT NULL,
@@ -833,6 +849,8 @@ def edit_what(name, saved):
         return f"Narrated over {rec[0]:.2f}–{rec[1]:.2f} s"
     if kind == "pause":
         return f"Inserted a {rec[1]:g} s pause at {rec[0]:.2f} s"
+    if kind == "uncut":
+        return f"Restored the {rec[1]:g} s cut at {rec[0]:.2f} s"
     if kind == "unpause":
         return f"Removed the {rec[1] - rec[0]:g} s pause at {rec[0]:.2f} s"
     return f"Cut {rec[0]:.2f}–{rec[1]:.2f} s"
@@ -1465,6 +1483,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.narrate_remove()
         if self.path == "/pauses/remove":
             return self.pause_remove()
+        if self.path == "/cuts/restore":
+            return self.cut_restore()
         if self.path == "/reorder":
             return self.reorder_takes()
         if self.path == "/export":
@@ -1927,7 +1947,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                  "narrations": [dict(r) for r in db.execute(
                      "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))],
                  "pauses": [dict(r) for r in db.execute(
-                     "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))]}
+                     "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))],
+                 "cuts": [dict(r) for r in db.execute(
+                     "SELECT * FROM cuts WHERE take_id = ? ORDER BY id", (row["id"],))]}
         src, trashed = os.path.join(ROOT, row["file"]), None
         if os.path.exists(src):
             try:
@@ -1948,6 +1970,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db.execute("DELETE FROM overlays WHERE take_id = ?", (row["id"],))
         db.execute("DELETE FROM narrations WHERE take_id = ?", (row["id"],))
         db.execute("DELETE FROM pauses WHERE take_id = ?", (row["id"],))
+        db.execute("DELETE FROM cuts WHERE take_id = ?", (row["id"],))
         db.commit()
         self.send_json(200, {"deleted": row["id"], "name": row["name"], "trashed": trashed, "undo": undo})
 
@@ -1989,6 +2012,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             z = {k: v for k, v in z.items() if k != "id"}
             z["take_id"] = take_id
             db.execute(f"INSERT INTO pauses ({', '.join(z)}) VALUES ({', '.join('?' * len(z))})", list(z.values()))
+        for c in saved.get("cuts", []):
+            c = {k: v for k, v in c.items() if k != "id"}
+            c["take_id"] = take_id
+            db.execute(f"INSERT INTO cuts ({', '.join(c)}) VALUES ({', '.join('?' * len(c))})", list(c.values()))
         db.commit()
         os.remove(path)
         self.send_json(200, {"restored": take_id, "name": take["name"], "overlays": len(saved["overlays"])})
@@ -2147,6 +2174,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "the cut would leave less than 0.5 s of the take"})
         done = self.cut_stretch(db, row, src, dur, start, end, "cut")
         if done:
+            # Its row: the seam is now at start; the stretch is start..end of
+            # the files the cut's undo record names.
+            db.execute("INSERT INTO cuts (take_id, at, seconds, sidecar, src_start, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                       (row["id"], round(start, 3), round(end - start, 3), done[1], round(start, 3),
+                        time.strftime("%Y-%m-%dT%H:%M:%S")))
+            db.commit()
             self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "cut", "start": round(start, 2),
                                  "end": round(end, 2), "duration": done[0], "undo": done[1]})
 
@@ -2186,8 +2219,86 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return None
             return (at - cut, secs) if at >= end - NARR_EDGE else (at, secs)
 
+        def cz(at):
+            # A cut containing a seam takes its row (Undo brings it back);
+            # one before it moves it earlier.
+            if start + NARR_EDGE < at < end - NARR_EDGE:
+                return None
+            return at - cut if at >= end - NARR_EDGE else at
+
         return self.apply_take_edit(db, row, src, chain, kind, [round(start, 3), round(end, 3)], retime,
-                                    narr=narr, pz=pz)
+                                    narr=narr, pz=pz, cz=cz)
+
+    def cut_restore(self):
+        # {id}: put a cut's removed stretch back at its seam, at any time, from
+        # the scene's files as they were before the cut (named by the cut's
+        # undo record), in the scene and its clean copy, each from its own.
+        # An edit like the others (uncut), so Undo takes it back. Items from
+        # the seam on move later and ones across it get longer (items that
+        # were inside the stretch went with the cut); a narration across the
+        # seam loses its row, as with a pause inside it; pauses and cuts after
+        # it move later. remix_take.py can't replay it.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        db = sqlite3.connect(DB)
+        db.row_factory = sqlite3.Row
+        c = db.execute("SELECT * FROM cuts WHERE id = ?", (body.get("id"),)).fetchone()
+        if not c:
+            return self.send_json(404, {"error": f"no cut with id {body.get('id')}"})
+        row = db.execute("SELECT * FROM takes WHERE id = ?", (c["take_id"],)).fetchone()
+        src = os.path.join(ROOT, row["file"]) if row else ""
+        if not os.path.isfile(src):
+            return self.send_json(409, {"error": "the scene is gone"})
+        try:
+            with open(os.path.join(TRASH, c["sidecar"])) as f:
+                files = json.load(f)["files"]
+        except (OSError, ValueError, KeyError):
+            return self.send_json(409, {"error": "this cut's undo record is gone (cleaned up?), so its stretch can't be restored"})
+        before = {os.path.join(ROOT, rel): os.path.join(TRASH, name) for rel, name in files.items()}
+        missing = [b for b in before.values() if not os.path.isfile(b)]
+        if missing:
+            return self.send_json(409, {"error": f"the footage this cut removed is gone ({os.path.basename(missing[0])})"})
+        with DICTATION_LOCK:
+            if narration["current"]:
+                return self.send_json(409, {"error": "a narration is recording"})
+        dur = float(probe(src, "format=duration") or 0)
+        q, secs, a = min(max(0.0, c["at"]), dur), c["seconds"], c["src_start"]
+        segs = [(0, 0.0, q), (1, a, a + secs), (0, q, dur)]
+        segs = [sg for sg in segs if sg[2] - sg[1] > 0.02]
+        chain = ""
+        for i, (inp, x, y) in enumerate(segs):
+            fades = ([f"afade=t=out:st={y - x - 0.01:.3f}:d=0.01"] if i < len(segs) - 1 else []) + \
+                    (["afade=t=in:d=0.01"] if i > 0 else [])
+            chain += (f"[{inp}:v]trim=start={x:.3f}:end={y:.3f},setpts=PTS-STARTPTS[v{i}];"
+                      f"[{inp}:a]atrim=start={x:.3f}:end={y:.3f},asetpts=PTS-STARTPTS"
+                      f"{''.join(',' + f for f in fades)}[a{i}];")
+        chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
+        eps = 0.005
+
+        def retime(t_in, t_out):
+            if t_in >= q - eps:
+                return t_in + secs, t_out + secs
+            if t_out > q + eps:
+                return t_in, t_out + secs
+            return t_in, t_out
+
+        def narr(t_in, t_out):
+            if t_in + NARR_EDGE < q < t_out - NARR_EDGE:
+                return None
+            return (t_in + secs, t_out + secs) if t_in >= q - NARR_EDGE else (t_in, t_out)
+
+        def pz(z_at, z_secs):
+            return (z_at + secs, z_secs) if z_at >= q - NARR_EDGE else (z_at, z_secs)
+
+        def cz(at):
+            return at + secs if at > q + NARR_EDGE else at
+
+        done = self.apply_take_edit(db, row, src, chain, "uncut", [round(q, 3), round(secs, 3)], retime,
+                                    extra=lambda path: [before[path]], narr=narr, pz=pz, cz=cz)
+        if done:
+            db.execute("DELETE FROM cuts WHERE id = ?", (c["id"],))
+            db.commit()
+            self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "uncut", "at": round(q, 2),
+                                 "seconds": round(secs, 2), "duration": done[0], "undo": done[1]})
 
     def pause_remove(self):
         # {id}: take an inserted pause back out by cutting its held stretch
@@ -2283,8 +2394,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return z_at, z_secs + secs
             return (z_at + secs, z_secs) if z_at >= at - NARR_EDGE else (z_at, z_secs)
 
+        def cz(c_at):
+            # A pause at or before a seam moves it later.
+            return c_at + secs if c_at >= at - NARR_EDGE else c_at
+
         done = self.apply_take_edit(db, row, src, chain, "pause", [round(at, 3), round(secs, 3)], retime,
-                                    narr=narr, pz=pz)
+                                    narr=narr, pz=pz, cz=cz)
         if done and not db.execute("SELECT 1 FROM pauses WHERE take_id = ? AND at < ? AND at + seconds > ?",
                                    (row["id"], at - NARR_EDGE, at + NARR_EDGE)).fetchone():
             # Its own row, unless it only lengthened a pause already there.
@@ -2504,7 +2619,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  "end": round(end, 2), "duration": done[0], "undo": done[1]})
 
     def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False, narr=None,
-                        pz=None):
+                        pz=None, cz=None):
         # The part a cut, a pause, a narration and its removal share. Runs the ffmpeg filter
         # `chain` (ending in [v] and [a]) on the take's MP4 and its clean copy, into
         # hidden temp files first, so a failure changes nothing. `extra` are
@@ -2520,7 +2635,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tmps = []
         for path in targets:
             tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.{kind}.mp4")
-            inputs = [a for p in (path, *extra) for a in ("-i", p)]
+            # extra: further inputs, the same for both files, or a function
+            # giving each file its own (a restored cut reads the scene's and
+            # the clean copy's own before-cut files).
+            ex = extra(path) if callable(extra) else extra
+            inputs = [a for p in (path, *ex) for a in ("-i", p)]
             video = ["-map", "0:v", "-c:v", "copy"] if copy_video else ["-map", "[v]", *overlay.ENC]
             r = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", chain,
                                 *video, "-map", "[a]",
@@ -2550,7 +2669,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                  "narrations": [dict(r) for r in db.execute(
                      "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))],
                  "pauses": [dict(r) for r in db.execute(
-                     "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))]}
+                     "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))],
+                 "cuts": [dict(r) for r in db.execute(
+                     "SELECT * FROM cuts WHERE take_id = ? ORDER BY id", (row["id"],))]}
         was_applied =row["overlay_applied"] == db.execute(overlay.APPLIED_SQL, (row["id"],)).fetchone()[0]
         for path, tmp in zip(targets, tmps):
             which = "clean-" if path == clean else ""
@@ -2586,6 +2707,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif new != (z["at"], z["seconds"]):
                 db.execute("UPDATE pauses SET at = ?, seconds = ? WHERE id = ?",
                            (round(new[0], 3), round(new[1], 3), z["id"]))
+        # The take's cuts likewise: cz(at) gives a seam's new place, or None
+        # when this edit removed it.
+        for c in saved["cuts"]:
+            new = cz(c["at"]) if cz else c["at"]
+            if new is None:
+                db.execute("DELETE FROM cuts WHERE id = ?", (c["id"],))
+            elif new != c["at"]:
+                db.execute("UPDATE cuts SET at = ? WHERE id = ?", (round(new, 3), c["id"]))
         new_dur = round(float(probe(src, "format=duration") or 0), 1)
         url = row["url"].split("?")[0] + f"?v={int(time.time())}"
         db.execute("UPDATE takes SET duration_s = ?, url = ? WHERE id = ?", (new_dur, url, row["id"]))
@@ -2699,6 +2828,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             db.execute("DELETE FROM pauses WHERE take_id = ?", (take_id,))
             for z in snap["pauses"]:
                 put("pauses", z)
+        if "cuts" in snap:
+            db.execute("DELETE FROM cuts WHERE take_id = ?", (take_id,))
+            for c in snap["cuts"]:
+                put("cuts", c)
 
     def undo_take(self):
         # POST /takes/undo {id}: take back the take's current edit. The take
@@ -2722,7 +2855,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                      "narrations": [dict(r) for r in db.execute(
                          "SELECT * FROM narrations WHERE take_id = ? ORDER BY id", (row["id"],))],
                      "pauses": [dict(r) for r in db.execute(
-                         "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))]}
+                         "SELECT * FROM pauses WHERE take_id = ? ORDER BY id", (row["id"],))],
+                     "cuts": [dict(r) for r in db.execute(
+                         "SELECT * FROM cuts WHERE take_id = ? ORDER BY id", (row["id"],))]}
             # Everything the take has now steps aside (a clean copy made since
             # the edit too), then the files from before the edit come back.
             for path in [src] + ([clean] if os.path.isfile(clean) else []):
@@ -3276,6 +3411,7 @@ with sqlite3.connect(DB) as _db:
     overlay.ensure_schema(_db)
     _db.execute(NARRATIONS_SQL)
     _db.execute(PAUSES_SQL)
+    _db.execute(CUTS_SQL)
 recorder = adopt_running_take()
 backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()
