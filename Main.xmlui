@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="callout" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -306,6 +306,64 @@
         lastCut = cutSeed;
       }
       takePlayer.seek(which === 'start' ? s : e);
+    }
+    // Add annotation: the current tool (annotKind) in the middle of the
+    // picture, from the playhead for 3 s (to the scene's end), saved and
+    // made current as a ⌘-drag's item is (onShapeEnd).
+    function addAnnotation() {
+      const t = takePlayer.getCurrentTime();
+      const end = takePlayer.duration || editDur;
+      const out = Math.max(t + 0.2, Math.min(t + 3, end));
+      const shape = annotKind === 'callout' ? null : annotKind;
+      const box = shape === 'arrow' || shape === 'line' ? { x1: 0.4, y1: 0.5, x2: 0.6, y2: 0.5 }
+        : shape === 'pointer' ? { x1: 0.5, y1: 0.5, x2: 0.5, y2: 0.5 }
+        : { x1: 0.35, y1: 0.4, x2: 0.65, y2: 0.55 };
+      audition = null;
+      const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post',
+                                  body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
+                                          t_in: t, t_out: out, tail: 'none', shape: shape } });
+      editCallout = r.id;
+      curShape = shape;
+      curText = '';
+      curTail = 'none';
+      calloutBox = box;
+      calloutIn = t;
+      calloutOut = out;
+      lastSprite = null;
+      dragPos = null;
+      callouts.refetch();
+      savedSprites.refetch();
+      applyState.refetch();
+    }
+    // The current item's In or Out, one frame (delta) earlier or later: In
+    // stays at or above 0 and 0.1 s before Out, Out 0.1 s after In and within
+    // the scene. Saved at once, and the playhead goes there so the frame is
+    // seen.
+    function nudgeItem(which, delta) {
+      const end = takePlayer.duration || editDur;
+      const t = which === 'in'
+        ? Math.max(0, Math.min(Math.round((calloutIn + delta) * 100) / 100, calloutOut - 0.1))
+        : Math.min(end, Math.max(Math.round((calloutOut + delta) * 100) / 100, calloutIn + 0.1));
+      if (t !== (which === 'in' ? calloutIn : calloutOut)) {
+        if (which === 'in') calloutIn = t; else calloutOut = t;
+        takePlayer.seek(t);
+        saveCurrentItem();
+      }
+    }
+    // The current item's In or Out set from the playhead.
+    function setItemEdge(which) {
+      const p = takePlayer.getCurrentTime();
+      if (which === 'in') calloutIn = Math.max(0, Math.min(p, calloutOut - 0.1));
+      else calloutOut = Math.max(p, calloutIn + 0.1);
+      saveCurrentItem();
+    }
+    function saveCurrentItem() {
+      updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1,
+                              x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail,
+                              shape: curShape });
+      callouts.refetch();
+      savedSprites.refetch();
+      applyState.refetch();
     }
     // A Play button pressed again while its stretch plays (it reads Stop):
     // pause and end the audition, unlogged, since nothing was measured.
@@ -1098,16 +1156,8 @@
         var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}"
         var.handleBox="{curShown &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (curShown ? calloutBox : null)}"
         var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
-        <!-- The tools, above the player as when recording, and the player's
-             close box at the end of the row. A tool can be switched at any
-             time. -->
+        <!-- The player's close box (the tools are on the Annotate tab). -->
         <HStack verticalAlignment="center">
-          <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
-            <Button label="{$item[1]}" size="xs"
-              variant="{annotKind === $item[0] ? 'solid' : 'outlined'}"
-              tooltip="Hold Command (⌘) and drag to place (click, for Pointer). It starts at the playhead and lasts 3 s; In and Out change that."
-              onClick="annotKind = $item[0]" />
-          </Items>
           <SpaceFiller />
           <Button icon="close" variant="ghost" aria-label="Close player"
             tooltip="Close the player" onClick="playing = ''" />
@@ -1168,8 +1218,6 @@
                 lastSprite = null;
                 dragPos = null;
                 dragFrom = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
-                calloutText.setValue(it.text);
-                calloutTail.setValue(it.tail || 'none');
               }
             }
           }"
@@ -1237,8 +1285,6 @@
             calloutOut = out;
             lastSprite = null;
             dragPos = null;
-            calloutText.setValue('');
-            calloutTail.setValue('none');
             callouts.refetch();
             savedSprites.refetch();
             applyState.refetch();
@@ -1302,188 +1348,47 @@
             }
             if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrAdding = false;
           }">
-        <!-- Annotate: the current item's row (text, tail, In and Out where
-             the recording view has Keep, Remove) and the take's items; click
-             a name to make that item current and move the playhead to its
-             start. Text and tail save as they change: curText and curTail
-             are the values last saved (or set when the item became current),
-             so setValue on selection saves nothing. Apply burns the items
-             into the video; it is the one explicit step, since it re-encodes
-             the take. -->
+        <!-- Annotate: Add annotation and the tools (the current one solid),
+             then the scene's items, one row each. Add annotation places the
+             current tool in the middle of the picture at the playhead for 3 s
+             (addAnnotation); ⌘-drag places it where you drag. The tool is
+             remembered (studio.annotKind) and starts as Callout. Clicking a
+             row makes that item current and moves the playhead to its start
+             (again lets go of it); the current row offers its controls: text
+             and tail (a callout's), In and Out with one-frame nudges, Play
+             (its span, reading Stop while it plays) and ✕. Text and tail save
+             as they change; their boxes take curText and curTail
+             (initialValue), made fresh with the row. Apply burns the items
+             into the video, the one explicit step, since it re-encodes. -->
         <TabItem label="Annotate">
         <VStack>
           <HStack verticalAlignment="center">
-            <TextBox id="calloutText" width="*" enabled="{!!editCallout &amp;&amp; !curShape}"
-              placeholder="{!editCallout ? 'Hold Command and drag on the picture to place a callout or shape' : curShape ? 'Shapes have no text' : 'Callout text'}"
-              onDidChange="(v) => {
-                if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curText) {
-                  curText = v;
-                  updateCallout.execute({ take_id: editTake, id: editCallout, text: v, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail, shape: curShape });
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
-                }
-              }" />
-            <!-- In and Out, each with a − before it and a + after it that move
-                 the time one frame (0.04 s at 25 fps), save at once, and take
-                 the playhead there so the frame is seen. The two groups are
-                 tight inside ($space-1) and the row's ordinary gap apart, so
-                 In's + isn't taken for Out's −, without taking width from
-                 the text box. Times show two decimals: at one, a
-                 one-frame step often wouldn't change the label. -->
-            <HStack verticalAlignment="center" gap="$space-1">
-              <Button label="−" size="xs" variant="ghost" enabled="{!!editCallout}"
-                tooltip="Start one frame earlier"
-                onClick="
-                  const t = Math.max(0, Math.min(Math.round((calloutIn - 0.04) * 100) / 100, calloutOut - 0.1));
-                  if (t !== calloutIn) {
-                    calloutIn = t;
-                    takePlayer.seek(t);
-                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
-                    callouts.refetch();
-                    savedSprites.refetch();
-                    applyState.refetch();
-                  }
-                " />
-              <Button label="{'In ' + calloutIn.toFixed(2) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
-                tooltip="Start this item at the playhead"
-                onClick="
-                  const t = Math.max(0, Math.min(takePlayer.getCurrentTime(), calloutOut - 0.1));
-                  calloutIn = t;
-                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
-                " />
-              <Button label="+" size="xs" variant="ghost" enabled="{!!editCallout}"
-                tooltip="Start one frame later"
-                onClick="
-                  const t = Math.max(0, Math.min(Math.round((calloutIn + 0.04) * 100) / 100, calloutOut - 0.1));
-                  if (t !== calloutIn) {
-                    calloutIn = t;
-                    takePlayer.seek(t);
-                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: t, t_out: calloutOut, tail: curTail, shape: curShape });
-                    callouts.refetch();
-                    savedSprites.refetch();
-                    applyState.refetch();
-                  }
-                " />
-            </HStack>
-            <HStack verticalAlignment="center" gap="$space-1">
-              <Button label="−" size="xs" variant="ghost" enabled="{!!editCallout}"
-                tooltip="End one frame earlier"
-                onClick="
-                  const t = Math.min(takePlayer.duration || editDur, Math.max(Math.round((calloutOut - 0.04) * 100) / 100, calloutIn + 0.1));
-                  if (t !== calloutOut) {
-                    calloutOut = t;
-                    takePlayer.seek(t);
-                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
-                    callouts.refetch();
-                    savedSprites.refetch();
-                    applyState.refetch();
-                  }
-                " />
-              <Button label="{'Out ' + calloutOut.toFixed(2) + 's'}" size="xs" variant="outlined" enabled="{!!editCallout}"
-                tooltip="End this item at the playhead"
-                onClick="
-                  const t = Math.max(takePlayer.getCurrentTime(), calloutIn + 0.1);
-                  calloutOut = t;
-                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
-                " />
-              <Button label="+" size="xs" variant="ghost" enabled="{!!editCallout}"
-                tooltip="End one frame later"
-                onClick="
-                  const t = Math.min(takePlayer.duration || editDur, Math.max(Math.round((calloutOut + 0.04) * 100) / 100, calloutIn + 0.1));
-                  if (t !== calloutOut) {
-                    calloutOut = t;
-                    takePlayer.seek(t);
-                    updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: t, tail: curTail, shape: curShape });
-                    callouts.refetch();
-                    savedSprites.refetch();
-                    applyState.refetch();
-                  }
-                " />
-            </HStack>
-            <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
-            <Select id="calloutTail" initialValue="none" width="130px" enabled="{!!editCallout &amp;&amp; !curShape}"
-              onDidChange="(v) => {
-                if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curTail) {
-                  curTail = v;
-                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: v, shape: curShape });
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
-                }
-              }">
-              <Option value="none" label="No tail" />
-              <Option value="nw" label="Tail ↖ nw" />
-              <Option value="n" label="Tail ↑ n" />
-              <Option value="ne" label="Tail ↗ ne" />
-              <Option value="e" label="Tail → e" />
-              <Option value="se" label="Tail ↘ se" />
-              <Option value="s" label="Tail ↓ s" />
-              <Option value="sw" label="Tail ↙ sw" />
-              <Option value="w" label="Tail ← w" />
-            </Select>
-            <Button label="Remove" size="xs" variant="outlined" enabled="{!!editCallout}"
-              tooltip="Delete this item from the scene"
-              onClick="
-                deleteCallout.execute(editCallout);
-                editCallout = null;
-                calloutBox = null;
-                lastSprite = null;
-                curShape = null;
-                curText = '';
-                curTail = 'none';
-                calloutIn = 0;
-                calloutOut = 3;
-                calloutText.setValue('');
-                calloutTail.setValue('none');
-                callouts.refetch();
-                savedSprites.refetch();
-                applyState.refetch();
-              " />
+            <Button label="Add annotation" size="xs" variant="outlined"
+              tooltip="Place the current tool in the middle of the picture, from the playhead for 3 s"
+              onClick="addAnnotation()" />
+            <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
+              <Button label="{$item[1]}" size="xs"
+                variant="{annotKind === $item[0] ? 'solid' : 'outlined'}"
+                tooltip="What Add annotation places, and ⌘-drag on the picture (click, for Pointer)"
+                onClick="annotKind = $item[0]; writeLocalStorage('studio.annotKind', $item[0]);" />
+            </Items>
+            <SpaceFiller />
             <Spinner when="{renderOverlay.inProgress}" />
             <Button label="Apply" size="xs"
               enabled="{!renderOverlay.inProgress &amp;&amp; !!applyState.value &amp;&amp; !!applyState.value[0] &amp;&amp; !!applyState.value[0].dirty}"
-              tooltip="Burn this scene's items into its video file, for export (the player shows them live either way)"
+              tooltip="Burn this scene's items into its video file (Export also does this for any scene that needs it)"
               onClick="
                 renderOverlay.execute(editTake);
                 takes.refetch();
                 applyState.refetch();
               " />
           </HStack>
-          <!-- The take's items, in time order (callouts.value is sorted by
-               t_in), each row starting with its ✕ so the ✕s line up. The
-               take's narrations are listed on the Narrate tab. -->
           <Items data="{callouts.value || []}">
             <HStack verticalAlignment="center">
-              <Button icon="close" size="xs" variant="ghost"
-                aria-label="Remove this item" tooltip="Remove this item"
-                onClick="
-                  deleteCallout.execute($item.id);
-                  if ($item.id === editCallout) {
-                    editCallout = null;
-                    calloutBox = null;
-                    lastSprite = null;
-                    curShape = null;
-                    curText = '';
-                    curTail = 'none';
-                    calloutIn = 0;
-                    calloutOut = 3;
-                    calloutText.setValue('');
-                    calloutTail.setValue('none');
-                  }
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  applyState.refetch();
-                " />
               <Button size="xs" variant="{$item.id === editCallout ? 'solid' : 'ghost'}"
                 label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
                 onClick="
+                  audition = null;
                   if ($item.id === editCallout) {
                     editCallout = null;
                     calloutBox = null;
@@ -1493,8 +1398,6 @@
                     curTail = 'none';
                     calloutIn = 0;
                     calloutOut = 3;
-                    calloutText.setValue('');
-                    calloutTail.setValue('none');
                   } else {
                     editCallout = $item.id;
                     curShape = $item.shape || null;
@@ -1505,11 +1408,76 @@
                     calloutOut = $item.t_out;
                     lastSprite = null;
                     dragPos = null;
-                    calloutText.setValue($item.text);
-                    calloutTail.setValue($item.tail || 'none');
                     takePlayer.seek($item.t_in);
                   }
                 " />
+              <!-- The current item's controls. In and Out, each with a − before
+                   it and a + after it that move the time one frame (0.04 s at
+                   25 fps), save at once, and take the playhead there so the
+                   frame is seen; the In and Out buttons set it from the
+                   playhead. -->
+              <HStack when="{$item.id === editCallout}" verticalAlignment="center">
+                <!-- The text box is its own component (ItemText, after the
+                     App), so a keystroke re-evaluates only its subtree, not
+                     every binding in App scope
+                     (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component);
+                     the text is saved when the box loses focus. -->
+                <ItemText when="{!curShape}" text="{curText}"
+                  onCommit="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }" />
+                <HStack verticalAlignment="center" gap="$space-1">
+                  <Button label="−" size="xs" variant="ghost" tooltip="Start one frame earlier" onClick="nudgeItem('in', -0.04)" />
+                  <Button label="{'In ' + calloutIn.toFixed(2) + 's'}" size="xs" variant="outlined"
+                    tooltip="Start this item at the playhead" onClick="setItemEdge('in')" />
+                  <Button label="+" size="xs" variant="ghost" tooltip="Start one frame later" onClick="nudgeItem('in', 0.04)" />
+                </HStack>
+                <HStack verticalAlignment="center" gap="$space-1">
+                  <Button label="−" size="xs" variant="ghost" tooltip="End one frame earlier" onClick="nudgeItem('out', -0.04)" />
+                  <Button label="{'Out ' + calloutOut.toFixed(2) + 's'}" size="xs" variant="outlined"
+                    tooltip="End this item at the playhead" onClick="setItemEdge('out')" />
+                  <Button label="+" size="xs" variant="ghost" tooltip="End one frame later" onClick="nudgeItem('out', 0.04)" />
+                </HStack>
+                <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
+                <Select when="{!curShape}" initialValue="{curTail}" width="120px"
+                  onDidChange="(v) => {
+                    if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curTail) {
+                      curTail = v;
+                      updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: v, shape: curShape });
+                      callouts.refetch();
+                      savedSprites.refetch();
+                      applyState.refetch();
+                    }
+                  }">
+                  <Option value="none" label="No tail" />
+                  <Option value="nw" label="Tail ↖ nw" />
+                  <Option value="n" label="Tail ↑ n" />
+                  <Option value="ne" label="Tail ↗ ne" />
+                  <Option value="e" label="Tail → e" />
+                  <Option value="se" label="Tail ↘ se" />
+                  <Option value="s" label="Tail ↓ s" />
+                  <Option value="sw" label="Tail ↙ sw" />
+                  <Option value="w" label="Tail ← w" />
+                </Select>
+                <Button label="{audition &amp;&amp; audition.kind === 'item' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+                  tooltip="Play this item's span"
+                  onClick="audition &amp;&amp; audition.kind === 'item' ? stopAudition() : playAudition(calloutIn, calloutOut, 'item')" />
+                <Button icon="close" size="xs" variant="ghost"
+                  aria-label="Remove this item" tooltip="Remove this item from the scene"
+                  onClick="
+                    audition = null;
+                    deleteCallout.execute(editCallout);
+                    editCallout = null;
+                    calloutBox = null;
+                    lastSprite = null;
+                    curShape = null;
+                    curText = '';
+                    curTail = 'none';
+                    calloutIn = 0;
+                    calloutOut = 3;
+                    callouts.refetch();
+                    savedSprites.refetch();
+                    applyState.refetch();
+                  " />
+              </HStack>
             </HStack>
           </Items>
         </VStack>
@@ -1593,7 +1561,6 @@
               audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
-              calloutText.setValue(''); calloutTail.setValue('none');
               cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
               cutSeq = cutSeq + 1;
               lastCut = [0, 1]; cutSeed = [0, 1];
@@ -1657,7 +1624,6 @@
               audition = null;
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
-              calloutText.setValue(''); calloutTail.setValue('none');
               pauseTake.execute({ id: editTake, at: takePlayer.getCurrentTime(), seconds: pauseSecs });
               cutSeq = cutSeq + 1;
               edits.refetch();
@@ -1805,7 +1771,6 @@
                 audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
-                calloutText.setValue(''); calloutTail.setValue('none');
                 undoEdit.execute(editTake);
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
@@ -1824,7 +1789,6 @@
                 audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
-                calloutText.setValue(''); calloutTail.setValue('none');
                 redoEdit.execute(editTake);
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
@@ -2155,3 +2119,14 @@
     </Page>
   </Pages>
 </App>
+<!-- A callout's text box on the Annotate tab, in a component of its own so
+     typing touches only draft, here, and not the App scope's many bindings
+     (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component;
+     inline components: https://www.xmlui.org/docs/howto/keep-a-small-app-in-one-file).
+     The text goes up as a commit event when the box loses focus (TextBox has
+     no Enter event: https://www.xmlui.org/docs/reference/components/TextBox). -->
+<Component name="ItemText" var.draft="{$props.text}">
+  <TextBox id="box" width="220px" initialValue="{$props.text}" placeholder="Callout text"
+    onDidChange="(v) => draft = v"
+    onLostFocus="draft = box.value; emitEvent('commit', draft);" />
+</Component>
