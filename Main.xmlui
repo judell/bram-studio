@@ -24,7 +24,13 @@
     pollIntervalInSeconds="60" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
        changed ({changed: 'takes'|'sources'|'record'|'exports'}) and only that
-       one is refetched. EventSource is experimental in XMLUI and has no docs
+       one is refetched. 'takes' (any change to studio.db) refetches only
+       the scenes list: the page's own edits refresh the lists they touch
+       (history, narrations, pauses, items) from their handlers and leave the
+       scenes list to this, so no list is fetched twice at once (XMLUI cancels
+       a list's fetch in flight when another starts: two rounds 10 ms apart
+       after every edit, 2026-10-03, likely what left a stale narrations
+       list). EventSource is experimental in XMLUI and has no docs
        page yet (source: xmlui/src/components/EventSource/EventSource.tsx), so
        the polls above stay as a 60 s fallback. -->
   <!-- onOpen (load and every reconnect): the bridge (studio-dictation.js)
@@ -41,7 +47,7 @@
       if (opening) { opening = ''; navigate('/'); }
     }"
     onMessage="(m) => {
-      if (m.changed === 'takes') { takes.refetch(); edits.refetch(); narrs.refetch(); pauses.refetch(); }
+      if (m.changed === 'takes') takes.refetch();
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') { recStatus.refetch(); edits.refetch(); }
       else if (m.changed === 'exports') exports.refetch();
@@ -206,7 +212,6 @@
       cutSeq = cutSeq + 1;
       edits.refetch();
       narrs.refetch(); pauses.refetch();
-      takes.refetch();
     }
     // An audition plays a bounded stretch of the take and stops, as judell/av
     // does (https://github.com/judell/av, av.js playIntro/playOutro/playClip):
@@ -1084,7 +1089,6 @@
                 toast.error(e.message);
               }
               clipBusy = false;
-              takes.refetch();
             " />
           <Spinner when="{clipBusy}" />
         </HStack>
@@ -1388,7 +1392,6 @@
               tooltip="Burn this scene's items into its video file (Export also does this for any scene that needs it)"
               onClick="
                 renderOverlay.execute(editTake);
-                takes.refetch();
                 applyState.refetch();
               " />
           </HStack>
@@ -1575,7 +1578,6 @@
               lastCut = [0, 1]; cutSeed = [0, 1];
               edits.refetch();
               narrs.refetch(); pauses.refetch();
-              takes.refetch();
               callouts.refetch();
               savedSprites.refetch();
               applyState.refetch();
@@ -1662,7 +1664,6 @@
                   cutSeq = cutSeq + 1;
                   edits.refetch();
                   narrs.refetch(); pauses.refetch();
-                  takes.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
                   applyState.refetch();
@@ -1710,7 +1711,6 @@
                   cutSeq = cutSeq + 1;
                   edits.refetch();
                   narrs.refetch(); pauses.refetch();
-                  takes.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
                   applyState.refetch();
@@ -1821,7 +1821,7 @@
                   narrSelAt = null;
                   removeNarration.execute($item.id);
                   cutSeq = cutSeq + 1;
-                  narrs.refetch(); pauses.refetch(); edits.refetch(); takes.refetch();
+                  narrs.refetch(); pauses.refetch(); edits.refetch();
                 " />
             </HStack>
           </Items>
@@ -1854,7 +1854,6 @@
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 edits.refetch();
                 narrs.refetch(); pauses.refetch();
-                takes.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
                 applyState.refetch();
@@ -1872,7 +1871,6 @@
                 lastCut = [0, 1]; cutSeed = [0, 1];
                 edits.refetch();
                 narrs.refetch(); pauses.refetch();
-                takes.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
                 applyState.refetch();
@@ -1923,13 +1921,11 @@
           onClick="
             dismissedUndo = deleteTake.lastResult.undo;
             undeleteTake.execute(dismissedUndo);
-            takes.refetch();
           " />
       </HStack>
       <DndItems data="{takes}" dragHandle="true"
         onReorder="(newOrder) => {
           reorderTakes.execute({ ids: newOrder.map(t => t.id) });
-          takes.refetch();
         }">
         <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2">
           <!-- Empty take (no player events): record.sh's warning, with what the
@@ -1952,7 +1948,6 @@
                 } catch (e) {
                   toast.error(e.message);
                 }
-                takes.refetch();
               }
             " />
           <Button icon="pencil" size="xs" variant="ghost" when="{renamingTake !== $item.id}"
@@ -1987,7 +1982,6 @@
             onClick="
               if (playing === $item.url) playing = '';
               deleteTake.execute($item.id);
-              takes.refetch();
             " />
         </HStack>
       </DndItems>
