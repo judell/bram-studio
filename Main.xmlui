@@ -283,8 +283,8 @@
     }
     // The audio strip's bars (under the take player): one per slice of
     // /takes/levels, px tall for its level from -60 dB (1 px) to 0 dB (24 px),
-    // narr when its middle falls inside a narration, t0-t1 the slice's
-    // time (for the playhead mark), and tip, what hovering it says.
+    // narr when its middle falls inside a narration, and tip, what hovering
+    // it says.
     function levelBars(lv, narrations) {
       return lv.levels.map((db, i) => {
         const t = (i + 0.5) * lv.binSecs;
@@ -292,7 +292,6 @@
         const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Scene audio';
         const level = db > -60 ? Math.round(db) + ' dB' : 'silence';
         return { px: Math.max(1, Math.round(Math.min(1, (db + 60) / 60) * 24)), narr: !!n,
-                 t0: i * lv.binSecs, t1: (i + 1) * lv.binSecs,
                  tip: what + ' · ' + level + ' at ' + t.toFixed(2) + ' s' };
       });
     }
@@ -1331,27 +1330,39 @@
             <Image src="{$item.url}" width="100%" />
           </property>
         </PointerLayer>
-        <!-- Where the take's audio lives: one bar per slice of the take
+        <!-- Where the scene's audio lives: one bar per slice of the scene
              (takeLevels, serve_media.py's /takes/levels), its height the
              slice's level from -60 dB (none) to 0 dB, coloured as a narration
-             or the take's own sound; the bar under the playhead (playerTime,
-             which follows the player while it plays and on every seek) is
-             drawn as a dark 2 px line, full height. A take with no audio (every slice
-             under -60 dB) shows no strip. Hovering a bar says which, and the level
+             or the scene's own sound. A scene with no audio (every slice under
+             -60 dB) shows no strip. Hovering a bar says which, and the level
              there (the tooltip behavior works on any visual component:
-             https://www.xmlui.org/docs/behaviors#tooltip). The strip spans the
-             editor; the player's scrubber has its own margins, so the two line
-             up roughly, not exactly. -->
-        <HStack when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}"
-          height="24px" gap="0" verticalAlignment="end">
-          <Items data="{levelBars(takeLevels.value || lastLevels, narrs.value || [])}">
-            <VStack width="*" height="100%" verticalAlignment="end" horizontalAlignment="center" tooltip="{$item.tip}">
-              <Stack when="{playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1}" width="2px" height="24px" backgroundColor="$color-surface-900" />
-              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; $item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
-              <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; !$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
-            </VStack>
-          </Items>
-        </HStack>
+             https://www.xmlui.org/docs/behaviors#tooltip). The bars don't
+             depend on the playhead, so they are drawn once per load. The
+             playhead is a 2 px line in a thin row just above them, after a
+             spacer playerTime / (slice length x slices) wide, so it sits over
+             the exact time on the bars' own scale and is the one thing that
+             moves as the scene plays (it was the marker in whichever of 200
+             slots held the playhead: it stepped a slot at a time, and every
+             40 ms tick re-checked all 200). The line is 32 px, its 8 px row
+             plus the bars' 24 px, so it hangs down across the bars; the no-op
+             transform puts it above them, as a transformed element is drawn
+             over later ordinary ones
+             (https://www.xmlui.org/docs/styles-and-themes/layout-props#transform). -->
+        <VStack gap="0" var.lv="{takeLevels.value || lastLevels}"
+          when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}">
+          <HStack height="8px" gap="0">
+            <Stack height="8px" width="{Math.min(100, Math.max(0, playerTime / (lv.binSecs * lv.levels.length) * 100)) + '%'}" />
+            <Stack width="2px" height="32px" transform="translateY(0)" backgroundColor="$color-surface-900" />
+          </HStack>
+          <HStack height="24px" gap="0" verticalAlignment="end">
+            <Items data="{levelBars(lv, narrs.value || [])}">
+              <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
+                <Stack when="{$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
+                <Stack when="{!$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
+              </VStack>
+            </Items>
+          </HStack>
+        </VStack>
         <!-- The take's edits, one per tab (https://www.xmlui.org/docs/reference/components/Tabs):
              in each, the slider at full width, then its controls on a second
              row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a
