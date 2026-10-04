@@ -457,19 +457,6 @@ def clean_paths(folder, what, days, usage=None):
 
 
 TAKE_NAME = re.compile(r"(take-\d{8}-\d{6}|perf-\d+)")  # the take a work/ or .trash file is part of
-# What each folder in a clean-up's "What would go" holds, one sentence, for
-# its hover: by clean-up (what), then folder; "*" for any clean-up.
-FOLDER_ABOUT = {
-    "*": {"work/sessions/": "One folder per recording: the microphone recording, the player's event log "
-                            "and the recorder's own output.",
-          "work/takes/": "Each take's separate voice and source tracks, which re-mixing its sound starts from.",
-          "work/narrated/": "What rendering leaves behind: the clips a take was stitched from, ink drawn "
-                            "frame by frame, and a copy of each finished take (the one in use is in media/)."},
-    "discarded": {"media/.trash/": "Files from the project's trash that Studio can't bring back: deleted "
-                                   "exports and takes deleted before Undo delete existed."},
-    "deleted": {"media/.trash/": "The deleted takes' videos and the records Undo delete restores them from."},
-    "undo": {"media/.trash/": "A copy of each take from before each edit, and the records the History tab "
-                              "undoes them from."}}
 TREE_ITEMS = 100  # entries listed per folder in the confirmation; the rest are counted
 
 
@@ -526,8 +513,7 @@ def clean_summary(folder, what, found):
     for g, ps in groups.items():
         items = sorted(({"name": os.path.basename(p), "folder": os.path.isdir(p) and not os.path.islink(p),
                          **dict(zip(("bytes", "files"), tree_size(p)))} for p in ps), key=lambda i: -i["bytes"])
-        about = FOLDER_ABOUT.get(what, {}).get(g + "/") or FOLDER_ABOUT["*"].get(g + "/", "")
-        tree.append({"path": g + "/", "about": about,
+        tree.append({"path": g + "/",
                      "bytes": sum(i["bytes"] for i in items), "files": sum(i["files"] for i in items),
                      "count": len(items), "items": items[:TREE_ITEMS], "more": max(0, len(items) - TREE_ITEMS)})
     return summary, sorted(tree, key=lambda t: -t["bytes"])

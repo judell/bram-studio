@@ -775,9 +775,7 @@
         <Text value="{$param ? cleanQuestion($param.action, $param.plan) : ''}" />
         <Text variant="strong" value="What would go" />
         <Items data="{$param ? $param.plan.tree : []}">
-          <!-- Hover says, in a sentence, what the folder holds
-               (FOLDER_ABOUT in serve_media.py). -->
-          <ExpandableItem iconPosition="start" fullWidthSummary="true" tooltip="{$item.about}">
+          <ExpandableItem iconPosition="start" fullWidthSummary="true">
             <property name="summary">
               <HStack width="100%" verticalAlignment="center">
                 <Text value="{$item.path}" width="*" />
