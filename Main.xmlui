@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.openPlay="{false}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -209,6 +209,7 @@
         toast.error(e.message);
       }
       narrBusy = false;
+      resumeAt = clip ? clip[0] : takePlayer.getCurrentTime();
       cutSeq = cutSeq + 1;
       edits.refetch();
       narrs.refetch(); pauses.refetch();
@@ -656,7 +657,8 @@
   <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + (editTake || 0)}" />
   <!-- The edited take's sound level per slice, for the audio strip under its
        player; cutSeq (bumped by every edit) makes an edited take refetch. -->
-  <DataSource id="takeLevels" url="{'http://127.0.0.1:8765/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}" />
+  <DataSource id="takeLevels" url="{'http://127.0.0.1:8765/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}"
+    onLoaded="(d) => lastLevels = d" />
   <APICall id="undoEdit" method="post" url="http://127.0.0.1:8765/takes/undo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -1302,10 +1304,27 @@
             applyState.refetch();
             editTabs.setActiveTabIndex(0);
           }">
-          <MediaPlayer id="takePlayer" autoPlay="true" maxHeight="55vh"
+          <!-- After an edit the file reloads (cutSeq changes src); it goes
+               back to where the edit was (resumeAt), paused, rather than
+               playing from 0:00. Opening a scene from the list plays it
+               (openPlay). Its height is fixed (the picture fits inside,
+               letterboxed if need be): while the file reloads the player had no
+               size of its own, so it vanished, came back short, then grew,
+               moving everything below it twice. -->
+          <MediaPlayer id="takePlayer" autoPlay="false" height="55vh"
             muted="{!!narrating}" controls="{!narrating}"
             src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
-            onLoadedMetadata="(e) => takeAspect = e.videoWidth / e.videoHeight"
+            onLoadedMetadata="(e) => {
+              takeAspect = e.videoWidth / e.videoHeight;
+              if (resumeAt !== null) {
+                takePlayer.seek(resumeAt);
+                takePlayer.pause();
+                resumeAt = null;
+              } else if (openPlay) {
+                openPlay = false;
+                takePlayer.play();
+              }
+            }"
             onTimeUpdate="(e) => playerTime = e.currentTime"
             onSeeked="(e) => playerTime = e.currentTime" />
           <property name="anchorTemplate">
@@ -1323,9 +1342,9 @@
              https://www.xmlui.org/docs/behaviors#tooltip). The strip spans the
              editor; the player's scrubber has its own margins, so the two line
              up roughly, not exactly. -->
-        <HStack when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!takeLevels.value &amp;&amp; takeLevels.value.levels.some((db) => db > -60)}"
+        <HStack when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}"
           height="24px" gap="0" verticalAlignment="end">
-          <Items data="{levelBars(takeLevels.value, narrs.value || [])}">
+          <Items data="{levelBars(takeLevels.value || lastLevels, narrs.value || [])}">
             <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
               <Stack when="{playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1}" height="24px" backgroundColor="$color-surface-900" />
               <Stack when="{!(playerTime >= $item.t0 &amp;&amp; playerTime &lt; $item.t1) &amp;&amp; $item.narr}" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
@@ -1574,6 +1593,7 @@
               editCallout = null; calloutBox = null; lastSprite = null;
               curShape = null; curText = ''; curTail = 'none';
               cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
+              resumeAt = lastCut[0];
               cutSeq = cutSeq + 1;
               lastCut = [0, 1]; cutSeed = [0, 1];
               edits.refetch();
@@ -1661,6 +1681,7 @@
                   pauseAdding = false;
                   pauseSel = null;
                   pauseSelAt = at;
+                  resumeAt = at;
                   cutSeq = cutSeq + 1;
                   edits.refetch();
                   narrs.refetch(); pauses.refetch();
@@ -1708,6 +1729,7 @@
                   }
                   pauseSel = null;
                   pauseSelAt = null;
+                  resumeAt = $item.at;
                   cutSeq = cutSeq + 1;
                   edits.refetch();
                   narrs.refetch(); pauses.refetch();
@@ -1820,6 +1842,7 @@
                   narrSel = null;
                   narrSelAt = null;
                   removeNarration.execute($item.id);
+                  resumeAt = $item.t_in;
                   cutSeq = cutSeq + 1;
                   narrs.refetch(); pauses.refetch(); edits.refetch();
                 " />
@@ -1849,6 +1872,7 @@
                 audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
+                resumeAt = takePlayer.getCurrentTime();
                 undoEdit.execute(editTake);
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
@@ -1866,6 +1890,7 @@
                 audition = null;
                 editCallout = null; calloutBox = null; lastSprite = null;
                 curShape = null; curText = ''; curTail = 'none';
+                resumeAt = takePlayer.getCurrentTime();
                 redoEdit.execute(editTake);
                 cutSeq = cutSeq + 1;
                 lastCut = [0, 1]; cutSeed = [0, 1];
@@ -1965,6 +1990,9 @@
               if (playing === $item.url) {
                 takePlayer.paused ? takePlayer.play() : takePlayer.pause();
               } else {
+                openPlay = true;
+                resumeAt = null;
+                lastLevels = null;
                 playing = $item.url;
                 editTake = $item.id;
                 editFile = $item.file;
