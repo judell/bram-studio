@@ -670,7 +670,7 @@
   <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
        its clean copy, callouts shifted). No onSuccess (xmlui-org/xmlui#3924).
        cutSeq goes into the take player's src so it reloads the changed video.
-       edits is the edited take's history for the History tab (GET
+       edits is the edited take's history for the Undo tab (GET
        /takes/edits: its edits newest first, which one Undo would take back,
        and whether Undo and Redo are possible); it is refetched after every
        edit, undo and redo and whenever the takes change. undoEdit and
@@ -1839,7 +1839,7 @@
              clip's end (a Timer waits for its handler before ticking again:
              https://www.xmlui.org/docs/reference/components/Timer), or Stop
              does earlier, and the scene's audio there is replaced (Undo, on
-             the History tab, takes it back). While narrating, the clip's
+             the Undo tab, takes it back). While narrating, the clip's
              start and end show with a ProgressBar between them
              (https://www.xmlui.org/docs/reference/components/ProgressBar) and
              Stop counts down, since the player's own controls are hidden.
@@ -1894,7 +1894,7 @@
           </VStack>
           <!-- The scene's narrations, one row each; the ✕ puts back the audio a
                narration replaced (/narrate/remove), at any time, and Undo on the
-               History tab restores it. Play, Intro and Outro hear it as judell/av
+               Undo tab restores it. Play, Intro and Outro hear it as judell/av
                plays a clip, its intro and its outro
                (https://github.com/judell/av av.js). -->
           <Items data="{narrs.value || []}">
@@ -1950,7 +1950,7 @@
              left the tint as separate blocks with gaps between them.
              Both buttons let go of the current item first, as a cut does:
              the take's items are swapped with its files. -->
-        <TabItem label="History">
+        <TabItem label="Undo">
         <VStack>
           <HStack verticalAlignment="center">
             <Button label="Undo" size="xs" variant="outlined"
@@ -2041,7 +2041,7 @@
         onReorder="(newOrder) => {
           reorderTakes.execute({ ids: newOrder.map(t => t.id) });
         }">
-        <!-- The open scene's row is tinted, as the History tab tints its
+        <!-- The open scene's row is tinted, as the Undo tab tints its
              current edit. -->
         <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2" paddingHorizontal="$space-2"
           borderRadius="$space-1"
