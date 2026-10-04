@@ -23,9 +23,13 @@
   <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
     pollIntervalInSeconds="60" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
-       changed ({changed: 'takes'|'sources'|'record'|'exports'}) and only that
-       one is refetched. 'takes' (any change to studio.db) refetches only
-       the scenes list: the page's own edits refresh the lists they touch
+       changed ({changed: 'takes'|'sources'|'record'|'exports'|'projects'})
+       and only that one is refetched, plus the Projects page's list, which
+       'takes', 'exports' and 'projects' (a project folder changed) all
+       affect. Two fetches of that list close together are harmless: the
+       later one wins and reads the newer state. 'takes' (any change to
+       studio.db) otherwise refetches only the scenes list: the page's own
+       edits refresh the lists they touch
        (history, narrations, pauses, items) from their handlers and leave the
        scenes list to this, so no list is fetched twice at once (XMLUI cancels
        a list's fetch in flight when another starts: two rounds 10 ms apart
@@ -47,10 +51,11 @@
       if (opening) { opening = ''; navigate('/'); }
     }"
     onMessage="(m) => {
-      if (m.changed === 'takes') takes.refetch();
+      if (m.changed === 'takes') { takes.refetch(); projects.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
       else if (m.changed === 'record') { recStatus.refetch(); edits.refetch(); }
-      else if (m.changed === 'exports') exports.refetch();
+      else if (m.changed === 'exports') { exports.refetch(); projects.refetch(); }
+      else if (m.changed === 'projects') projects.refetch();
     }" />
   <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
     body="{$param}"
@@ -805,12 +810,11 @@
         </HStack>
       </ModalDialog>
       <!-- Sizes are worked out when the list is fetched (project_usage in
-           serve_media.py): at load, after a switch, and on Refresh. -->
-      <HStack verticalAlignment="center">
-        <H2>Projects</H2>
-        <Button label="Refresh" variant="outlined" size="sm"
-          tooltip="Work out the sizes again" onClick="projects.refetch()" />
-      </HStack>
+           serve_media.py): at load, after a switch or an action here, and
+           whenever the server's change stream says takes, exports or a
+           project folder changed (the EventSource above), so there is no
+           Refresh button. -->
+      <H2>Projects</H2>
       <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
         value="No projects yet: this Studio keeps its scenes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
       <!-- Each project is one line, so the page can be scanned: an expander

@@ -715,7 +715,8 @@ def restart():
 def fingerprints():
     # What each of the page's lists is built from, cheaply: the recording
     # phase, studio.db (takes, callouts; register.py writes it too), the two
-    # source folders and the exports folder. A change means "refetch that".
+    # source folders, the exports folder and the project folders. A change
+    # means "refetch that".
     def mtime(path):
         try:
             return os.stat(path).st_mtime_ns
@@ -724,7 +725,28 @@ def fingerprints():
     return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
             "takes": mtime(DB),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
-            "exports": exports_fingerprint()}
+            "exports": exports_fingerprint(),
+            "projects": projects_fingerprint(mtime)}
+
+
+def projects_fingerprint(mtime):
+    # For the Projects page, which measures every project folder (too slow to
+    # do every second): the modification times of projects/, the drag order,
+    # and each project's folder and top-level folders. A file or folder
+    # dropped in from outside, a project added or removed, or a new order
+    # changes one of them; changes inside the open project's database and
+    # exports arrive as "takes" and "exports" too.
+    found = [mtime(studio_paths.PROJECTS), mtime(ORDER)]
+    try:
+        slugs = sorted(s for s in os.listdir(studio_paths.PROJECTS) if not s.startswith("."))
+    except OSError:
+        slugs = []
+    for slug in slugs:
+        base = os.path.join(studio_paths.PROJECTS, slug)
+        found += [mtime(os.path.join(base, *p)) for p in
+                  ((), ("project.json",), ("studio.db",), ("media",), ("media", "exports"), ("media", ".trash"),
+                   ("media", ".clean"), ("work",), ("work", "sessions"), ("work", "takes"))]
+    return found
 
 
 def watch_changes():
