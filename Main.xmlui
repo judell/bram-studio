@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.undoLogSeq="{0}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.undoLogSeq="{0}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -344,7 +344,6 @@
       calloutIn = t;
       calloutOut = out;
       lastSprite = null;
-      dragPos = null;
       callouts.refetch();
       savedSprites.refetch();
     }
@@ -368,6 +367,13 @@
       const p = takePlayer.getCurrentTime();
       if (which === 'in') calloutIn = Math.max(0, Math.min(p, calloutOut - 0.1));
       else calloutOut = Math.max(p, calloutIn + 0.1);
+      saveCurrentItem();
+    }
+    // A drag's end (AnnotationCanvas's moveItem / resizeItem): the current
+    // item's new box, saved; the new sprite that follows clears the canvas's
+    // drag state.
+    function saveBox(nb) {
+      calloutBox = nb;
       saveCurrentItem();
     }
     function saveCurrentItem() {
@@ -1180,19 +1186,11 @@
           }
         " />
       <!-- The take loaded in the take player (its URL); hidden while recording. -->
-      <!-- calloutHandles: the edited callout's eight resize handles (anchors
-           named by compass point), centered on its box's corners and edge
-           midpoints, square on screen (height scaled by the picture's aspect);
-           hidden while the callout is being moved. Each carries the resize
-           cursor of its direction (an arrow's or line's ends: crosshair),
-           which anchorTemplate shows. They depend only on the
-           box, never on the sprite, so a handle can't leave anchors mid-drag
-           (PointerLayer ends a drag whose anchor disappears). -->
       <!-- editSprite: the current item's sprite from the DataSource, or its
            last one while the next loads; never another item's.
            annotKind: what the editor places (callout, rect, ellipse, arrow or
-           pointer); an arrow gets two handles at its ends (a: tail, b: tip), a
-           pointer none (it only moves). -->
+           pointer). The handles, and dragging, are AnnotationCanvas's
+           (components/AnnotationCanvas.xmlui). -->
       <!-- The editor has no draft and nothing to save (take-editor-live-model). Command-drag places an item,
            which is saved at once (/callouts/add) and becomes the current one.
            editCallout is the current item's id; calloutBox, calloutIn,
@@ -1211,9 +1209,7 @@
       <VStack when="{playing}"
         var.editDur="{((takes.value || []).find((t) => t.id === editTake) || { duration_s: 0 }).duration_s}"
         var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
-        var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}"
-        var.handleBox="{curShown &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (curShown ? calloutBox : null)}"
-        var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect, cursor: { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h[0]] || 'crosshair' })) : []}">
+        var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}">
         <!-- The player's close box (the tools are on the Annotate tab). -->
         <HStack verticalAlignment="center">
           <SpaceFiller />
@@ -1225,9 +1221,9 @@
              PointerLayer's anchors (xmlui-org/xmlui#3922) draw each callout on
              it as a sprite from the server, made by the same code Export burns in with.
              Items show between their in and out points; the current one
-             always shows, and dragging it moves it (the layer reports the
-             drag; the page moves the anchor), and dragging one of its eight
-             handles resizes it (the text refits as you drag). Command-drag
+             always shows, and dragging it moves it, and dragging one of its
+             eight handles resizes it, shown as an outline until the drag ends
+             and the new sprite arrives (AnnotationCanvas). Command-drag
              places a new item. calloutSprite is the current item's sprite as
              its fields stand now (with a callout's selection frame); the
              server echoes the item's id, so a sprite still loading for the
@@ -1235,94 +1231,49 @@
         <DataSource id="calloutSprite" url="http://127.0.0.1:8765/callouts/sprite" method="POST"
           when="{!!editCallout &amp;&amp; !!calloutBox &amp;&amp; !!editTake}"
           body="{{ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, tail: curTail, shape: curShape, frame: !curShape }}"
-          onLoaded="(d) => { lastSprite = d; dragPos = null; }" />
+          onLoaded="(d) => lastSprite = d" />
         <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
           when="{!!editTake}" body="{{ take_id: editTake }}" />
-        <!-- Every item's anchor has the item's id, the current one's too, so
-             a drag that starts on another item makes it current and carries
-             on as a move (a dragged anchor that unmounts leaves PointerLayer's
-             drag stuck). The current item is drawn from editSprite once that
-             has loaded, and from its saved sprite until then; lastSprite is
-             its latest sprite, kept while the next one loads. One just placed
-             isn't in savedSprites until the refetch lands, hence the last
-             concat. At the end of a drag, nb is the current item's new box
-             when the drag changed it; a click, or a drag that came back,
-             saves nothing, and since no new sprite will then load to clear
-             dragPos, it is cleared there. -->
-        <PointerLayer id="calloutLayer" contentAspect="{takeAspect}" anchorDrag="true" pointerShape="arrow"
+        <!-- The picture: AnnotationCanvas (components/AnnotationCanvas.xmlui)
+             draws the scene's items over the player and handles dragging,
+             keeping per-move state in its own scope so a drag doesn't
+             re-evaluate this page. It reports committed changes only:
+             pickItem (another item grabbed: it becomes current, and the drag
+             moves it), moveItem {dx, dy} and resizeItem (a box) at a drag's
+             end, drawItem for a ⌘-drag. A move clamped to nothing saves
+             nothing, so release() lets the canvas drop its drag offset. The
+             player is its children, so takePlayer stays this page's. -->
+        <AnnotationCanvas id="canvas" aspect="{takeAspect}" time="{playerTime}"
           tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
-          anchors="{(savedSprites.value || []).filter((a) => a.id === editCallout ? curShown : (playerTime >= a.t_in &amp;&amp; playerTime &lt;= a.t_out)).map((a) => a.id !== editCallout ? a : { id: a.id, url: (editSprite || a).url, x: dragPos ? dragPos.x : (editSprite || a).x, y: dragPos ? dragPos.y : (editSprite || a).y, width: (editSprite || a).width, height: (editSprite || a).height }).concat(curShown &amp;&amp; editSprite &amp;&amp; !(savedSprites.value || []).some((a) => a.id === editCallout) ? [{ id: editCallout, url: editSprite.url, x: dragPos ? dragPos.x : editSprite.x, y: dragPos ? dragPos.y : editSprite.y, width: editSprite.width, height: editSprite.height }] : []).concat(calloutHandles)}"
-          onAnchorDragStart="(e) => {
-            const edges = { nw: 1, n: 1, ne: 1, e: 1, se: 1, s: 1, sw: 1, w: 1, a: 1, b: 1 }[e.id];
-            if (edges) {
-              dragFrom = handleBox;
-            } else if (e.id === editCallout) {
-              dragFrom = calloutBox;
+          sprites="{savedSprites.value || []}"
+          current="{{ id: editCallout, box: calloutBox, shape: curShape, shown: curShown, sprite: editSprite }}"
+          onPickItem="(id) => {
+            const it = (callouts.value || []).find((c) => c.id === id);
+            if (it) {
+              editCallout = it.id;
+              curShape = it.shape || null;
+              curText = it.text;
+              curTail = it.tail || 'none';
+              calloutBox = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
+              calloutIn = it.t_in;
+              calloutOut = it.t_out;
+              lastSprite = null;
+            }
+          }"
+          onMoveItem="(d) => {
+            const c = calloutBox;
+            const dx = c ? Math.min(Math.max(d.dx, -Math.min(c.x1, c.x2)), 1 - Math.max(c.x1, c.x2)) : 0;
+            const dy = c ? Math.min(Math.max(d.dy, -Math.min(c.y1, c.y2)), 1 - Math.max(c.y1, c.y2)) : 0;
+            if (!editCallout || (dx === 0 &amp;&amp; dy === 0)) {
+              canvas.release();
             } else {
-              const it = (callouts.value || []).find((c) => c.id === e.id);
-              if (it) {
-                editCallout = it.id;
-                curShape = it.shape || null;
-                curText = it.text;
-                curTail = it.tail || 'none';
-                calloutBox = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
-                calloutIn = it.t_in;
-                calloutOut = it.t_out;
-                lastSprite = null;
-                dragPos = null;
-                dragFrom = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
-              }
+              saveBox({ x1: c.x1 + dx, y1: c.y1 + dy, x2: c.x2 + dx, y2: c.y2 + dy });
             }
           }"
-          onAnchorDragMove="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
-            if (e.id === editCallout) {
-              dragPos = { x: e.x, y: e.y };
-            } else if (edges &amp;&amp; dragFrom &amp;&amp; (curShape === 'arrow' || curShape === 'line')) {
-              const b = dragFrom;
-              calloutBox = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
-            } else if (edges &amp;&amp; dragFrom) {
-              const b = dragFrom;
-              const x1 = Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
-              const y1 = Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
-              const x2 = Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
-              const y2 = Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
-              calloutBox = { x1: x1, y1: y1, x2: x2, y2: y2 };
-            }
+          onResizeItem="(nb) => {
+            if (editCallout) saveBox(nb); else canvas.release();
           }"
-          onAnchorDragEnd="(e) => {
-            const edges = { nw: [1, 1, 0, 0], n: [0, 1, 0, 0], ne: [0, 1, 1, 0], e: [0, 0, 1, 0], se: [0, 0, 1, 1], s: [0, 0, 0, 1], sw: [1, 0, 0, 1], w: [1, 0, 0, 0], a: [1, 1, 0, 0], b: [0, 0, 1, 1] }[e.id];
-            let nb = null;
-            if (e.id === editCallout &amp;&amp; calloutBox) {
-              const c = calloutBox;
-              const dx = Math.min(Math.max(e.dx, -Math.min(c.x1, c.x2)), 1 - Math.max(c.x1, c.x2));
-              const dy = Math.min(Math.max(e.dy, -Math.min(c.y1, c.y2)), 1 - Math.max(c.y1, c.y2));
-              if (dx === 0 &amp;&amp; dy === 0) {
-                dragPos = null;
-              } else {
-                nb = { x1: c.x1 + dx, y1: c.y1 + dy, x2: c.x2 + dx, y2: c.y2 + dy };
-              }
-            } else if (edges &amp;&amp; dragFrom &amp;&amp; (curShape === 'arrow' || curShape === 'line')) {
-              const b = dragFrom;
-              nb = { x1: Math.min(1, Math.max(0, b.x1 + edges[0] * e.dx)), y1: Math.min(1, Math.max(0, b.y1 + edges[1] * e.dy)), x2: Math.min(1, Math.max(0, b.x2 + edges[2] * e.dx)), y2: Math.min(1, Math.max(0, b.y2 + edges[3] * e.dy)) };
-            } else if (edges &amp;&amp; dragFrom) {
-              const b = dragFrom;
-              const x1 = Math.max(0, Math.min(b.x1 + edges[0] * e.dx, b.x2 - 0.04));
-              const y1 = Math.max(0, Math.min(b.y1 + edges[1] * e.dy, b.y2 - 0.03));
-              const x2 = Math.min(1, Math.max(b.x2 + edges[2] * e.dx, b.x1 + 0.04));
-              const y2 = Math.min(1, Math.max(b.y2 + edges[3] * e.dy, b.y1 + 0.03));
-              nb = { x1: x1, y1: y1, x2: x2, y2: y2 };
-            }
-            dragFrom = null;
-            if (nb &amp;&amp; editCallout) {
-              calloutBox = nb;
-              updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: nb.x1, y1: nb.y1, x2: nb.x2, y2: nb.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail, shape: curShape });
-              callouts.refetch();
-              savedSprites.refetch();
-              edits.refetch();
-            }
-          }"
-          onShapeEnd="(e) => {
+          onDrawItem="(e) => {
             const t = takePlayer.getCurrentTime();
             const out = Math.max(t + 0.2, Math.min(t + 3, editDur));
             const shape = annotKind === 'callout' ? null : annotKind;
@@ -1338,7 +1289,6 @@
             calloutIn = t;
             calloutOut = out;
             lastSprite = null;
-            dragPos = null;
             callouts.refetch();
             savedSprites.refetch();
             editTabs.setActiveTabIndex(0);
@@ -1363,15 +1313,7 @@
             }"
             onTimeUpdate="(e) => playerTime = e.currentTime"
             onSeeked="(e) => playerTime = e.currentTime" />
-          <!-- PointerLayer gives every draggable anchor cursor: move, handles
-               too, so a resize looked like a move until it happened. Each
-               anchor's own cursor (a handle's, from calloutHandles; an item's,
-               move) is set on the image, which wins while the pointer is over
-               it: https://www.xmlui.org/docs/styles-and-themes/layout-props#cursor -->
-          <property name="anchorTemplate">
-            <Image src="{$item.url}" width="100%" cursor="{$item.cursor || 'move'}" />
-          </property>
-        </PointerLayer>
+        </AnnotationCanvas>
         <!-- Where the scene's audio lives: one bar per slice of the scene
              (takeLevels, serve_media.py's /takes/levels), its height the
              slice's level from -60 dB (none) to 0 dB, coloured as a narration
@@ -1476,7 +1418,6 @@
                     calloutIn = $item.t_in;
                     calloutOut = $item.t_out;
                     lastSprite = null;
-                    dragPos = null;
                     takePlayer.seek($item.t_in);
                   }
                 " />
