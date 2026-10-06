@@ -960,14 +960,14 @@ def discard_undone(file):
                     os.remove(os.path.join(TRASH, f))
 
 
-ANNOT_MERGE_S = 3  # an item's changes this close together undo as one step
-
-
 def record_annot_step(take_file, op, item_id, before, after):
     # An item's change as a step of the take's history: its row before and
-    # after (None: it didn't exist). A change to the item the newest step
-    # already changed, within ANNOT_MERGE_S, extends that step instead, so a
-    # drag or a run of nudges undoes at once.
+    # after (None: it didn't exist). Consecutive changes to one item are one
+    # step: a change to the item the newest step changed extends that step,
+    # however long after, until something else is recorded (another item, a
+    # cut, a narration...) or the step is sealed by Undo or Redo (lastAt 0,
+    # seal_cursor). A 3 s window, the first rule, split ordinary editing into
+    # a line per save (2026-10-05).
     os.makedirs(TRASH, exist_ok=True)
     now = time.time()
     with EDIT_LOCK:
@@ -976,7 +976,7 @@ def record_annot_step(take_file, op, item_id, before, after):
         if edits and op == "update":
             name, last = edits[-1]
             if (is_row_step(last) and last.get("id") == item_id and last.get("op") in ("add", "update")
-                    and now - last.get("lastAt", 0) <= ANNOT_MERGE_S):
+                    and last.get("lastAt")):
                 last["after"], last["lastAt"] = after, now
                 with open(os.path.join(TRASH, name), "w") as f:
                     json.dump(last, f, indent=1)
@@ -990,6 +990,18 @@ def record_annot_step(take_file, op, item_id, before, after):
         with open(os.path.join(TRASH, name), "w") as f:
             json.dump({"edit": "annot", "op": op, "id": item_id, "before": before, "after": after,
                        "lastAt": now}, f, indent=1)
+
+
+def seal_cursor(take_file):
+    # After an Undo, the step now in effect is sealed (lastAt 0), so the next
+    # change to its item starts a new step rather than extending one that
+    # Undo has already stepped back past. The caller holds EDIT_LOCK.
+    done = [e for e in take_edits(take_file) if not e[1].get("undone")]
+    if done and is_row_step(done[-1][1]) and done[-1][1].get("lastAt"):
+        name, saved = done[-1]
+        saved["lastAt"] = 0
+        with open(os.path.join(TRASH, name), "w") as f:
+            json.dump(saved, f, indent=1)
 
 
 def set_item_row(db, take_id, item_id, row):
@@ -2919,6 +2931,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 saved["undone"] = {"at": time.time()}
                 with open(os.path.join(TRASH, name), "w") as f:
                     json.dump(saved, f, indent=1)
+                seal_cursor(row["file"])
                 return self.send_json(200, {"id": row["id"], "undone": edit_what(name, saved)})
             src = os.path.join(ROOT, row["file"])
             clean = os.path.join(ROOT, ".clean", row["file"])
@@ -2946,6 +2959,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             saved["undone"] = after
             with open(os.path.join(TRASH, name), "w") as f:
                 json.dump(saved, f, indent=1)
+            seal_cursor(row["file"])
             self.mark_take_cut(row["file"], None)
         self.send_json(200, {"id": row["id"], "undone": edit_what(name, saved)})
 
