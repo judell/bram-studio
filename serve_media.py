@@ -76,6 +76,7 @@ HERE = studio_paths.REPO  # the scripts, record.log
 # The open project (studio_paths.py): its takes and exports, its database and
 # its render ingredients. The scripts launched from here inherit it.
 ROOT, DB, WORK = studio_paths.MEDIA, studio_paths.DB, studio_paths.WORK
+CONFIG = os.path.join(HERE, "config.json")  # the page's XMLUI config: appGlobals.xsVerbose is trace capture
 SHARED_DB = os.path.join(HERE, "studio.db")  # the repo's: the Audio bench's voice_tests (voicetest.py)
 os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
 testing = threading.Lock()  # held while voicetest.py has the mic
@@ -940,6 +941,15 @@ def history_state(file):
     return edits, cursor, redo, why
 
 
+def trace_on():
+    # Whether XMLUI's trace capture is on (config.json's appGlobals.xsVerbose).
+    try:
+        with open(CONFIG) as f:
+            return json.load(f).get("appGlobals", {}).get("xsVerbose") is True
+    except (OSError, ValueError):
+        return False
+
+
 def discard_undone(file):
     # A new edit ends the chance to redo: the undone edits above the cursor
     # go, with the files kept for redoing them. The caller holds EDIT_LOCK.
@@ -1430,6 +1440,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path == "/trace":
+            return self.send_json(200, {"on": trace_on()})
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
         if self.path == "/sources":
@@ -1485,6 +1497,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # tell that no other request is in the middle of changing something.
         # The pages' queries change nothing, so they are neither counted nor
         # turned away.
+        if self.path == "/trace":
+            return self.set_trace()
         if self.path == "/query":
             return self.query(DB)
         if self.path == "/query/shared":
@@ -3332,6 +3346,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with sqlite3.connect(os.path.join(folder, "studio.db")) as db:
             db.executescript(open(os.path.join(HERE, "schema.sql")).read())
         self.open_project(slug)
+
+    def set_trace(self):
+        # POST /trace {on}: turn XMLUI's trace capture (the Inspector's
+        # data) on or off by rewriting config.json's appGlobals.xsVerbose.
+        # The engine reads it only at startup, so the page reloads after.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if not isinstance(body.get("on"), bool):
+            return self.send_json(400, {"error": "on must be true or false"})
+        try:
+            with open(CONFIG) as f:
+                config = json.load(f)
+            config.setdefault("appGlobals", {})["xsVerbose"] = body["on"]
+            tmp = CONFIG + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(config, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, CONFIG)
+        except (OSError, ValueError) as e:
+            return self.send_json(500, {"error": f"couldn't update config.json: {e}"})
+        print(f"trace: xsVerbose {'on' if body['on'] else 'off'} (config.json)", flush=True)
+        self.send_json(200, {"on": trace_on()})
 
     def query(self, path, shared=False):
         # The pages' DataSource dataType="sql" requests: {sql, params} (or

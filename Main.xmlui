@@ -769,8 +769,21 @@
       <SpaceFiller />
       <!-- XMLUI trace viewer. The studio carries its own xs-diff.html and the
            xmlui-parser.es.js it imports (vendor/), as it carries its own engine;
-           config.json's appGlobals.xsVerbose turns capture on. -->
-      <Inspector src="/vendor/xs-diff.html" tooltip="Inspector: XMLUI trace" />
+           config.json's appGlobals.xsVerbose turns capture on. Capture costs
+           time in every handler, so the button beside it turns it off and on:
+           serve_media.py's /trace rewrites config.json, and since the engine
+           reads it only at startup, the page reloads
+           (https://www.xmlui.org/docs/globals#appglobals; location.reload()
+           as in https://www.xmlui.org/docs/globals#resetlocalstorage). -->
+      <Button size="xs" variant="ghost" label="{appGlobals.xsVerbose ? 'Trace on' : 'Trace off'}"
+        tooltip="{appGlobals.xsVerbose ? 'Trace capture is on (Inspector can export). Click to turn it off and reload.' : 'Trace capture is off (faster). Click to turn it on and reload.'}"
+        onClick="
+          Actions.callApi({ url: 'http://127.0.0.1:8765/trace', method: 'post', invalidates: [],
+                            body: { on: !appGlobals.xsVerbose } });
+          location.reload();
+        " />
+      <Inspector src="/vendor/xs-diff.html"
+        tooltip="{appGlobals.xsVerbose ? 'Inspector: XMLUI trace' : 'Inspector: trace capture is off, so there is nothing to export (turn it on with Trace off)'}" />
     </HStack>
   </AppHeader>
   <NavPanel>
