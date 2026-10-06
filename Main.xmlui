@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.undoLogSeq="{0}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -159,6 +159,27 @@
         narrating = null;
         toast.error(e.message);
       }
+    }
+    // Before a cut: ask the server what it would remove (/takes/cut with
+    // dryRun: the narrations and pauses it goes through, items it leaves
+    // under 0.05 s, earlier cuts' seams inside it) and, if anything, confirm.
+    // A cut through a narration keeps its sound outside the cut but drops its
+    // row, so the Narrate tab stops listing it (2026-10-05). True: go ahead.
+    // confirm(): https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete
+    function confirmCut(start, end) {
+      const d = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/cut', method: 'post', invalidates: [],
+                                  body: { id: editTake, start: start, end: end, dryRun: true } });
+      const s = (t) => t.toFixed(2);
+      const lines = []
+        .concat(d.narrations.map(n => 'the narration at ' + s(n.t_in) + '–' + s(n.t_out) + ' s'))
+        .concat(d.pauses.map(z => 'the ' + z.seconds + ' s pause at ' + s(z.at) + ' s'))
+        .concat(d.items.map(o => 'the ' + o.kind + (o.text ? ' "' + o.text + '"' : '') + ' at ' + s(o.t_in) + ' s'))
+        .concat(d.seams.map(c => 'the earlier cut at ' + s(c.at) + ' s'));
+      if (lines.length === 0) return true;
+      return confirm('Cut ' + s(start) + '–' + s(end) + ' s?',
+                     'This cut removes ' + lines.join(', ') + '. A narration\'s sound outside the cut stays in the scene, '
+                     + 'but it leaves the Narrate list. Undo brings everything back.',
+                     'Cut', 'Keep');
     }
     function stopNarration() {
       const clip = narrating;
@@ -670,7 +691,10 @@
        serve_media.log (/undo/log) with every input, which ones changed and
        whether Undo is on. After a narration, Undo stayed off while the server
        said canUndo (2026-10-05); this names the input holding it. Sources by
-       name: https://www.xmlui.org/docs/reference/components/ChangeListener -->
+       name: https://www.xmlui.org/docs/reference/components/ChangeListener
+       The posts run concurrently and can arrive out of order, so each carries
+       seq (undoLogSeq, this page's count) and pageMs (when the page saw the
+       change): sort by seq to read them in the page's order. -->
   <ChangeListener
     listenToSources="{{
       take: editTake,
@@ -685,9 +709,11 @@
     }}"
     onDidChange="(change) => {
       const v = change.newValue;
+      undoLogSeq = undoLogSeq + 1;
+      const seq = undoLogSeq;
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
-                          body: { take: v.take, edits: v.edits, canUndo: v.canUndo,
+                          body: { seq: seq, pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
                                   undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
                                   pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,
                                   changed: change.changedSources,
@@ -1629,21 +1655,23 @@
             enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
             handlerTimeoutMs:onClick="0"
             onClick="
-              audition = null;
-              editCallout = null; calloutBox = null; lastSprite = null;
-              curShape = null; curText = ''; curTail = 'none';
-              cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
-              resumeAt = lastCut[0];
-              cutAdding = false;
-              cutSel = null;
-              cutSelAt = lastCut[0];
-              cutSeq = cutSeq + 1;
-              lastCut = [0, 1]; cutSeed = [0, 1];
-              edits.refetch();
-              narrs.refetch(); pauses.refetch(); cuts.refetch();
-              callouts.refetch();
-              savedSprites.refetch();
-              applyState.refetch();
+              if (confirmCut(lastCut[0], lastCut[1])) {
+                audition = null;
+                editCallout = null; calloutBox = null; lastSprite = null;
+                curShape = null; curText = ''; curTail = 'none';
+                cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
+                resumeAt = lastCut[0];
+                cutAdding = false;
+                cutSel = null;
+                cutSelAt = lastCut[0];
+                cutSeq = cutSeq + 1;
+                lastCut = [0, 1]; cutSeed = [0, 1];
+                edits.refetch();
+                narrs.refetch(); pauses.refetch(); cuts.refetch();
+                callouts.refetch();
+                savedSprites.refetch();
+                applyState.refetch();
+              }
             " />
           <Button label="Cancel" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
             onClick="audition = null; cutAdding = false;" />

@@ -779,6 +779,69 @@ PAUSES_SQL = """CREATE TABLE IF NOT EXISTS pauses (
 )"""
 NARRATED = os.path.join(ROOT, ".narrated")
 NARR_EDGE = 0.04  # one frame: an edit this close to a narration's end isn't inside it
+
+
+def cut_rules(start, end):
+    # What cutting start..end does to a take's overlays, narrations, pauses
+    # and seams: (retime, narr, pz, cz), as apply_take_edit uses them. Shared
+    # by the cut itself (cut_stretch) and its dry run (cut_drops), so the
+    # warning names exactly what the cut would take.
+    cut = end - start
+
+    def retime(t_in, t_out):
+        if t_out <= start:
+            return t_in, t_out
+        if t_in >= end:
+            return t_in - cut, t_out - cut
+        # overlaps the cut: keep what's left of it on either side
+        return min(t_in, start), (t_out - cut if t_out > end else start)
+
+    def narr(t_in, t_out):
+        # A cut through a narration takes its row; one before it moves it.
+        if start < t_out - NARR_EDGE and end > t_in + NARR_EDGE:
+            return None
+        return (max(start, t_in - cut), t_out - cut) if t_in >= end - NARR_EDGE else (t_in, t_out)
+
+    def pz(at, secs):
+        # A cut into a pause's held stretch takes its row (Undo brings it
+        # back); one before it moves it earlier.
+        if start < at + secs - NARR_EDGE and end > at + NARR_EDGE:
+            return None
+        return (at - cut, secs) if at >= end - NARR_EDGE else (at, secs)
+
+    def cz(at):
+        # A cut containing a seam takes its row (Undo brings it back);
+        # one before it moves it earlier.
+        if start + NARR_EDGE < at < end - NARR_EDGE:
+            return None
+        return at - cut if at >= end - NARR_EDGE else at
+
+    return retime, narr, pz, cz
+
+
+def cut_drops(db, take_id, start, end):
+    # What cutting start..end out of a take would remove, by cut_rules and
+    # apply_take_edit's own tests: narrations and pauses it goes through,
+    # items (callouts, shapes) left shorter than 0.05 s, and earlier cuts'
+    # seams inside it. Nothing is changed.
+    retime, narr, pz, cz = cut_rules(start, end)
+    q = lambda sql: db.execute(sql, (take_id,)).fetchall()
+    items = []
+    for o in q("SELECT id, kind, text, shape, t_in, t_out FROM overlays WHERE take_id = ? ORDER BY t_in"):
+        a, b = retime(o["t_in"], o["t_out"])
+        if b - a < 0.05:
+            items.append({"id": o["id"], "kind": o["shape"] or o["kind"], "text": o["text"],
+                          "t_in": o["t_in"], "t_out": o["t_out"]})
+    return {"narrations": [{"t_in": n["t_in"], "t_out": n["t_out"]}
+                           for n in q("SELECT t_in, t_out FROM narrations WHERE take_id = ? ORDER BY t_in")
+                           if narr(n["t_in"], n["t_out"]) is None],
+            "pauses": [{"at": z["at"], "seconds": z["seconds"]}
+                       for z in q("SELECT at, seconds FROM pauses WHERE take_id = ? ORDER BY at")
+                       if pz(z["at"], z["seconds"]) is None],
+            "items": items,
+            "seams": [{"at": c["at"], "seconds": c["seconds"]}
+                      for c in q("SELECT at, seconds FROM cuts WHERE take_id = ? ORDER BY at")
+                      if cz(c["at"]) is None]}
 TRASH = os.path.join(ROOT, ".trash")
 EDIT_LOCK = threading.Lock()  # one undo, redo or history read at a time
 
@@ -2083,7 +2146,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # can still join by stream copy. Overlays after the cut shift earlier,
         # ones overlapping it are clipped, ones inside it go. The originals and
         # a sidecar (the take's row, its overlays) go to media/.trash/ first,
-        # for Undo (undo_take).
+        # for Undo (undo_take). With dryRun, only says what the cut would
+        # remove (cut_drops), for the Cut button's warning.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
@@ -2103,6 +2167,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "the cut must be at least 0.1 s"})
         if dur - (end - start) < 0.5:
             return self.send_json(400, {"error": "the cut would leave less than 0.5 s of the take"})
+        if body.get("dryRun"):
+            # What the cut would remove, for the page's warning; nothing changes.
+            return self.send_json(200, {"dryRun": True, "start": round(start, 3), "end": round(end, 3),
+                                        **cut_drops(db, row["id"], start, end)})
         done = self.cut_stretch(db, row, src, dur, start, end, "cut")
         if done:
             # Its row: the seam is now at start; the stretch is start..end of
@@ -2127,36 +2195,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS"
                       f"{''.join(',' + x for x in fades)}[a{i}];")
         chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
-        cut = end - start
-
-        def retime(t_in, t_out):
-            if t_out <= start:
-                return t_in, t_out
-            if t_in >= end:
-                return t_in - cut, t_out - cut
-            # overlaps the cut: keep what's left of it on either side
-            return min(t_in, start), (t_out - cut if t_out > end else start)
-
-        def narr(t_in, t_out):
-            # A cut through a narration takes its row; one before it moves it.
-            if start < t_out - NARR_EDGE and end > t_in + NARR_EDGE:
-                return None
-            return (max(start, t_in - cut), t_out - cut) if t_in >= end - NARR_EDGE else (t_in, t_out)
-
-        def pz(at, secs):
-            # A cut into a pause's held stretch takes its row (Undo brings it
-            # back); one before it moves it earlier.
-            if start < at + secs - NARR_EDGE and end > at + NARR_EDGE:
-                return None
-            return (at - cut, secs) if at >= end - NARR_EDGE else (at, secs)
-
-        def cz(at):
-            # A cut containing a seam takes its row (Undo brings it back);
-            # one before it moves it earlier.
-            if start + NARR_EDGE < at < end - NARR_EDGE:
-                return None
-            return at - cut if at >= end - NARR_EDGE else at
-
+        retime, narr, pz, cz = cut_rules(start, end)
         return self.apply_take_edit(db, row, src, chain, kind, [round(start, 3), round(end, 3)], retime,
                                     narr=narr, pz=pz, cz=cz)
 
@@ -2668,8 +2707,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
     def mark_take_cut(file, cut):
         # cut = {"cut": [start, end]} or {"pause": [at, seconds]} to record an
-        # edit; None to take the last one back.
-        meta_path = os.path.join(WORK, "takes",file.replace("-raw.mp4", ".json"))
+        # edit; None to take the last one back. Only takes recorded live by
+        # the retired record.sh have that JSON (for remix_take.py); a scene
+        # cut from a source has none, so there is nothing to mark.
+        if not file.endswith("-raw.mp4"):
+            return
+        meta_path = os.path.join(WORK, "takes", file.replace("-raw.mp4", ".json"))
+        if not os.path.isfile(meta_path):
+            return
         try:
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -2855,12 +2900,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # inputs changed (the ChangeListener beside undoEdit in Main.xmlui).
         # One line per change, so a disabled Undo can be traced to the input
         # holding it: after a narration, Undo stayed off while the server said
-        # canUndo (2026-10-05). Kept as standing instrumentation.
+        # canUndo (2026-10-05). Kept as standing instrumentation. Lines can
+        # arrive out of order (the page's posts are concurrent): seq is the
+        # page's count and pageMs when it saw the change, so sort by seq.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        seq, page_ms = body.pop("seq", None), body.pop("pageMs", None)
         changed = ",".join(str(c) for c in body.pop("changed", []) or [])
         enabled = body.pop("enabled", None)
         fields = " ".join(f"{k}={json.dumps(v)}" for k, v in body.items())
-        print(f"undo-gate: enabled={json.dumps(enabled)} changed={changed or '-'} {fields}", flush=True)
+        print(f"undo-gate: seq={json.dumps(seq)} pageMs={json.dumps(page_ms)} "
+              f"enabled={json.dumps(enabled)} changed={changed or '-'} {fields}", flush=True)
         self.send_json(200, {"logged": 1})
 
     def run_voicetest(self):
