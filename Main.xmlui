@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.undoLogSeq="{0}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.undoLogSeq="{0}" var.renamingProject="" var.projectDraft="">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -1013,6 +1013,33 @@
         </VStack>
         </VStack>
         </ExpandableItem>
+        <!-- Rename: the pencil turns into a text box that saves the name when
+             it loses focus (TextBox has no Enter event:
+             https://www.xmlui.org/docs/reference/components/TextBox), if
+             changed and not empty, as a scene's name does on the Scenes
+             page (/projects/rename: only project.json's name changes, not the
+             folder). Beside the expander, not in its summary, so clicking it
+             doesn't toggle the details. -->
+        <HStack horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
+          <Button icon="pencil" size="xs" variant="ghost" when="{renamingProject !== $item.slug}"
+            tooltip="Rename this project" enabled="{!opening}"
+            onClick="projectDraft = $item.name; renamingProject = $item.slug;" />
+          <TextBox when="{renamingProject === $item.slug}" width="220px" initialValue="{$item.name}" autoFocus="true"
+            onDidChange="(v) => projectDraft = v"
+            onLostFocus="
+              const name = projectDraft.trim();
+              renamingProject = '';
+              if (name &amp;&amp; name !== $item.name) {
+                try {
+                  Actions.callApi({ url: 'http://127.0.0.1:8765/projects/rename', method: 'post', invalidates: [],
+                                    body: { slug: $item.slug, name: name } });
+                } catch (e) {
+                  toast.error(e.message);
+                }
+                projects.refetch();
+              }
+            " />
+        </HStack>
         <!-- The summary's own top padding (padding-summary-ExpandableItem),
              so this lines up with it. -->
         <HStack width="90px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">

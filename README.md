@@ -51,6 +51,10 @@ exports) and `work/` (recording sessions and render ingredients). `projects/.ope
 the open one. Source movies (`sources/`) and the Audio page's test recordings are shared
 by all projects. `studio_paths.py` is the one place that knows these paths.
 
+A fresh checkout has no projects: the first time `serve_media.py` starts, it creates
+**My project** and opens it. With projects but none marked open, it opens the most
+recently changed one.
+
 The **Projects** page lists them (drag a project by its grip to reorder the list), with
 **Open** to switch, **New project** to start an empty one, and **Delete** to move a project's
 whole folder to the Trash (drag it back into `projects/` to restore it; the open project can't

@@ -78,6 +78,7 @@ HERE = studio_paths.REPO  # the scripts, record.log
 ROOT, DB, WORK = studio_paths.MEDIA, studio_paths.DB, studio_paths.WORK
 CONFIG = os.path.join(HERE, "config.json")  # the page's XMLUI config: appGlobals.xsVerbose is trace capture
 SHARED_DB = os.path.join(HERE, "studio.db")  # the repo's: the Audio bench's voice_tests (voicetest.py)
+PROJECT_GIVEN = bool(os.environ.get("STUDIO_PROJECT"))  # before the next line sets it for the scripts
 os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = studio_paths.SOURCES  # source movies, usually symlinks
@@ -668,6 +669,66 @@ def list_projects():
     return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
             "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects),
             "folder": studio_paths.PROJECTS}
+
+
+def create_project_folder(folder, name):
+    # A new, empty project (studio_paths.py): media/, work/, project.json and
+    # a studio.db from schema.sql. Shared by New project and the startup
+    # default (ensure_open_project).
+    os.makedirs(os.path.join(folder, "media"))
+    os.makedirs(os.path.join(folder, "work"))
+    with open(os.path.join(folder, "project.json"), "w") as f:
+        json.dump({"name": name}, f, indent=1)
+    with sqlite3.connect(os.path.join(folder, "studio.db")) as db:
+        db.executescript(open(os.path.join(HERE, "schema.sql")).read())
+
+
+DEFAULT_PROJECT = "My project"
+
+
+def ensure_open_project():
+    # At startup, before anything opens the database: make sure a project
+    # under projects/ is open. With STUDIO_PROJECT given (PROJECT_GIVEN: this
+    # module sets it for the scripts it launches), or projects/.open
+    # naming a project, nothing to do. Otherwise studio_paths fell back to
+    # the repo itself, the layout from before projects; a fresh checkout's
+    # studio.db has no tables there, and the server crashed on "no such
+    # table: takes" (2026-10-05). So: open the most recently changed project
+    # if there are any; leave an old, unmigrated repo (its studio.db holds
+    # takes) as it is, since migrate_project.py moves that; else create
+    # DEFAULT_PROJECT and open it. Opening one restarts the server, as Open
+    # on the Projects page does, so every path here and every script it
+    # launches agree.
+    if PROJECT_GIVEN or studio_paths.PROJECT != studio_paths.REPO:
+        return
+    projects = studio_paths.PROJECTS
+    found = []
+    if os.path.isdir(projects):
+        for n in os.listdir(projects):
+            folder = os.path.join(projects, n)
+            if not n.startswith(".") and os.path.isfile(os.path.join(folder, "studio.db")):
+                found.append((os.path.getmtime(folder), n))
+    if found:
+        slug = max(found)[1]
+        print(f"startup: no open project; opening {slug}, the most recently changed", flush=True)
+    else:
+        try:
+            with sqlite3.connect(f"file:{urllib.parse.quote(os.path.join(HERE, 'studio.db'))}?mode=ro", uri=True) as db:
+                legacy = db.execute("SELECT count(*) FROM takes").fetchone()[0] > 0
+        except sqlite3.Error:
+            legacy = False
+        if legacy:
+            print("startup: no open project; the repo's own studio.db holds takes, so it stays the "
+                  "project (migrate_project.py moves it into projects/)", flush=True)
+            return
+        slug = re.sub(r"[^a-z0-9]+", "-", DEFAULT_PROJECT.lower()).strip("-")
+        create_project_folder(os.path.join(projects, slug), DEFAULT_PROJECT)
+        print(f"startup: no projects; created {DEFAULT_PROJECT!r} ({slug}) and opening it", flush=True)
+    os.makedirs(projects, exist_ok=True)
+    with open(studio_paths.OPEN, "w") as f:
+        f.write(slug + "\n")
+    os.environ.pop("STUDIO_PROJECT", None)  # projects/.open decides now, as in restart()
+    os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), *sys.argv[1:]])
 
 
 def restart():
@@ -1528,6 +1589,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def route_post(self):
         if self.path == "/projects/open":
             return self.open_project()
+        if self.path == "/projects/rename":
+            return self.rename_project()
         if self.path == "/projects/new":
             return self.new_project()
         if self.path == "/projects/stray/delete":
@@ -3339,6 +3402,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             notify("takes")  # an open History tab refetches
         self.send_json(200, {**total, "as": os.path.basename(dest)})
 
+    def rename_project(self):
+        # {slug, name}: a project's name, as the Projects page and the header
+        # show it (project.json). Its folder keeps its name, so projects/.open,
+        # its paths and its safekeeping copies are unchanged. The open one too.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        slug, name = str(body.get("slug") or ""), " ".join(str(body.get("name") or "").split())
+        if not name:
+            return self.send_json(400, {"error": "a project needs a name"})
+        meta = os.path.join(studio_paths.PROJECTS, slug, "project.json")
+        if not slug or os.path.basename(slug) != slug or not os.path.isfile(meta):
+            return self.send_json(404, {"error": f"no project named {slug!r}"})
+        try:
+            with open(meta) as f:
+                info = json.load(f)
+            info["name"] = name
+            with open(meta + ".tmp", "w") as f:
+                json.dump(info, f, indent=1)
+            os.replace(meta + ".tmp", meta)
+        except (OSError, ValueError) as e:
+            return self.send_json(500, {"error": f"couldn't rename: {e}"})
+        self.send_json(200, {"slug": slug, "name": name})
+
     def new_project(self):
         # {name}: a new, empty project folder (studio_paths.py), then open it.
         # The folder is named from the name: lowercase, dashes for the rest.
@@ -3353,12 +3438,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         why = self.busy()
         if why:
             return self.send_json(409, {"error": f"Can't open a new project now: {why}"})
-        os.makedirs(os.path.join(folder, "media"))
-        os.makedirs(os.path.join(folder, "work"))
-        with open(os.path.join(folder, "project.json"), "w") as f:
-            json.dump({"name": name}, f, indent=1)
-        with sqlite3.connect(os.path.join(folder, "studio.db")) as db:
-            db.executescript(open(os.path.join(HERE, "schema.sql")).read())
+        create_project_folder(folder, name)
         self.open_project(slug)
 
     def set_trace(self):
@@ -3425,6 +3505,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+ensure_open_project()
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
