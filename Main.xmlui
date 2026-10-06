@@ -665,6 +665,37 @@
   <APICall id="redoEdit" method="post" url="http://127.0.0.1:8765/takes/redo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
+  <!-- Standing instrumentation for the Undo button (its enabled, on the Undo
+       tab): whenever one of its inputs changes, one undo-gate line in
+       serve_media.log (/undo/log) with every input, which ones changed and
+       whether Undo is on. After a narration, Undo stayed off while the server
+       said canUndo (2026-10-05); this names the input holding it. Sources by
+       name: https://www.xmlui.org/docs/reference/components/ChangeListener -->
+  <ChangeListener
+    listenToSources="{{
+      take: editTake,
+      edits: !!edits.value,
+      canUndo: !!(edits.value &amp;&amp; edits.value.canUndo),
+      undoing: undoEdit.inProgress,
+      redoing: redoEdit.inProgress,
+      cutting: cutTake.inProgress,
+      pausing: pauseTake.inProgress,
+      narrating: narrating,
+      narrBusy: narrBusy
+    }}"
+    onDidChange="(change) => {
+      const v = change.newValue;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
+                          body: { take: v.take, edits: v.edits, canUndo: v.canUndo,
+                                  undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
+                                  pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,
+                                  changed: change.changedSources,
+                                  enabled: !!(v.edits &amp;&amp; v.canUndo &amp;&amp; !v.undoing &amp;&amp; !v.redoing &amp;&amp; !v.cutting &amp;&amp; !v.pausing &amp;&amp; !v.narrating &amp;&amp; !v.narrBusy) } });
+      } catch (e) {
+        // A missing log line is no reason to bother the user.
+      }
+    }" />
   <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
     body="{{ id: $param.id, start: $param.start, end: $param.end }}"
     invalidates="{[]}"

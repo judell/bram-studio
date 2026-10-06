@@ -1384,6 +1384,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_project()
         if self.path == "/audition/log":
             return self.log_audition()
+        if self.path == "/undo/log":
+            return self.log_undo_gate()
         if self.path == "/voicetest":
             return self.run_voicetest()
         if self.path == "/delete":
@@ -2846,6 +2848,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                   f"stopped at {stopped:.3f} s ({(stopped - stop) * 1000:+.0f} ms)", flush=True)
         except (KeyError, TypeError, ValueError):
             return self.send_json(400, {"error": "need start, stop and stoppedAt"})
+        self.send_json(200, {"logged": 1})
+
+    def log_undo_gate(self):
+        # {enabled, changed, ...inputs}: the take editor's Undo button's
+        # inputs changed (the ChangeListener beside undoEdit in Main.xmlui).
+        # One line per change, so a disabled Undo can be traced to the input
+        # holding it: after a narration, Undo stayed off while the server said
+        # canUndo (2026-10-05). Kept as standing instrumentation.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        changed = ",".join(str(c) for c in body.pop("changed", []) or [])
+        enabled = body.pop("enabled", None)
+        fields = " ".join(f"{k}={json.dumps(v)}" for k, v in body.items())
+        print(f"undo-gate: enabled={json.dumps(enabled)} changed={changed or '-'} {fields}", flush=True)
         self.send_json(200, {"logged": 1})
 
     def run_voicetest(self):
