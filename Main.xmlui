@@ -256,8 +256,8 @@
       capClip = capSeed;
       sourcePlayer.seek(s);
     }
-    // Export: join all scenes into one video. The server applies any scene
-    // whose items changed since its last Apply first, so what each scene's
+    // Export: join all scenes into one video. The server first burns in the
+    // items of any scene whose items changed since last burned, so what each scene's
     // list shows is what goes out.
     function startExport() {
       navigate('/exports');
@@ -335,6 +335,7 @@
                                   body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
                                           t_in: t, t_out: out, tail: 'none', shape: shape } });
       editCallout = r.id;
+      edits.refetch();
       curShape = shape;
       curText = '';
       curTail = 'none';
@@ -345,7 +346,6 @@
       dragPos = null;
       callouts.refetch();
       savedSprites.refetch();
-      applyState.refetch();
     }
     // The current item's In or Out, one frame (delta) earlier or later: In
     // stays at or above 0 and 0.1 s before Out, Out 0.1 s after In and within
@@ -375,7 +375,7 @@
                               shape: curShape });
       callouts.refetch();
       savedSprites.refetch();
-      applyState.refetch();
+      edits.refetch();
     }
     // A Play button pressed again while its stretch plays (it reads Stop):
     // pause and end the audition, unlogged, since nothing was measured.
@@ -658,9 +658,6 @@
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <APICall id="deleteCallout" method="post" url="http://127.0.0.1:8765/callouts/delete"
-    body="{{ id: $param }}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="renderOverlay" method="post" url="http://127.0.0.1:8765/overlay/render"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
@@ -1017,10 +1014,10 @@
           width="260px" onDidChange="audition = null; playing = '';" />
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
              3 s callout of its name at the top right, an ordinary item to
-             edit on the Annotate tab, burned in only by Apply. The button
+             edit on the Annotate tab, burned in by Export. The button
              previews (dryRun) and the dialog confirms. -->
         <Button label="Scene callouts" variant="outlined" size="sm"
-          tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Apply"
+          tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Export"
           enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="
             try {
@@ -1031,7 +1028,7 @@
             }
           " />
         <Button label="Export" variant="outlined" size="sm"
-          tooltip="Join all scenes, in list order, into one video (any scene whose items changed since its last Apply is applied first)"
+          tooltip="Join all scenes, in list order, into one video (any scene whose items changed has them burned in first)"
           enabled="{!exportTakes.inProgress &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="startExport()" />
       </HStack>
@@ -1039,7 +1036,7 @@
            whether it is applied), the one it would get, and any exact copies
            that would be removed; the button carries the plan out. -->
       <ModalDialog id="calloutsDialog" title="Scene callouts">
-        <Text value="{$param &amp;&amp; ($param.add || $param.remove) ? 'Each scene gets one 3 s callout of its name at the top right, to edit before you Apply.' : 'Every scene has its callout; there is nothing to add or remove.'}" />
+        <Text value="{$param &amp;&amp; ($param.add || $param.remove) ? 'Each scene gets one 3 s callout of its name at the top right, to edit before you Export.' : 'Every scene has its callout; there is nothing to add or remove.'}" />
         <Items data="{$param ? $param.scenes : []}">
           <Text value="{$item.name + ': ' + ($item.has ? 'has &quot;' + $item.has.text + '&quot; ' + ($item.has.applied ? '✓ applied' : '✗ not applied') : 'would add &quot;' + $item.add + '&quot;') + ($item.remove ? '; ' + $item.remove + ' duplicate' + ($item.remove === 1 ? '' : 's') + ' would be removed' : '')}" />
         </Items>
@@ -1056,7 +1053,6 @@
               calloutsDialog.close();
               callouts.refetch();
               savedSprites.refetch();
-              applyState.refetch();
             " />
           <Button label="{$param &amp;&amp; ($param.add || $param.remove) ? 'Cancel' : 'Close'}" variant="ghost"
             onClick="calloutsDialog.close()" />
@@ -1224,7 +1220,7 @@
         <!-- Callouts (overlay.py), edited directly on the video: the player
              shows the take's clean copy (no burned-in text, /clean/<file>) and
              PointerLayer's anchors (xmlui-org/xmlui#3922) draw each callout on
-             it as a sprite from the server, made by the same code Apply uses.
+             it as a sprite from the server, made by the same code Export burns in with.
              Items show between their in and out points; the current one
              always shows, and dragging it moves it (the layer reports the
              drag; the page moves the anchor), and dragging one of its eight
@@ -1237,11 +1233,6 @@
           when="{!!editCallout &amp;&amp; !!calloutBox &amp;&amp; !!editTake}"
           body="{{ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, tail: curTail, shape: curShape, frame: !curShape }}"
           onLoaded="(d) => { lastSprite = d; dragPos = null; }" />
-        <!-- applyState.dirty: the saved callouts differ from what was last burned
-             in (the SQL is overlay.py's APPLIED_SQL, which fills
-             takes.overlay_applied at Apply); Apply is dimmed otherwise. -->
-        <DataSource id="applyState" url="http://127.0.0.1:8765/query" method="POST" dataType="sql" when="{!!editTake}"
-          body="{{ sql: 'SELECT (SELECT group_concat(id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 || char(58) || t_in || char(58) || t_out || char(58) || ifnull(tail, char(45)) || char(58) || ifnull(shape, char(45)), char(124)) FROM (SELECT * FROM overlays WHERE take_id = ? ORDER BY id)) IS NOT overlay_applied AS dirty FROM takes WHERE id = ?', params: [editTake, editTake] }}" />
         <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
           when="{!!editTake}" body="{{ take_id: editTake }}" />
         <!-- Every item's anchor has the item's id, the current one's too, so
@@ -1325,7 +1316,7 @@
               updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: nb.x1, y1: nb.y1, x2: nb.x2, y2: nb.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail, shape: curShape });
               callouts.refetch();
               savedSprites.refetch();
-              applyState.refetch();
+              edits.refetch();
             }
           }"
           onShapeEnd="(e) => {
@@ -1336,6 +1327,7 @@
             const box = free ? { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } : { x1: Math.min(e.x1, e.x2), y1: Math.min(e.y1, e.y2), x2: Math.max(e.x1, e.x2), y2: Math.max(e.y1, e.y2) };
             const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
             editCallout = r.id;
+            edits.refetch();
             curShape = shape;
             curText = '';
             curTail = 'none';
@@ -1346,7 +1338,6 @@
             dragPos = null;
             callouts.refetch();
             savedSprites.refetch();
-            applyState.refetch();
             editTabs.setActiveTabIndex(0);
           }">
           <!-- After an edit the file reloads (cutSeq changes src); it goes
@@ -1437,8 +1428,9 @@
              and tail (a callout's), In and Out with one-frame nudges, Play
              (its span, reading Stop while it plays) and ✕. Text and tail save
              as they change; their boxes take curText and curTail
-             (initialValue), made fresh with the row. Apply burns the items
-             into the video, the one explicit step, since it re-encodes. -->
+             (initialValue), made fresh with the row. Every add, change and
+             delete is a step in the Undo tab's history (so edits.refetch()
+             after each); Export burns the items into the video. -->
         <TabItem label="Annotate">
         <VStack>
           <HStack verticalAlignment="center">
@@ -1451,15 +1443,6 @@
                 tooltip="What Add annotation places, and ⌘-drag on the picture (click, for Pointer)"
                 onClick="annotKind = $item[0]; writeLocalStorage('studio.annotKind', $item[0]);" />
             </Items>
-            <SpaceFiller />
-            <Spinner when="{renderOverlay.inProgress}" />
-            <Button label="Apply" size="xs"
-              enabled="{!renderOverlay.inProgress &amp;&amp; !!applyState.value &amp;&amp; !!applyState.value[0] &amp;&amp; !!applyState.value[0].dirty}"
-              tooltip="Burn this scene's items into its video file (Export also does this for any scene that needs it)"
-              onClick="
-                renderOverlay.execute(editTake);
-                applyState.refetch();
-              " />
           </HStack>
           <Items data="{callouts.value || []}">
             <HStack verticalAlignment="center">
@@ -1522,7 +1505,7 @@
                       updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: v, shape: curShape });
                       callouts.refetch();
                       savedSprites.refetch();
-                      applyState.refetch();
+                      edits.refetch();
                     }
                   }">
                   <Option value="none" label="No tail" />
@@ -1543,6 +1526,7 @@
                   onClick="
                     audition = null;
                     deleteCallout.execute(editCallout);
+                    edits.refetch();
                     editCallout = null;
                     calloutBox = null;
                     lastSprite = null;
@@ -1553,7 +1537,6 @@
                     calloutOut = 3;
                     callouts.refetch();
                     savedSprites.refetch();
-                    applyState.refetch();
                   " />
               </HStack>
             </HStack>
@@ -1670,7 +1653,6 @@
                 narrs.refetch(); pauses.refetch(); cuts.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
-                applyState.refetch();
               }
             " />
           <Button label="Cancel" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
@@ -1722,7 +1704,6 @@
                   narrs.refetch(); pauses.refetch(); cuts.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
-                  applyState.refetch();
                 " />
             </HStack>
           </Items>
@@ -1802,7 +1783,6 @@
                   narrs.refetch(); pauses.refetch(); cuts.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
-                  applyState.refetch();
                 " />
               <Button label="Cancel" size="xs" variant="ghost" enabled="{!pauseTake.inProgress}"
                 onClick="audition = null; pauseAdding = false;" />
@@ -1850,7 +1830,6 @@
                   narrs.refetch(); pauses.refetch(); cuts.refetch();
                   callouts.refetch();
                   savedSprites.refetch();
-                  applyState.refetch();
                 " />
             </HStack>
           </Items>
@@ -1995,7 +1974,6 @@
                 narrs.refetch(); pauses.refetch(); cuts.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
-                applyState.refetch();
               " />
             <Button label="Redo" size="xs" variant="outlined"
               tooltip="Put back the edit just above the tinted one"
@@ -2013,7 +1991,6 @@
                 narrs.refetch(); pauses.refetch(); cuts.refetch();
                 callouts.refetch();
                 savedSprites.refetch();
-                applyState.refetch();
               " />
             <Spinner when="{undoEdit.inProgress || redoEdit.inProgress}" />
             <Text variant="secondary" when="{!!edits.value &amp;&amp; !!edits.value.note}" value="{edits.value.note}" />

@@ -34,8 +34,10 @@ voice recorder uses AVFoundation).
 - **Callouts:** on a scene, ⌘-drag a box on the video and type. Drag the callout
   to move it, drag its eight handles to resize it (the text grows to fit), give it a
   speech-bubble tail at any compass point, and set when it appears and disappears.
-  Callouts are drawn live over the video while you edit; **Apply** burns them into the
-  scene for export. Boxes, ovals, arrows, lines and pointers work the same way.
+  Callouts are drawn live over the video while you edit, and **Export** burns them into
+  each scene that changed. Adding, changing and deleting one are steps in the scene's
+  history, so Undo takes them back. Boxes, ovals, arrows, lines and pointers work the
+  same way.
 - **Scenes and export:** drag scenes into order, then **Export** joins them into one video.
 - **After editing elsewhere:** if you cut the export in another editor, run
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of

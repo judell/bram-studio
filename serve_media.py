@@ -42,9 +42,8 @@ POST /callouts/add {take_id, text, x1, y1, x2, y2, t_in, t_out, tail},
 /callouts/update {id, ...the same} and /callouts/delete {id} edit a take's
 callouts; POST /callouts/preview {...a callout} draws a still of it into
 media/.preview/<take id>.png, and POST /callouts/sprite {...} just the callout,
-with where it goes, for the take player's PointerLayer anchors (#3922);
-POST /overlay/render {id} burns the take's text
-in with overlay.py (from its clean copy).
+with where it goes, for the take player's PointerLayer anchors (#3922).
+Export burns each changed scene's items in with overlay.py (apply_scene).
 GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
 "exports"|"projects"} whenever watch_changes() sees one of them change, so the
 page refetches then instead of polling.
@@ -132,7 +131,7 @@ def take_levels(path):
     return result
 
 
-# One item's entry as Apply records it (overlay.APPLIED_SQL joins these
+# One item's entry as apply_scene records it (overlay.APPLIED_SQL joins these
 # with |): made with the same SQL so numbers format identically, for telling
 # whether an item is in its scene's video as it is now.
 APPLIED_ENTRY = ("id || char(58) || text || char(58) || x1 || char(58) || y1 || char(58) || x2 || char(58) || y2 "
@@ -141,8 +140,9 @@ APPLIED_ENTRY = ("id || char(58) || text || char(58) || x1 || char(58) || y1 || 
 
 
 def apply_scene(take_id):
-    # Apply: burn a scene's items into its file (overlay.py render), from its
-    # clean copy. Apply rewrites the file without being an edit, so the
+    # Burn a scene's items into its file (overlay.py render), from its clean
+    # copy: Export's first step for each scene whose items changed (there is
+    # no Apply button any more). It rewrites the file without being an edit, so the
     # scene's edit history is kept pointing at it (resync_history). The
     # caller holds `overlaying`. Returns (True, overlay.py's result) or
     # (False, the error).
@@ -206,8 +206,9 @@ USAGE = (("takes", "Takes", "the takes, their clean copies, replaced narration a
           "before Undo delete existed, abandoned recordings, render leftovers"),
          ("stray", "Stray", "not Studio's: listed below"))
 MOVIES = (".mp4", ".mov", ".m4v")
-# In media/.trash/: a step of a take's edit history (apply_take_edit, remix_take.py).
-HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|uncut|pause|unpause|narrate|unnarrate|remix)-\d{8}-\d{6}\.\w+$")
+# In media/.trash/: a step of a take's edit history (apply_take_edit,
+# record_annot_step, remix_take.py).
+HISTORY_FILE = re.compile(r"(.+?)(-clean)?-(before|after)-(cut|uncut|pause|unpause|narrate|unnarrate|annot|remix)-\d{8}-\d{6}\.\w+$")
 
 
 # The clean-up buttons on the Projects page, per category: (label, days, what
@@ -733,8 +734,9 @@ def watch_changes():
 
 EXPORT_SECONDS = {}  # (export path, mtime) -> its length in seconds
 EXPORT_NAME = re.compile(r"\d{8}-\d{6}-takes\.mp4$")  # what Export names its output
-# A take edit's undo record in media/.trash/ (apply_take_edit): a cut or a pause.
-EDIT_SIDECAR = re.compile(r"-before-(cut|uncut|pause|unpause|narrate|unnarrate)-\d{8}-\d{6}\.json$")
+# A take edit's undo record in media/.trash/: a file edit (apply_take_edit)
+# or an item's change (record_annot_step, "annot", rows only).
+EDIT_SIDECAR = re.compile(r"-before-(cut|uncut|pause|unpause|narrate|unnarrate|annot)-\d{8}-\d{6}\.json$")
 # A take's narrations (the Narrate tab), so each can be listed and removed at
 # any time, not only while it is the take's last edit: the stretch it covers
 # and, in media/.narrated/, the audio it replaced. A later cut or pause before
@@ -854,6 +856,9 @@ EDIT_LOCK = threading.Lock()  # one undo, redo or history read at a time
 # with the take as it was after the edit (files as <stem>-after-…, rows in
 # the mark), so it can be redone. The edit in effect most recently is the
 # cursor: the one Undo takes back. A new edit discards the undone ones.
+# An item's change (a callout or shape added, changed or deleted) is a step
+# too, of kind "annot": rows only, no files (record_annot_step), so it is
+# undoable whenever it is the cursor, whatever the file.
 def take_edits(file):
     # [(sidecar name, its contents)] for one take file, oldest first.
     stem, out = file[:-4], []
@@ -877,8 +882,22 @@ def edit_kind(name, saved):
     return saved.get("edit") or EDIT_SIDECAR.search(name).group(1)
 
 
+def is_row_step(saved):
+    # An item's change: rows only, nothing to match against the take's file.
+    return saved.get("edit") == "annot"
+
+
+def item_label(row):
+    # "callout 'Scene 1'", "rectangle at 6.76 s": how History names an item.
+    kind = {"rect": "rectangle", "ellipse": "oval"}.get(row.get("shape") or "", row.get("shape") or row.get("kind") or "item")
+    return f"{kind} '{row['text']}'" if row.get("text") else f"{kind} at {row.get('t_in', 0):.2f} s"
+
+
 def edit_what(name, saved):
     kind = edit_kind(name, saved)
+    if kind == "annot":
+        verb = {"add": "Added", "update": "Changed", "delete": "Deleted"}.get(saved.get("op"), "Changed")
+        return f"{verb} {item_label(saved.get('after') or saved.get('before') or {})}"
     rec = saved.get(kind) or [0, 0]
     if kind == "unnarrate":
         return f"Removed the narration at {rec[0]:.2f}–{rec[1]:.2f} s"
@@ -913,19 +932,70 @@ def history_state(file):
         live = file_stat(os.path.join(ROOT, file))
     except OSError:
         return edits, None, None, "The take's file is missing."
-    if cursor is not None and edits[cursor][1].get("after") != live:
+    if cursor is not None and not is_row_step(edits[cursor][1]) and edits[cursor][1].get("after") != live:
         cursor, why = None, "This take's file has changed since its last edit, so that edit can't be undone."
-    if redo is not None and edits[redo][1]["undone"].get("stat") != live:
+    if redo is not None and not is_row_step(edits[redo][1]) and edits[redo][1]["undone"].get("stat") != live:
         redo = None
     return edits, cursor, redo, why
 
 
-def resync_history(file, was):
-    # The take's file was rewritten without being an edit (Apply burns the
-    # items in): where the history described the file as it was (`was`, its
-    # size and mtime before), point it at the file as it is now.
+def discard_undone(file):
+    # A new edit ends the chance to redo: the undone edits above the cursor
+    # go, with the files kept for redoing them. The caller holds EDIT_LOCK.
+    for name, old in take_edits(file):
+        if old.get("undone"):
+            for f in list((old["undone"] or {}).get("files", {}).values()) + [name]:
+                if os.path.exists(os.path.join(TRASH, f)):
+                    os.remove(os.path.join(TRASH, f))
+
+
+ANNOT_MERGE_S = 3  # an item's changes this close together undo as one step
+
+
+def record_annot_step(take_file, op, item_id, before, after):
+    # An item's change as a step of the take's history: its row before and
+    # after (None: it didn't exist). A change to the item the newest step
+    # already changed, within ANNOT_MERGE_S, extends that step instead, so a
+    # drag or a run of nudges undoes at once.
+    os.makedirs(TRASH, exist_ok=True)
+    now = time.time()
     with EDIT_LOCK:
-        edits = take_edits(file)
+        discard_undone(take_file)
+        edits = take_edits(take_file)
+        if edits and op == "update":
+            name, last = edits[-1]
+            if (is_row_step(last) and last.get("id") == item_id and last.get("op") in ("add", "update")
+                    and now - last.get("lastAt", 0) <= ANNOT_MERGE_S):
+                last["after"], last["lastAt"] = after, now
+                with open(os.path.join(TRASH, name), "w") as f:
+                    json.dump(last, f, indent=1)
+                return
+        stem, t = take_file[:-4], int(now)
+        while True:  # one name per second: two changes in one second get the next free one
+            name = f"{stem}-before-annot-{time.strftime('%Y%m%d-%H%M%S', time.localtime(t))}.json"
+            if not os.path.exists(os.path.join(TRASH, name)):
+                break
+            t += 1
+        with open(os.path.join(TRASH, name), "w") as f:
+            json.dump({"edit": "annot", "op": op, "id": item_id, "before": before, "after": after,
+                       "lastAt": now}, f, indent=1)
+
+
+def set_item_row(db, take_id, item_id, row):
+    # An item's row as a step has it: gone when None.
+    db.execute("DELETE FROM overlays WHERE id = ? AND take_id = ?", (item_id, take_id))
+    if row:
+        r = {**row, "id": item_id, "take_id": take_id}
+        db.execute(f"INSERT INTO overlays ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})", list(r.values()))
+
+
+def resync_history(file, was):
+    # The take's file was rewritten without being an edit (Export burns the
+    # items in): where the history described the file as it was (`was`, its
+    # size and mtime before), point it at the file as it is now. Item steps
+    # describe no file, so the newest file step is the one to check.
+    with EDIT_LOCK:
+        edits = [e for e in take_edits(file) if not is_row_step(e[1])]
         done = [e for e in edits if not e[1].get("undone")]
         undone = [e for e in edits if e[1].get("undone")]
         try:
@@ -1511,8 +1581,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.annotation_sprites()
         if self.path == "/callouts/delete":
             return self.delete_callout()
-        if self.path == "/overlay/render":
-            return self.render_overlay()
         self.send_json(404, {"error": "not found"})
 
     @staticmethod
@@ -1658,8 +1726,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             db = sqlite3.connect(DB)
             # What each scene's list shows is what goes out: a scene whose
-            # items differ from its last Apply (the editor's Apply test) is
-            # applied first, one at a time; a failure exports nothing.
+            # items differ from what was last burned in (overlay.APPLIED_SQL
+            # against takes.overlay_applied) is burned in first, one at a
+            # time; a failure exports nothing.
             for tid, name, record in db.execute(
                     "SELECT id, name, overlay_applied FROM takes ORDER BY position, created_at DESC").fetchall():
                 if (db.execute(overlay.APPLIED_SQL, (tid,)).fetchone()[0] or None) == (record or None):
@@ -1727,7 +1796,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not isinstance(body.get("take_id"), int):
             return None, "a callout or shape needs a take"
         # A callout may have no text yet, as one placed while recording may:
-        # the editor shows a placeholder (overlay.sprite) and Apply skips it.
+        # the editor shows a placeholder (overlay.sprite) and burning in skips it.
         if t_out <= t_in:
             return None, "the out point must come after the in point"
         clamp = lambda v: max(0.0, min(1.0, v))
@@ -1750,23 +1819,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         take_id, text, box, t_in, t_out, tail, shape = fields
         kind = "shape" if shape else "callout"
         db = sqlite3.connect(DB)
-        if not db.execute("SELECT 1 FROM takes WHERE id = ?", (take_id,)).fetchone():
+        db.row_factory = sqlite3.Row
+        take = db.execute("SELECT file FROM takes WHERE id = ?", (take_id,)).fetchone()
+        if not take:
             return self.send_json(404, {"error": f"no take with id {take_id}"})
+        item = lambda i: (lambda r: dict(r) if r else None)(
+            db.execute("SELECT * FROM overlays WHERE id = ?", (i,)).fetchone())
+        # Each change is a step of the scene's history (record_annot_step).
         if update:
+            before = item(body.get("id"))
             n = db.execute("UPDATE overlays SET kind = ?, text = ?, x1 = ?, y1 = ?, x2 = ?, y2 = ?, t_in = ?, "
                            "t_out = ?, tail = ?, shape = ? WHERE id = ? AND take_id = ? AND kind IN ('callout', 'shape')",
                            (kind, text, *box, t_in, t_out, tail, shape, body.get("id"), take_id)).rowcount
             db.commit()
-            return self.send_json(200 if n else 404, {"id": body.get("id")} if n else {"error": "no such callout"})
+            if not n:
+                return self.send_json(404, {"error": "no such callout"})
+            after = item(body.get("id"))
+            if after != before:  # a save that changed nothing isn't a step
+                record_annot_step(take["file"], "update", body.get("id"), before, after)
+            return self.send_json(200, {"id": body.get("id")})
         cur = db.execute("INSERT INTO overlays (take_id, kind, text, x1, y1, x2, y2, t_in, t_out, tail, shape) "
                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (take_id, kind, text, *box, t_in, t_out, tail, shape))
         db.commit()
+        record_annot_step(take["file"], "add", cur.lastrowid, None, item(cur.lastrowid))
         self.send_json(200, {"id": cur.lastrowid})
 
     def callout_sprite(self):
         # The callout being edited as a transparent image of just its box,
-        # tail and text (overlay.sprite, the drawing Apply uses) plus where it
+        # tail and text (overlay.sprite, the drawing Export burns in) plus where it
         # goes in 0-1 picture coordinates, for PointerLayer's anchors to place
         # over the video (xmlui-org/xmlui#3922). Named by its content, so an
         # unchanged callout keeps its URL.
@@ -1889,26 +1970,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"url": f"http://127.0.0.1:{PORT}/.preview/{take_id}.png?v={time.time():.3f}"})
 
     def delete_callout(self):
+        # A step of the scene's history too (record_annot_step), so Undo
+        # brings the item back.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(DB)
-        n = db.execute("DELETE FROM overlays WHERE id = ? AND kind IN ('callout', 'shape')", (body.get("id"),)).rowcount
+        db.row_factory = sqlite3.Row
+        before = db.execute("SELECT * FROM overlays WHERE id = ? AND kind IN ('callout', 'shape')",
+                            (body.get("id"),)).fetchone()
+        if not before:
+            return self.send_json(404, {"error": "no such callout"})
+        before = dict(before)
+        db.execute("DELETE FROM overlays WHERE id = ?", (body.get("id"),))
         db.commit()
-        self.send_json(200 if n else 404, {"deleted": body.get("id")} if n else {"error": "no such callout"})
-
-    def render_overlay(self):
-        # Burn a take's text in (overlay.py), from its clean copy.
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        if not isinstance(body.get("id"), int):
-            return self.send_json(400, {"error": "id must be a take id"})
-        if not overlaying.acquire(blocking=False):
-            return self.send_json(409, {"error": "a take is already being rendered"})
-        try:
-            ok, out = apply_scene(body["id"])
-        finally:
-            overlaying.release()
-        if not ok:
-            return self.send_json(500, {"error": out})
-        self.send_json(200, out)
+        take = db.execute("SELECT file FROM takes WHERE id = ?", (before["take_id"],)).fetchone()
+        if take:
+            record_annot_step(take["file"], "delete", body.get("id"), before, None)
+        self.send_json(200, {"deleted": body.get("id")})
 
     def reorder_takes(self):
         # The takes list's drag order: each id's index becomes its position.
@@ -2082,7 +2159,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # then carried out. Each scene gets at most one scene callout: its
         # current name at the top right for its first 3 s (or the whole of a
         # shorter scene), an ordinary item to move, edit or remove, burned in
-        # only by Apply. A scene has one when a callout starts at 0 s reaching
+        # only by Export. A scene has one when a callout starts at 0 s reaching
         # the top right (x2 >= 0.9, y1 <= 0.25), however wide its box (a long
         # name's starts left of center). Exact copies of one (same text, box
         # and times) are extras, removed keeping the oldest. For each scene:
@@ -2624,14 +2701,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return None
         trash = os.path.join(ROOT, ".trash")
         os.makedirs(trash, exist_ok=True)
-        # A new edit ends the chance to redo: the undone edits above the
-        # cursor go, with the files kept for redoing them.
+        # A new edit ends the chance to redo (discard_undone).
         with EDIT_LOCK:
-            for name, old in take_edits(row["file"]):
-                if old.get("undone"):
-                    for f in list(old["undone"].get("files", {}).values()) + [name]:
-                        if os.path.exists(os.path.join(trash, f)):
-                            os.remove(os.path.join(trash, f))
+            discard_undone(row["file"])
         stem, when = row["file"][:-4], time.strftime("%Y%m%d-%H%M%S")
         saved = {"take": dict(row), "edit": kind, kind: record, "files": {},
                  "overlays": [dict(r) for r in db.execute(
@@ -2823,6 +2895,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if cursor is None:
                 return self.send_json(409, {"error": why or "nothing to undo"})
             name, saved = edits[cursor]
+            if is_row_step(saved):
+                # An item's change: only its row goes back.
+                set_item_row(db, row["id"], saved["id"], saved.get("before"))
+                db.commit()
+                saved["undone"] = {"at": time.time()}
+                with open(os.path.join(TRASH, name), "w") as f:
+                    json.dump(saved, f, indent=1)
+                return self.send_json(200, {"id": row["id"], "undone": edit_what(name, saved)})
             src = os.path.join(ROOT, row["file"])
             clean = os.path.join(ROOT, ".clean", row["file"])
             after = {"take": dict(row), "files": {},
@@ -2865,6 +2945,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if redo is None:
                 return self.send_json(409, {"error": "nothing to redo"})
             name, saved = edits[redo]
+            if is_row_step(saved):
+                set_item_row(db, row["id"], saved["id"], saved.get("after"))
+                db.commit()
+                del saved["undone"]
+                saved["lastAt"] = 0  # a redone step isn't extended by the next change
+                with open(os.path.join(TRASH, name), "w") as f:
+                    json.dump(saved, f, indent=1)
+                return self.send_json(200, {"id": row["id"], "redone": edit_what(name, saved)})
             after = saved["undone"]
             src = os.path.join(ROOT, row["file"])
             for orig, trashed in saved["files"].items():
