@@ -1,0 +1,33 @@
+<!-- One time you set (a cut's start, an item's In, a pause's point…):
+
+       « ‹ [ Start 1.23 s ] › »
+
+     « » nudge it 1 s, ‹ › one frame (0.04 s): nudge(delta). The time is a
+     button that sets it from the playhead: toPlayhead. With playhead false
+     (the Pause tab's point, which is the playhead), the time is plain text.
+
+     Props: what ("Start", "In"…: the label and the tooltips), text (the time
+     as shown: the page formats it), enabled, playhead (default true). The
+     page keeps the rules (limits, minimum lengths, which slider to re-seed);
+     this only reports what was asked for: props in, events out
+     (https://www.xmlui.org/docs/howto/emit-a-custom-event-from-a-component).
+     Each click also bumps clicks, a local write, so its event is delivered
+     at once rather than on a later tick
+     (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component). -->
+<Component name="TimeEdge" var.clicks="{0}">
+  <HStack verticalAlignment="center" gap="$space-1">
+    <Button label="«" size="xs" variant="ghost" enabled="{$props.enabled !== false}"
+      tooltip="{$props.what + ' 1 second earlier'}" onClick="emitEvent('nudge', -1); clicks++;" />
+    <Button label="‹" size="xs" variant="ghost" enabled="{$props.enabled !== false}"
+      tooltip="{$props.what + ' one frame earlier'}" onClick="emitEvent('nudge', -0.04); clicks++;" />
+    <Button when="{$props.playhead !== false}" label="{$props.what + ' ' + $props.text}" size="xs" variant="outlined"
+      enabled="{$props.enabled !== false}"
+      tooltip="{$props.what + ' at the playhead'}"
+      onClick="emitEvent('toPlayhead'); clicks++;" />
+    <Text when="{$props.playhead === false}" value="{$props.what + ' ' + $props.text}" />
+    <Button label="›" size="xs" variant="ghost" enabled="{$props.enabled !== false}"
+      tooltip="{$props.what + ' one frame later'}" onClick="emitEvent('nudge', 0.04); clicks++;" />
+    <Button label="»" size="xs" variant="ghost" enabled="{$props.enabled !== false}"
+      tooltip="{$props.what + ' 1 second later'}" onClick="emitEvent('nudge', 1); clicks++;" />
+  </HStack>
+</Component>

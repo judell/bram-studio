@@ -228,11 +228,16 @@
     // re-place the handles by re-seeding capSeed (which fires no slider
     // events), and show that frame, as on the Cut tab. The clip stays within
     // the source and at least 0.52 s long (a take must be 0.5 s).
+    // setCap: one end set to t (a typed time, TimeEdge's set), by the same
+    // rules.
     function nudgeCap(which, delta) {
+      setCap(which, (which === 'start' ? capClip[0] : capClip[1]) + delta);
+    }
+    function setCap(which, t) {
       const end = sourcePlayer.duration || srcDur;
       const c = capClip;
-      const s = which === 'start' ? Math.max(0, Math.min(Math.round((c[0] + delta) * 100) / 100, c[1] - 0.52)) : c[0];
-      const e = which === 'end' ? Math.min(end, Math.max(Math.round((c[1] + delta) * 100) / 100, c[0] + 0.52)) : c[1];
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.52)) : c[0];
+      const e = which === 'end' ? Math.min(end, Math.max(Math.round(t * 100) / 100, c[0] + 0.52)) : c[1];
       audition = null;
       if (s !== c[0] || e !== c[1]) {
         capSeed = [s, e];
@@ -308,11 +313,42 @@
     // events), and show that frame, as dragging a handle does. The stretch
     // stays within the take and at least 0.12 s long, as the slider's
     // minStepsBetweenThumbs keeps it.
+    // The narration's ends, as the cut's: nudged or typed (TimeEdge), at
+    // least 0.52 s apart (as the slider's minStepsBetweenThumbs) and within
+    // the scene; re-seeds narrSeed so the handles follow, and shows the frame.
+    function nudgeNarr(which, delta) {
+      setNarr(which, (which === 'start' ? narrClip[0] : narrClip[1]) + delta);
+    }
+    function setNarr(which, t) {
+      const end = takePlayer.duration || editDur;
+      const c = narrClip;
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.52)) : c[0];
+      const e = which === 'end' ? Math.min(end, Math.max(Math.round(t * 100) / 100, c[0] + 0.52)) : c[1];
+      audition = null;
+      if (s !== c[0] || e !== c[1]) {
+        narrSeed = [s, e];
+        narrClip = narrSeed;
+      }
+      takePlayer.seek(which === 'start' ? s : e);
+    }
+    // Where a pause goes in: the playhead. Its TimeEdge moves the playhead
+    // (within the scene); the slider's handle follows, since its initialValue
+    // is the playhead.
+    function setPauseAt(t) {
+      const end = takePlayer.duration || editDur;
+      audition = null;
+      takePlayer.seek(Math.max(0, Math.min(Math.round(t * 100) / 100, end)));
+    }
     function nudgeCut(which, delta) {
+      setCut(which, (which === 'start' ? lastCut[0] : lastCut[1]) + delta);
+    }
+    // One end of the cut set to t (nudged, or typed into its TimeEdge): at
+    // least 0.12 s apart and within the scene, as dragging a handle allows.
+    function setCut(which, t) {
       const end = takePlayer.duration || editDur;
       const c = lastCut;
-      const s = which === 'start' ? Math.max(0, Math.min(Math.round((c[0] + delta) * 100) / 100, c[1] - 0.12)) : c[0];
-      const e = which === 'end' ? Math.min(end, Math.max(Math.round((c[1] + delta) * 100) / 100, c[0] + 0.12)) : c[1];
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.12)) : c[0];
+      const e = which === 'end' ? Math.min(end, Math.max(Math.round(t * 100) / 100, c[0] + 0.12)) : c[1];
       audition = null;
       if (s !== c[0] || e !== c[1]) {
         cutSeed = [s, e];
@@ -352,10 +388,15 @@
     // the scene. Saved at once, and the playhead goes there so the frame is
     // seen.
     function nudgeItem(which, delta) {
+      setItemTime(which, (which === 'in' ? calloutIn : calloutOut) + delta);
+    }
+    // The current item's In or Out set to v (nudged, or typed into its
+    // TimeEdge), by the same rules.
+    function setItemTime(which, v) {
       const end = takePlayer.duration || editDur;
       const t = which === 'in'
-        ? Math.max(0, Math.min(Math.round((calloutIn + delta) * 100) / 100, calloutOut - 0.1))
-        : Math.min(end, Math.max(Math.round((calloutOut + delta) * 100) / 100, calloutIn + 0.1));
+        ? Math.max(0, Math.min(Math.round(v * 100) / 100, calloutOut - 0.1))
+        : Math.min(end, Math.max(Math.round(v * 100) / 100, calloutIn + 0.1));
       if (t !== (which === 'in' ? calloutIn : calloutOut)) {
         if (which === 'in') calloutIn = t; else calloutOut = t;
         takePlayer.seek(t);
@@ -1103,28 +1144,10 @@
             capClip = v;
           }" />
         <HStack verticalAlignment="center">
-          <HStack verticalAlignment="center" gap="$space-1">
-            <Button label="«" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="Start 1 second earlier" onClick="nudgeCap('start', -1)" />
-            <Button label="‹" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="Start one frame earlier" onClick="nudgeCap('start', -0.04)" />
-            <Text value="{'Start ' + mmss(capClip[0])}" />
-            <Button label="›" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="Start one frame later" onClick="nudgeCap('start', 0.04)" />
-            <Button label="»" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="Start 1 second later" onClick="nudgeCap('start', 1)" />
-          </HStack>
-          <HStack verticalAlignment="center" gap="$space-1">
-            <Button label="«" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="End 1 second earlier" onClick="nudgeCap('end', -1)" />
-            <Button label="‹" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="End one frame earlier" onClick="nudgeCap('end', -0.04)" />
-            <Text value="{'End ' + mmss(capClip[1])}" />
-            <Button label="›" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="End one frame later" onClick="nudgeCap('end', 0.04)" />
-            <Button label="»" size="xs" variant="ghost" enabled="{srcDur > 0}"
-              tooltip="End 1 second later" onClick="nudgeCap('end', 1)" />
-          </HStack>
+          <TimeEdge what="Start" text="{mmss(capClip[0])}" enabled="{srcDur > 0}"
+            onNudge="(d) => nudgeCap('start', d)" onToPlayhead="setCap('start', sourcePlayer.getCurrentTime())" />
+          <TimeEdge what="End" text="{mmss(capClip[1])}" enabled="{srcDur > 0}"
+            onNudge="(d) => nudgeCap('end', d)" onToPlayhead="setCap('end', sourcePlayer.getCurrentTime())" />
         </HStack>
         <HStack verticalAlignment="center">
           <Button label="Play scene" size="xs" variant="outlined" enabled="{srcDur > 0}"
@@ -1434,11 +1457,11 @@
                     takePlayer.seek($item.t_in);
                   }
                 " />
-              <!-- The current item's controls. In and Out, each with a − before
-                   it and a + after it that move the time one frame (0.04 s at
-                   25 fps), save at once, and take the playhead there so the
-                   frame is seen; the In and Out buttons set it from the
-                   playhead. -->
+              <!-- The current item's controls. In and Out are TimeEdges
+                   (components/TimeEdge.xmlui): « » move the time 1 s, ‹ › one
+                   frame (0.04 s at 25 fps), and the time itself sets it from
+                   the playhead; each saves at once and takes the playhead
+                   there so the frame is seen. -->
               <HStack when="{$item.id === editCallout}" verticalAlignment="center">
                 <!-- The text box is its own component (ItemText, after the
                      App), so a keystroke re-evaluates only its subtree, not
@@ -1447,18 +1470,10 @@
                      the text is saved when the box loses focus. -->
                 <ItemText when="{!curShape}" text="{curText}"
                   onCommit="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }" />
-                <HStack verticalAlignment="center" gap="$space-1">
-                  <Button label="−" size="xs" variant="ghost" tooltip="Start one frame earlier" onClick="nudgeItem('in', -0.04)" />
-                  <Button label="{'In ' + calloutIn.toFixed(2) + 's'}" size="xs" variant="outlined"
-                    tooltip="Start this item at the playhead" onClick="setItemEdge('in')" />
-                  <Button label="+" size="xs" variant="ghost" tooltip="Start one frame later" onClick="nudgeItem('in', 0.04)" />
-                </HStack>
-                <HStack verticalAlignment="center" gap="$space-1">
-                  <Button label="−" size="xs" variant="ghost" tooltip="End one frame earlier" onClick="nudgeItem('out', -0.04)" />
-                  <Button label="{'Out ' + calloutOut.toFixed(2) + 's'}" size="xs" variant="outlined"
-                    tooltip="End this item at the playhead" onClick="setItemEdge('out')" />
-                  <Button label="+" size="xs" variant="ghost" tooltip="End one frame later" onClick="nudgeItem('out', 0.04)" />
-                </HStack>
+                <TimeEdge what="In" text="{calloutIn.toFixed(2) + ' s'}"
+                  onNudge="(d) => nudgeItem('in', d)" onToPlayhead="setItemEdge('in')" />
+                <TimeEdge what="Out" text="{calloutOut.toFixed(2) + ' s'}"
+                  onNudge="(d) => nudgeItem('out', d)" onToPlayhead="setItemEdge('out')" />
                 <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
                 <Select when="{!curShape}" initialValue="{curTail}" width="120px"
                   onDidChange="(v) => {
@@ -1556,28 +1571,10 @@
                controls stay yours. The groups are tight inside ($space-1),
                as In and Out are on the Annotate tab. -->
           <HStack verticalAlignment="center">
-            <HStack verticalAlignment="center" gap="$space-1">
-              <Button label="«" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="Start 1 second earlier" onClick="nudgeCut('start', -1)" />
-              <Button label="‹" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="Start one frame earlier" onClick="nudgeCut('start', -0.04)" />
-              <Text value="{'Start ' + lastCut[0].toFixed(2) + 's'}" />
-              <Button label="›" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="Start one frame later" onClick="nudgeCut('start', 0.04)" />
-              <Button label="»" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="Start 1 second later" onClick="nudgeCut('start', 1)" />
-            </HStack>
-            <HStack verticalAlignment="center" gap="$space-1">
-              <Button label="«" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="End 1 second earlier" onClick="nudgeCut('end', -1)" />
-              <Button label="‹" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="End one frame earlier" onClick="nudgeCut('end', -0.04)" />
-              <Text value="{'End ' + lastCut[1].toFixed(2) + 's'}" />
-              <Button label="›" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="End one frame later" onClick="nudgeCut('end', 0.04)" />
-              <Button label="»" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-                tooltip="End 1 second later" onClick="nudgeCut('end', 1)" />
-            </HStack>
+            <TimeEdge what="Start" text="{lastCut[0].toFixed(2) + ' s'}" enabled="{!cutTake.inProgress}"
+              onNudge="(d) => nudgeCut('start', d)" onToPlayhead="setCut('start', takePlayer.getCurrentTime())" />
+            <TimeEdge what="End" text="{lastCut[1].toFixed(2) + ' s'}" enabled="{!cutTake.inProgress}"
+              onNudge="(d) => nudgeCut('end', d)" onToPlayhead="setCut('end', takePlayer.getCurrentTime())" />
           </HStack>
           <HStack verticalAlignment="center">
           <!-- Hear the stretch the cut would remove (playAudition), as the
@@ -1679,9 +1676,9 @@
              and dragging it seeks the player), drawn as a plain line
              (https://www.xmlui.org/docs/howto/style-slider-track-thumb-and-range);
              the seconds (remembered as the next default,
-             https://www.xmlui.org/docs/globals#local-storage-utilities); Play,
-             2 s either side of the point, after which the playhead goes back
-             to the point (returnTo) so Insert lands there; Insert; Cancel.
+             https://www.xmlui.org/docs/globals#local-storage-utilities);
+             Insert; Cancel. (A Play of 2 s either side of the point was
+             removed as not useful, 2026-10-05.)
              Once inserted the row closes and the new pause is selected
              (pauseSelAt: its point, until the list has its row). A pause's
              row selects it and moves the playhead to it; the selected one
@@ -1705,6 +1702,10 @@
                 takePlayer.seek(v);
               }" />
             </Theme>
+            <!-- The point the pause goes in at is the playhead: its TimeEdge
+                 nudges it (setPauseAt), and the slider follows. -->
+            <TimeEdge what="At" text="{playerTime.toFixed(2) + ' s'}" playhead="{false}" enabled="{!pauseTake.inProgress}"
+              onNudge="(d) => setPauseAt(playerTime + d)" />
             <HStack verticalAlignment="center">
               <NumberBox width="110px" initialValue="{pauseSecs}" minValue="{0.5}" maxValue="{30}" step="{0.5}"
                 endText="s" tooltip="How long the pause lasts (remembered as the default)"
@@ -1714,18 +1715,6 @@
                     writeLocalStorage('studio.pauseSeconds', v);
                   }
                 }" />
-              <Button label="{audition &amp;&amp; audition.kind === 'pause-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
-                tooltip="Play 2 s either side of the point, then come back to it"
-                enabled="{!pauseTake.inProgress}"
-                onClick="
-                  if (audition &amp;&amp; audition.kind === 'pause-preview') {
-                    stopAudition();
-                  } else {
-                    const p = takePlayer.getCurrentTime();
-                    playAudition(Math.max(0, p - 2), p + 2, 'pause-preview');
-                    audition = { ...audition, returnTo: p };
-                  }
-                " />
               <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
                 tooltip="{'Hold the frame at ' + playerTime.toFixed(2) + ' s (the playhead) for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
                 enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy &amp;&amp; !audition}"
@@ -1837,6 +1826,12 @@
                 takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
                 narrClip = v;
               }" />
+            <HStack when="{!narrating}" verticalAlignment="center">
+              <TimeEdge what="Start" text="{narrClip[0].toFixed(2) + ' s'}" enabled="{!narrBusy}"
+                onNudge="(d) => nudgeNarr('start', d)" onToPlayhead="setNarr('start', takePlayer.getCurrentTime())" />
+              <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!narrBusy}"
+                onNudge="(d) => nudgeNarr('end', d)" onToPlayhead="setNarr('end', takePlayer.getCurrentTime())" />
+            </HStack>
             <HStack when="{!!narrating}" verticalAlignment="center">
               <Text value="{narrating ? narrating[0].toFixed(2) + ' s' : ''}" />
               <ProgressBar width="*"
