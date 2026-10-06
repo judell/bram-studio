@@ -2145,9 +2145,9 @@
             <Button variant="ghost" label="{dictating === noteKey($item) ? '⏹' : '🎤'}"
               tooltip="{dictating === noteKey($item) ? 'Stop dictating (or press Enter)' : 'Dictate a note'}"
               enabled="{!dictating || dictating === noteKey($item)}"
-              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, noteBox)" />
+              onClick="dictating === noteKey($item) ? stopDictation($item) : startDictation($item, leveledNoteBox)" />
             <Form width="*" hideButtonRow="true" onSubmit="submitNote($item)">
-              <TextArea id="noteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{$item.note}"
+              <TextArea id="leveledNoteBox" width="100%" placeholder="Note…" autoSize="true" maxRows="3" initialValue="{$item.note}"
                 onGotFocus="noteBuffer = $item.note || ''; noteEdited = false"
                 onDidChange="(v) => { noteBuffer = v; noteEdited = true; window.studioDictationValue(noteKey($item), v); }"
                 onLostFocus="if (dictating !== noteKey($item)) commitNote($item)" />
