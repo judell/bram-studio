@@ -5,8 +5,9 @@
   <!-- Takes live in the open project's studio.db (see schema.sql and
        studio_paths.py). serve_media.py answers the project's queries
        read-only at its own /query, since it is what knows which project is
-       open; Bram's /query serves only the repo's studio.db, which holds the
-       shared Audio bench (voiceTests below). Each take's MP4 is served by
+       open. The repo's studio.db holds the shared Audio bench (voiceTests
+       below), read at serve_media.py's /query/shared, so it works however
+       the page is served, not only inside Bram. Each take's MP4 is served by
        serve_media.py too, which Bram's loopback can't do yet (no video
        content types, no byte ranges). -->
   <DataSource id="takes" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -745,7 +746,7 @@
   <!-- Audio recording test: serve_media.py runs voicetest.py, which records 10s
        with the chosen mic and recorder and adds a voice_tests row. -->
   <DataSource id="devices" url="http://127.0.0.1:8765/devices" />
-  <DataSource id="voiceTests" url="/query" method="POST" dataType="sql"
+  <DataSource id="voiceTests" url="http://127.0.0.1:8765/query/shared" method="POST" dataType="sql"
     body="{{ sql: 'SELECT * FROM voice_tests ORDER BY created_at DESC', params: [] }}" />
   <APICall id="voiceTest" method="post" url="http://127.0.0.1:8765/voicetest"
     body="{$param}"

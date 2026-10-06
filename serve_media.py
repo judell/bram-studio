@@ -76,6 +76,7 @@ HERE = studio_paths.REPO  # the scripts, record.log
 # The open project (studio_paths.py): its takes and exports, its database and
 # its render ingredients. The scripts launched from here inherit it.
 ROOT, DB, WORK = studio_paths.MEDIA, studio_paths.DB, studio_paths.WORK
+SHARED_DB = os.path.join(HERE, "studio.db")  # the repo's: the Audio bench's voice_tests (voicetest.py)
 os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = studio_paths.SOURCES  # source movies, usually symlinks
@@ -1485,7 +1486,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # The pages' queries change nothing, so they are neither counted nor
         # turned away.
         if self.path == "/query":
-            return self.query()
+            return self.query(DB)
+        if self.path == "/query/shared":
+            return self.query(SHARED_DB, shared=True)
         with POSTS_LOCK:
             if POSTS["restarting"]:
                 return self.send_json(503, {"error": "Studio is opening another project; try again in a moment"})
@@ -3330,13 +3333,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             db.executescript(open(os.path.join(HERE, "schema.sql")).read())
         self.open_project(slug)
 
-    def query(self):
-        # The pages' DataSource dataType="sql" requests, answered from the
-        # open project's database: {sql, params} (or bare SQL) in, a JSON
-        # array of column-keyed rows out. The same contract as Bram's /query,
-        # which serves only the one database .bram.json names (the repo's,
-        # with the Audio bench's voice_tests). Read-only at the engine: opened
-        # mode=ro with query_only on, so a page can't change project data.
+    def query(self, path, shared=False):
+        # The pages' DataSource dataType="sql" requests: {sql, params} (or
+        # bare SQL) in, a JSON array of column-keyed rows out, the same
+        # contract as Bram's /query. /query reads the open project's database;
+        # /query/shared the repo's (SHARED_DB: the Audio bench's voice_tests,
+        # shared by all projects), so the page needn't be served by Bram to
+        # read it. Read-only at the engine: opened mode=ro with query_only
+        # on, so a page can't change data. A shared database or table that
+        # doesn't exist yet (a fresh checkout, a scratch copy) reads as empty.
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             body = json.loads(raw or b"{}")
@@ -3346,8 +3351,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             (body.get("sql"), body.get("params") or []) if isinstance(body, dict) else (None, []))
         if not isinstance(sql, str) or not sql.strip() or not isinstance(params, list):
             return self.send_json(400, {"error": "expected {sql, params}"})
+        if shared and not os.path.isfile(path):
+            return self.send_json(200, [])
         try:
-            db = sqlite3.connect(f"file:{urllib.parse.quote(DB)}?mode=ro", uri=True)
+            db = sqlite3.connect(f"file:{urllib.parse.quote(path)}?mode=ro", uri=True)
             try:
                 db.row_factory = sqlite3.Row
                 db.execute("PRAGMA query_only = ON")
@@ -3355,6 +3362,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             finally:
                 db.close()
         except sqlite3.Error as e:
+            if shared and str(e).startswith("no such table"):
+                return self.send_json(200, [])
             return self.send_json(400, {"error": str(e)})
         self.send_json(200, rows)
 
