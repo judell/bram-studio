@@ -1183,7 +1183,9 @@
       <!-- calloutHandles: the edited callout's eight resize handles (anchors
            named by compass point), centered on its box's corners and edge
            midpoints, square on screen (height scaled by the picture's aspect);
-           hidden while the callout is being moved. They depend only on the
+           hidden while the callout is being moved. Each carries the resize
+           cursor of its direction (an arrow's or line's ends: crosshair),
+           which anchorTemplate shows. They depend only on the
            box, never on the sprite, so a handle can't leave anchors mid-drag
            (PointerLayer ends a drag whose anchor disappears). -->
       <!-- editSprite: the current item's sprite from the DataSource, or its
@@ -1211,7 +1213,7 @@
         var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
         var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}"
         var.handleBox="{curShown &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; calloutBox.x2 - calloutBox.x1 &lt; 0.001 &amp;&amp; editSprite ? { x1: editSprite.x, y1: editSprite.y, x2: editSprite.x + editSprite.width, y2: editSprite.y + editSprite.height } : (curShown ? calloutBox : null)}"
-        var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect })) : []}">
+        var.calloutHandles="{handleBox &amp;&amp; takeAspect &amp;&amp; !dragPos &amp;&amp; curShape !== 'pointer' ? ((curShape === 'arrow' || curShape === 'line') ? [['a', handleBox.x1, handleBox.y1], ['b', handleBox.x2, handleBox.y2]] : [['nw', handleBox.x1, handleBox.y1], ['n', (handleBox.x1 + handleBox.x2) / 2, handleBox.y1], ['ne', handleBox.x2, handleBox.y1], ['e', handleBox.x2, (handleBox.y1 + handleBox.y2) / 2], ['se', handleBox.x2, handleBox.y2], ['s', (handleBox.x1 + handleBox.x2) / 2, handleBox.y2], ['sw', handleBox.x1, handleBox.y2], ['w', handleBox.x1, (handleBox.y1 + handleBox.y2) / 2]]).map((h) => ({ id: h[0], url: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Crect x=%221%22 y=%221%22 width=%228%22 height=%228%22 fill=%22white%22 stroke=%22%23222%22 stroke-width=%221.5%22/%3E%3C/svg%3E', x: h[1] - 0.009, y: h[2] - 0.009 * takeAspect, width: 0.018, height: 0.018 * takeAspect, cursor: { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' }[h[0]] || 'crosshair' })) : []}">
         <!-- The player's close box (the tools are on the Annotate tab). -->
         <HStack verticalAlignment="center">
           <SpaceFiller />
@@ -1361,8 +1363,13 @@
             }"
             onTimeUpdate="(e) => playerTime = e.currentTime"
             onSeeked="(e) => playerTime = e.currentTime" />
+          <!-- PointerLayer gives every draggable anchor cursor: move, handles
+               too, so a resize looked like a move until it happened. Each
+               anchor's own cursor (a handle's, from calloutHandles; an item's,
+               move) is set on the image, which wins while the pointer is over
+               it: https://www.xmlui.org/docs/styles-and-themes/layout-props#cursor -->
           <property name="anchorTemplate">
-            <Image src="{$item.url}" width="100%" />
+            <Image src="{$item.url}" width="100%" cursor="{$item.cursor || 'move'}" />
           </property>
         </PointerLayer>
         <!-- Where the scene's audio lives: one bar per slice of the scene
