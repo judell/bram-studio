@@ -1,9 +1,8 @@
 # Bram Studio
 
-A narrated-screencast studio. Record your screen once, then narrate over it: play,
-pause, scrub and jump through the recording while you talk, and the take follows your
-playhead. Pause to think and the dead air is cut. Takes are named from your first
-spoken words.
+A narrated-screencast studio. Cut scenes from screen recordings you've already made,
+then edit each one: narrate over a stretch, insert a pause, cut what you don't need, and
+add callouts and shapes. Export joins the scenes, in order, into one video.
 
 - It supports the production style of
   [Heavy Metal Umlaut](https://jonudell.net/udell/2005-01-22-heavy-metal-umlaut-the-movie.html).
@@ -92,14 +91,16 @@ and `work/`. To move it into a project, stop `serve_media.py` and run
   `python3 serve_media.py` running (port 8765).
 - `ffmpeg`, Python 3 with Pillow, and Apple's Command Line Tools for `swiftc`
   (`xcode-select --install`; about 2.4 GB, not the full Xcode app; Homebrew installs
-  them too). `record.sh` compiles `record_native.swift` on first use.
+  them too). `serve_media.py` compiles `record_native.swift`, the narration recorder, on
+  first use.
 - `whisper-cli` (whisper.cpp) and a model at
   `~/.local/share/whisper-models/ggml-small.en.bin` (or set `WHISPER_MODEL`), for naming
-  takes. For the speech detector, Silero VAD at
-  `~/.local/share/whisper-models/ggml-silero-v5.1.2.bin` (about 0.9 MB, from
-  [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad); or set `VAD_MODEL`);
-  without it, the voice isn't gated.
-- The recorder uses the MacBook Air microphone by default (`MIC` in `record.sh`).
+  takes. Only `remix_take.py --regate`, for takes recorded live before scenes, uses the
+  speech detector: Silero VAD at `~/.local/share/whisper-models/ggml-silero-v5.1.2.bin`
+  (about 0.9 MB, from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad);
+  or set `VAD_MODEL`); without it, the voice isn't gated.
+- Narration uses the MacBook Air microphone by default (set `MIC` in `serve_media.py`'s
+  environment to use another).
 - Dictating a note on the Exports page uses Bram's dictation script, so it needs a Bram
   that serves `/__shell/dictation.js` ([judell/bram#417](https://github.com/judell/bram/issues/417)).
   It listens on the browser's default microphone and transcribes with `whisper-server`

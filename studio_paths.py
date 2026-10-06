@@ -2,7 +2,7 @@
 """Where Studio keeps things: the one place that knows.
 
     import studio_paths            # PROJECT, DB, MEDIA, WORK; REPO, SOURCES
-    eval "$(python3 studio_paths.py)"   # the same names, for record.sh
+    eval "$(python3 studio_paths.py)"   # the same names, for a shell script
 
 A project's own things live in its folder, projects/<slug>/ (gitignored):
 project.json (its name), studio.db (takes, callouts and shapes, narrations),
@@ -17,7 +17,7 @@ What projects share stays in the repo: sources/, the Audio bench
 studio.db) and the scripts.
 
 serve_media.py puts STUDIO_PROJECT in its environment at startup, so the
-scripts it launches (record.sh, overlay.py, ...) agree with it even if
+scripts it launches (overlay.py, register.py, ...) agree with it even if
 projects/.open changes while it runs.
 """
 import os

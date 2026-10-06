@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.capturing="{false}" var.recEvents="{[]}" var.recPaused="{false}" var.sourceAspect="{undefined}" var.inkTool="callout" var.liveAnnots="{[]}" var.liveCur="{null}" var.liveSeq="{0}" var.liveDrag="{null}" var.liveFrom="{null}" var.lastLiveSprites="{null}" var.onAirYet="{false}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.liveTick="{null}" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
+<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.sourceAspect="{undefined}" var.editTake="{null}" var.takeAspect="{undefined}" var.calloutBox="{null}" var.calloutIn="{0}" var.calloutOut="{3}" var.editCallout="{null}" var.editFile="" var.playerTime="{0}" var.dragPos="{null}" var.dragFrom="{null}" var.lastSprite="{null}" var.savedKey="" var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.lastCut="{[0, 1]}" var.cutSeed="{[0, 1]}" var.cutSeq="{0}" var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}" var.narrClip="{[0, 1]}" var.narrSeed="{[0, 1]}" var.narrating="{null}" var.narrBusy="{false}" var.audition="{null}" var.resumeAt="{null}" var.lastLevels="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.narrAdding="{false}" var.pauseAdding="{false}" var.cutAdding="{false}" var.cutSel="{null}" var.cutSelAt="{null}" var.pauseSel="{null}" var.pauseSelAt="{null}" var.narrSel="{null}" var.narrSelAt="{null}" var.renamingTake="{null}" var.renameDraft="" var.curShape="{null}" var.curText="" var.curTail="none" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -12,18 +12,14 @@
   <DataSource id="takes" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, src_end, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
     pollIntervalInSeconds="60" />
-  <!-- serve_media.py runs record.sh; Stop posts the source player's event
-       log, record.sh renders from it, and the take appears when it
-       registers. -->
+  <!-- A scene appears here when Make scene's clip (/takes/clip) registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
   <!-- The project folders and which one is open ({open, name, projects};
        list_projects() in serve_media.py), for the Projects page and the name
        at the top of the nav panel. -->
   <DataSource id="projects" url="http://127.0.0.1:8765/projects" />
-  <DataSource id="recStatus" url="http://127.0.0.1:8765/record/status"
-    pollIntervalInSeconds="60" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
-       changed ({changed: 'takes'|'sources'|'record'|'exports'|'projects'})
+       changed ({changed: 'takes'|'sources'|'exports'|'projects'})
        and only that one is refetched, plus the Projects page's list, which
        'takes', 'exports' and 'projects' (a project folder changed) all
        affect. Two fetches of that list close together are harmless: the
@@ -47,33 +43,15 @@
   <EventSource url="http://127.0.0.1:8765/events"
     onOpen="() => {
       dictating = window.studioDictationSync();
-      projects.refetch(); takes.refetch(); exports.refetch(); recStatus.refetch(); edits.refetch(); narrs.refetch(); pauses.refetch(); cuts.refetch();
+      projects.refetch(); takes.refetch(); exports.refetch(); edits.refetch(); narrs.refetch(); pauses.refetch(); cuts.refetch();
       if (opening) { opening = ''; navigate('/'); }
     }"
     onMessage="(m) => {
       if (m.changed === 'takes') { takes.refetch(); projects.refetch(); }
       else if (m.changed === 'sources') sources.refetch();
-      else if (m.changed === 'record') { recStatus.refetch(); edits.refetch(); }
       else if (m.changed === 'exports') { exports.refetch(); projects.refetch(); }
       else if (m.changed === 'projects') projects.refetch();
     }" />
-  <APICall id="startRecording" method="post" url="http://127.0.0.1:8765/record"
-    body="{$param}"
-    errorNotificationMessage="{$error.message}" />
-  <!-- Page state is reset in the Record/Stop click handlers, after execute()
-       returns: assignments in this APICall's success handler ran but didn't
-       take effect (the page stayed stuck in recording mode). -->
-  <!-- Restart discards the running take (no render, no row) and starts a new
-       one; Discard only ends it, for a page that lost the take (a reload). -->
-  <APICall id="restartRecording" method="post" url="http://127.0.0.1:8765/record/restart"
-    body="{$param}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="cancelRecording" method="post" url="http://127.0.0.1:8765/record/cancel"
-    invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="stopRecording" method="post" url="http://127.0.0.1:8765/record/stop"
-    body="{$param}"
-    errorNotificationMessage="{$error.message}" />
   <!-- One click, no warning: serve_media.py moves the MP4 to media/.trash/. -->
   <!-- The table is refreshed in the trash button's click, after execute():
        this APICall's onSuccess refetch didn't take effect (rows lingered until
@@ -158,21 +136,6 @@
     function submitNote(item) {
       if (dictating === noteKey(item)) stopDictation(item);
       else commitNote(item);
-    }
-    // A recording's events (everything but pointer samples and ink strokes)
-    // go to the server as they happen (POST /record/event) as well as into
-    // recEvents. recEvents is rewritten on every event, and an item's
-    // annotAdd and annotRemove were found missing from it (session
-    // 20261001-150809); at Stop the server puts back whatever recEvents lacks
-    // and logs the difference. A failed post is ignored: the event is still
-    // in recEvents.
-    function logEvents(list) {
-      recEvents = recEvents.concat(list);
-      try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/record/event', method: 'post', body: { events: list } });
-      } catch (e) {
-        const ignored = e;
-      }
     }
     // Narrate over a stretch of the take being edited (serve_media.py's
     // /narrate/*). The server answers /narrate/start once the mic is live;
@@ -867,7 +830,7 @@
             <VStack width="210px" horizontalAlignment="end" gap="$space-1">
               <Items data="{$item.actions}">
                 <Button label="{$item.label}" variant="outlined" size="sm" themeColor="attention"
-                  enabled="{!capturing}" tooltip="Move these to the Trash"
+                  tooltip="Move these to the Trash"
                   onClick="
                     const plan = cleanPlan($item);
                     if (plan) cleanDialog.open({ action: $item, plan: plan });
@@ -919,13 +882,13 @@
             <Text variant="secondary" width="*"
               value="{copyingProject === $item.slug ? 'Copying…' : safekeepingNote($item.safekeeping)}" />
             <Button label="Copy to safekeeping" variant="outlined" size="sm"
-              enabled="{$item.safekeeping.exists &amp;&amp; $item.safekeeping.changed_since !== false &amp;&amp; !copyingProject &amp;&amp; !capturing}"
+              enabled="{$item.safekeeping.exists &amp;&amp; $item.safekeeping.changed_since !== false &amp;&amp; !copyingProject}"
               tooltip="{$item.safekeeping.changed_since === false ? 'Nothing has changed since the last copy' : 'Copy the scenes, their re-mix ingredients, exports and logs; unchanged files are skipped'}"
               onClick="copyToSafekeeping($item)" />
             <!-- A fresh start: the copy goes to the Trash (after asking), the
                  location stays, and the next Copy copies everything again. -->
             <Button label="Clear safekeeping" variant="outlined" size="sm" themeColor="attention"
-              enabled="{$item.safekeeping.copy_exists &amp;&amp; !copyingProject &amp;&amp; !capturing}"
+              enabled="{$item.safekeeping.copy_exists &amp;&amp; !copyingProject}"
               tooltip="Move this project's safekeeping copy to the Trash, for a fresh start"
               onClick="
                 const yes = confirm('Clear safekeeping', clearSafekeepingQuestion($item), 'Move to Trash', 'Keep');
@@ -940,7 +903,7 @@
         <HStack width="90px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
           <Text when="{$item.open}" variant="secondary" value="open" />
           <Button when="{!$item.open}" label="Open" variant="outlined" size="sm"
-            enabled="{!opening &amp;&amp; !capturing}"
+            enabled="{!opening}"
             tooltip="Switch Studio to this project"
             onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
         </HStack>
@@ -982,7 +945,7 @@
       <HStack verticalAlignment="center">
         <TextBox id="newProjectName" placeholder="Name" width="260px" />
         <Button label="Create"
-          enabled="{!!newProjectName.value &amp;&amp; !!newProjectName.value.trim() &amp;&amp; !opening &amp;&amp; !capturing}"
+          enabled="{!!newProjectName.value &amp;&amp; !!newProjectName.value.trim() &amp;&amp; !opening}"
           tooltip="Make an empty project with this name and open it"
           onClick="
             if (switchProject('new', { name: newProjectName.value.trim() }, newProjectName.value.trim())) newProjectName.setValue('');
@@ -1012,7 +975,7 @@
           " />
         <Button label="Export" variant="outlined" size="sm"
           tooltip="Join all scenes, in list order, into one video (any scene whose items changed since its last Apply is applied first)"
-          enabled="{!exportTakes.inProgress &amp;&amp; !capturing &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
+          enabled="{!exportTakes.inProgress &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="startExport()" />
       </HStack>
       <!-- Scene callouts' confirmation: every scene, the callout it has (and
@@ -1045,14 +1008,6 @@
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
         <Spinner />
         <Text value="Exporting scenes…" />
-      </HStack>
-      <!-- A take this page didn't start (it was reloaded mid-take, or another
-           tab started it): it has no event log to render, so offer Discard. -->
-      <HStack verticalAlignment="center"
-        when="{!capturing &amp;&amp; recStatus.value &amp;&amp; recStatus.value.phase === 'recording'}">
-        <Text value="A recording is in progress from another page or before a reload." />
-        <Button label="Discard" variant="outlined" themeColor="attention"
-          enabled="{!cancelRecording.inProgress}" onClick="cancelRecording.execute()" />
       </HStack>
       <!-- Capture: a take is a stretch of a source movie (/takes/clip), to be
            sequenced and then edited in the take editor (narration, pauses,
@@ -1182,8 +1137,7 @@
            annotKind: what the editor places (callout, rect, ellipse, arrow or
            pointer); an arrow gets two handles at its ends (a: tail, b: tip), a
            pointer none (it only moves). -->
-      <!-- The editor works as the recording view does (take-editor-live-model):
-           there is no draft and nothing to save. Command-drag places an item,
+      <!-- The editor has no draft and nothing to save (take-editor-live-model). Command-drag places an item,
            which is saved at once (/callouts/add) and becomes the current one.
            editCallout is the current item's id; calloutBox, calloutIn,
            calloutOut, curShape, curText and curTail hold its fields, set when
@@ -1198,7 +1152,7 @@
            paused position, it looked on screen where it isn't). Picking it,
            its In/Out nudges and placing it all put the playhead inside it.
            Clicking the current item's name in the list again lets go of it. -->
-      <VStack when="{playing &amp;&amp; !capturing}"
+      <VStack when="{playing}"
         var.editDur="{((takes.value || []).find((t) => t.id === editTake) || { duration_s: 0 }).duration_s}"
         var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
         var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}"
@@ -1897,7 +1851,7 @@
               <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
                 size="xs" themeColor="attention"
                 tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
-                enabled="{!narrBusy &amp;&amp; !capturing &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
+                enabled="{!narrBusy &amp;&amp; !dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
                 handlerTimeoutMs:onClick="0"
                 onClick="narrating ? stopNarration() : startNarration();" />
               <Button label="Cancel" size="xs" variant="ghost" when="{!narrating}" enabled="{!narrBusy}"
@@ -2059,8 +2013,9 @@
         <HStack width="100%" verticalAlignment="center" paddingVertical="$space-2" paddingHorizontal="$space-2"
           borderRadius="$space-1"
           backgroundColor="{playing === $item.url ? '$color-primary-100' : 'transparent'}">
-          <!-- Empty take (no player events): record.sh's warning, with what the
-               player reported at Stop. -->
+          <!-- A take's warning, set when it was registered (only takes
+               recorded live by the retired record.sh have one: an empty take,
+               with what the player reported at Stop). -->
           <Icon name="warning" when="{$item.warning}" tooltip="{$item.warning}" />
           <!-- The name is a link that opens the scene in the editor, paused at
                its start (nothing plays by itself; Link's click event:

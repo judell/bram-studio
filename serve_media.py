@@ -18,16 +18,11 @@ to the system Trash under its own name; POST /projects/stray/delete
 for a project's discarded files, deleted takes (restorable ones), or undo
 history; POST /projects/open
 {slug} and /projects/new {name} switch to one, by starting this server over
-on it (refused while a take, narration, render, export or edit is under way).
+on it (refused while a narration, render, export or edit is under way).
 
 GET /sources lists the movies in sources/ and on the Desktop (newest first)
 and /sources/<name> streams one;
-GET /record/status reports a running take's phase; POST /record {source}
-starts record.sh (one take of that movie) for the app's Record button,
-POST /record/event {events} logs events as they happen,
-POST /record/stop {events} ends it with the player's event log, and
-POST /record/cancel / /record/restart {source} discard it (and start anew);
-record.sh logs to record.log. GET /devices lists the audio inputs and
+GET /devices lists the audio inputs and
 POST /voicetest {mic, recorder} runs one voicetest.py for the test bench.
 POST /delete {id} moves a take's MP4 to media/.trash/ and drops its row,
 keeping both in a .trash/<stem>.json that POST /undelete {undo} restores;
@@ -51,7 +46,7 @@ with where it goes, for the take player's PointerLayer anchors (#3922);
 POST /overlay/render {id} burns the take's text
 in with overlay.py (from its clean copy).
 GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
-"record"|"exports"} whenever watch_changes() sees one of them change, so the
+"exports"|"projects"} whenever watch_changes() sees one of them change, so the
 page refetches then instead of polling.
 """
 import collections
@@ -83,16 +78,9 @@ HERE = studio_paths.REPO  # the scripts, record.log
 # its render ingredients. The scripts launched from here inherit it.
 ROOT, DB, WORK = studio_paths.MEDIA, studio_paths.DB, studio_paths.WORK
 os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
-recorder = None  # the running record.sh, if any
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = studio_paths.SOURCES  # source movies, usually symlinks
 DESKTOP = os.path.expanduser("~/Desktop")  # where recordings usually land
-
-
-PHASES = {"starting": "Starting the recorder…",
-          "recording": "Recording: click Stop to finish",
-          "rendering": "Rendering the take…",
-          "naming": "Naming the take from its narration…"}
 
 
 # POSTs in flight, and whether the server is about to start over on another
@@ -188,27 +176,6 @@ def scene_callout_box(file, text):
 def stream_signature(path):
     # What must match for a stream-copy join: codecs, size, rates, channels.
     return probe(path, "stream=codec_name,width,height,r_frame_rate,sample_rate,channels")
-
-
-def cancel_recording(timeout=5):
-    # Ask record.sh to end the take without rendering, and wait for it to exit.
-    open(os.path.join(ROOT, ".record-cancel"), "w").close()
-    try:
-        recorder.wait(timeout)
-        return True
-    except subprocess.TimeoutExpired:
-        return False
-
-
-def record_status(running):
-    # record.sh writes its phase to media/.record-state and removes it on exit.
-    if not running:
-        return {"phase": None, "label": None}
-    try:
-        phase = open(os.path.join(ROOT, ".record-state")).read().strip()
-    except OSError:
-        phase = "starting"
-    return {"phase": phase, "label": PHASES.get(phase, phase)}
 
 
 EVENT_QUEUES = set()  # one queue per page listening on GET /events
@@ -713,8 +680,8 @@ def restart():
 
 
 def fingerprints():
-    # What each of the page's lists is built from, cheaply: the recording
-    # phase, studio.db (takes, callouts; register.py writes it too), the two
+    # What each of the page's lists is built from, cheaply:
+    # studio.db (takes, callouts; register.py writes it too), the two
     # source folders, the exports folder and the project folders. A change
     # means "refetch that".
     def mtime(path):
@@ -722,8 +689,7 @@ def fingerprints():
             return os.stat(path).st_mtime_ns
         except OSError:
             return None
-    return {"record": json.dumps(record_status(recorder is not None and recorder.poll() is None)),
-            "takes": mtime(DB),
+    return {"takes": mtime(DB),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
             "exports": exports_fingerprint(),
             "projects": projects_fingerprint(mtime)}
@@ -971,8 +937,7 @@ NOTES = os.path.join(ROOT, "exports", ".notes.json")
 NOTES_LOCK = threading.Lock()
 
 
-# The mic record.sh uses (narrations record from it too), and the whisper
-# model register.py uses.
+# The mic narrations record from, and the whisper model register.py uses.
 NOTE_MIC = os.environ.get("MIC", "MacBook Air Microphone")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL",
                                os.path.expanduser("~/.local/share/whisper-models/ggml-small.en.bin"))
@@ -993,44 +958,16 @@ whisper_server = {"proc": None}
 
 # Narrating over a stretch of a take (/narrate/start, /go, /stop): the one
 # narration in progress, guarded by DICTATION_LOCK since it owns the mic like
-# a dictation does. Recorded with record.sh's native recorder, not ffmpeg's
-# capture, which drops ~10% of samples (see voicetest.py).
+# a dictation does. Recorded with the native recorder (record_native.swift),
+# not ffmpeg's capture, which drops ~10% of samples (see voicetest.py).
 narration = {"current": None}
 NATIVE_SRC = os.path.join(HERE, "record_native.swift")
 NATIVE_BIN = os.path.expanduser("~/.cache/bram-studio/record_native")
-# A take's voice chain (render.py): the denoise, then highpass and compression.
+# A narration's voice chain: the denoise, then highpass and compression.
 NARRATE_AF = ("anlmdn=s=0.0005:p=0.002:r=0.006,highpass=f=80,"
               "acompressor=threshold=-24dB:ratio=3:attack=5:release=120")
 NARRATE_FLOOR = -45.0  # LUFS: a recording quieter than this has no speech in it
 NARRATE_GRACE = 30  # s past the clip's length before an unstopped narration is abandoned
-
-
-# A recording's events, as the page sends them one by one (POST /record/event)
-# into <session>/events.jsonl. The page also keeps them in one array that it
-# rewrites on every event and posts at Stop; an item placed while recording
-# was found with its annotAdd and annotRemove missing from that array
-# (session 20261001-150809), so its span ran to the end of the take. At Stop
-# the two are merged and compared (stop_recording). Events that arrive before
-# record.sh has made its session directory wait in pending_events.
-EVENTS_LOCK = threading.Lock()
-pending_events = []
-
-
-def log_events(events):
-    with EVENTS_LOCK:
-        pending_events.extend(events)
-        try:
-            session = open(os.path.join(ROOT, ".record-session")).read().strip()
-        except OSError:
-            return
-        if pending_events and os.path.isdir(session):
-            with open(os.path.join(session, "events.jsonl"), "a") as f:
-                f.writelines(json.dumps(e) + "\n" for e in pending_events)
-            pending_events.clear()
-
-
-def event_key(e):
-    return e.get("event"), e.get("wallMs"), e.get("cid")
 
 
 def end_narration(n, keep=False):
@@ -1361,8 +1298,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
-        if self.path == "/record/status":
-            return self.send_json(200, record_status(self.recording()))
         if self.path == "/sources":
             return self.send_json(200, [{"name": n} for n in sources()])
         if self.path == "/exports":
@@ -1387,7 +1322,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def stream_events(self):
         # Server-sent events for the page's <EventSource>: data: {"changed":
-        # "takes"|"sources"|"record"|"exports"} as watch_changes() sees them,
+        # "takes"|"sources"|"exports"|"projects"} as watch_changes() sees them,
         # and a comment line every 15 s so an idle connection stays open.
         q = queue.Queue()
         with EVENT_LOCK:
@@ -1447,18 +1382,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.reorder_projects()
         if self.path == "/projects/delete":
             return self.delete_project()
-        if self.path == "/record":
-            return self.start_recording()
-        if self.path == "/record/restart":
-            return self.start_recording(restart=True)
-        if self.path == "/record/cancel":
-            if not self.recording():
-                return self.send_json(409, {"error": "nothing is recording"})
-            return self.send_json(200, {"cancelled": cancel_recording()})
-        if self.path == "/record/stop":
-            return self.stop_recording()
-        if self.path == "/record/event":
-            return self.record_event()
         if self.path == "/audition/log":
             return self.log_audition()
         if self.path == "/voicetest":
@@ -1560,14 +1483,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def claim_dictation(self):
         # {key}: the page is about to dictate into that row's note. One at a
-        # time, and never while a take, a narration or a voice test has the
+        # time, and never while a narration or a voice test has the
         # mic. The same row claiming again is fine (the page re-claims when
         # its event stream reconnects mid-dictation).
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         key = str(body.get("key", ""))
         with DICTATION_LOCK:
-            if self.recording():
-                return self.send_json(409, {"error": "a take is recording"})
             if narration["current"]:
                 return self.send_json(409, {"error": "a narration is recording"})
             if testing.locked():
@@ -1665,7 +1586,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def export_takes(self):
         # All takes, in list order, as one MP4 in media/exports/. Identical
-        # streams (the usual case: one render.py, one source) join by stream
+        # streams (the usual case: scenes clipped from one source) join by stream
         # copy; otherwise re-encode, fitting each take to the first one's size.
         if not exporting.acquire(blocking=False):
             return self.send_json(409, {"error": "an export is already running"})
@@ -2030,9 +1951,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def clip_take(self):
         # {source, start, end}: a new take that is that stretch of a source
-        # movie, the capture view's Make take. Encoded as render.py encodes
-        # takes (its ENC and FPS; AAC 160k, 48 kHz stereo), so Export can still
-        # join takes by stream copy. The source's own audio comes along; a
+        # movie, the capture view's Make take. Encoded as live-recorded takes
+        # were (libx264 crf 16, 25 fps; AAC 160k, 48 kHz stereo), so Export can
+        # still join old takes and new scenes by stream copy. The source's own audio comes along; a
         # source without audio gets a silent track, so every take has one.
         # register.py adds it at the top of the takes list, named for its
         # source and stretch (rename it in the list).
@@ -2422,8 +2343,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # {id, start, end}: open the mic to narrate over that stretch of a take.
         # Answers once samples are flowing; the page then starts the (muted)
         # player and posts /narrate/go, and /narrate/stop when the clip ends.
-        # One at a time, and never while a take records, a note is dictated or
-        # a voice test runs.
+        # One at a time, and never while a note is dictated or a voice test
+        # runs.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
@@ -2447,8 +2368,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if r.returncode:
                 return self.send_json(500, {"error": "couldn't build the recorder (record_native.swift)"})
         with DICTATION_LOCK:
-            if self.recording() or testing.locked():
-                return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
+            if testing.locked():
+                return self.send_json(409, {"error": "the mic is busy (testing)"})
             if dictation["current"]:
                 return self.send_json(409, {"error": dictating_where()})
             if narration["current"]:
@@ -2460,7 +2381,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             n = {"id": row["id"], "start": start, "end": end, "proc": proc, "wav": base + ".wav", "out": out,
                  "t0": None, "go": None, "done": threading.Event()}
             # The recorder prints "started <epoch>" when samples begin: the
-            # narration's time zero, as record.sh's t0 is a take's.
+            # narration's time zero.
             deadline = time.time() + 5
             while time.time() < deadline and proc.poll() is None and n["t0"] is None:
                 with open(out.name) as f:
@@ -2914,45 +2835,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.mark_take_cut(row["file"], {kind: saved.get(kind)})
         self.send_json(200, {"id": row["id"], "redone": edit_what(name, saved)})
 
-    def recording(self):
-        return recorder is not None and recorder.poll() is None
-
-    def start_recording(self, restart=False):
-        # record.sh runs one take: voice until Stop -> render -> register.
-        # restart=True first discards the running take (no render, no row).
-        global recorder
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        source = body.get("source")
-        if not source and len(sources()) == 1:
-            source = sources()[0]  # nothing picked, and there's only one to pick
-        if source not in sources():
-            return self.send_json(400, {"error": f"no source movie named {source!r} in sources/ or on the Desktop"})
-        if restart and self.recording() and not cancel_recording():
-            return self.send_json(409, {"error": "the running take didn't stop in time"})
-        if self.recording() or testing.locked() or narration["current"]:
-            return self.send_json(409, {"error": "the mic is busy (recording, narrating or testing)"})
-        if dictation["current"]:
-            return self.send_json(409, {"error": dictating_where()})
-        with EVENTS_LOCK:
-            pending_events.clear()
-        log = open(os.path.join(HERE, "record.log"), "a")
-        recorder = subprocess.Popen([os.path.join(HERE, "record.sh"), source_paths()[source]],
-                                    cwd=HERE, stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        self.send_json(202, {"started": True})
-
-    def record_event(self):
-        # {events: [...]}: events the page logs as they happen (everything but
-        # pointer samples), each stamped with its arrival time. Never an
-        # error for the page to show: with nothing recording, nothing is kept.
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        events = [e for e in body.get("events") or [] if isinstance(e, dict)]
-        if not self.recording():
-            return self.send_json(200, {"logged": 0})
-        now = int(time.time() * 1000)
-        log_events([{**e, "serverMs": now} for e in events])
-        self.send_json(200, {"logged": len(events)})
-
     def log_audition(self):
         # {kind, start, stop, stoppedAt}: the take editor played a stretch and
         # stopped it (playAudition in Main.xmlui). One line per stop, with how
@@ -2966,51 +2848,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "need start, stop and stoppedAt"})
         self.send_json(200, {"logged": 1})
 
-    def stop_recording(self):
-        # The session's events.json is the page's event array plus whatever the
-        # server's own log (record_event) holds that the array lacks; then
-        # .record-stop tells record.sh the take is over. The array as posted
-        # is kept as events-page.json, and one "events:" log line says what
-        # each side had and what the page's array was missing.
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        if not self.recording():
-            return self.send_json(409, {"error": "nothing is recording"})
-        try:
-            session = open(os.path.join(ROOT, ".record-session")).read().strip()
-        except OSError:
-            return self.send_json(409, {"error": "the recorder hasn't started yet"})
-        page = [e for e in body.get("events", []) if isinstance(e, dict)]
-        log_events([])  # anything still waiting for the session directory
-        logged = []
-        try:
-            with open(os.path.join(session, "events.jsonl")) as f:
-                logged = [json.loads(line) for line in f if line.strip()]
-        except (OSError, ValueError) as e:
-            print(f"events: no server log for {os.path.basename(session)} ({e})", flush=True)
-        have = {event_key(e) for e in page}
-        missing = [e for e in logged if event_key(e) not in have]
-        events = page
-        json.dump(page, open(os.path.join(session, "events-page.json"), "w"), indent=1)
-        if missing:
-            # sorted() is stable, so events with one wallMs keep their order.
-            events = sorted(page + missing, key=lambda e: e.get("wallMs") or 0)
-        kinds = lambda evs: dict(collections.Counter(e.get("event") for e in evs if e.get("event") != "pointer"))
-        print(f"events: {os.path.basename(session)} page {kinds(page)} server {kinds(logged)}; "
-              f"the page's array was missing {len(missing)}"
-              + (f": {[(e.get('event'), e.get('cid')) for e in missing]}" if missing else ""), flush=True)
-        json.dump(events, open(os.path.join(session, "events.json"), "w"), indent=1)
-        # What the source player reported at Stop, so an empty take carries evidence.
-        json.dump(body.get("diag", {}), open(os.path.join(session, "diag.json"), "w"), indent=1)
-        open(os.path.join(ROOT, ".record-stop"), "w").close()
-        self.send_json(200, {"stopped": True, "events": len(events), "recovered": len(missing)})
-
     def run_voicetest(self):
-        # One 10s test at a time, never during a take; returns when it's measured.
+        # One 10s test at a time, never during a narration or dictation; returns when it's measured.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if dictation["current"]:
             return self.send_json(409, {"error": dictating_where()})
-        if self.recording() or not testing.acquire(blocking=False):
-            return self.send_json(409, {"error": "the mic is busy (recording or testing)"})
+        if not testing.acquire(blocking=False):
+            return self.send_json(409, {"error": "the mic is busy (testing)"})
         try:
             r = subprocess.run([sys.executable, os.path.join(HERE, "voicetest.py"),
                                 str(body.get("mic", "")), str(body.get("recorder", ""))],
@@ -3023,8 +2867,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def busy(self):
         # What a restart would interrupt, or None. This request is one POST.
-        if self.recording():
-            return "a take is being recorded"
         if narration["current"]:
             return "a narration is being recorded"
         if dictation["current"]:
@@ -3287,8 +3129,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "days must be a number"})
         if what not in CLEAN:
             return self.send_json(400, {"error": f"nothing to clean called {what!r}"})
-        # The open project's recordings and history are in use while a take
-        # is being recorded or rendered, or an edit is being saved.
+        # The open project's recordings and history are in use while a
+        # narration is recorded, a scene rendered, or an edit saved.
         why = self.busy() if folder == studio_paths.PROJECT else None
         if why and not dry:
             return self.send_json(409, {"error": f"Can't clean up the open project now: {why}"})
@@ -3373,46 +3215,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-class AdoptedRecorder:
-    # A record.sh that was already running when this server started (it was
-    # restarted mid-take): stands in for the Popen handle, so Stop, Cancel and
-    # the status line keep working instead of reporting "nothing is recording".
-    def __init__(self, pid):
-        self.pid = pid
-
-    def poll(self):
-        try:
-            os.kill(self.pid, 0)
-            return None
-        except OSError:
-            return 0
-
-    def wait(self, timeout=None):
-        deadline = time.time() + (timeout if timeout is not None else 1e9)
-        while self.poll() is None:
-            if time.time() > deadline:
-                raise subprocess.TimeoutExpired("record.sh", timeout)
-            time.sleep(0.1)
-        return 0
-
-
-def adopt_running_take():
-    # record.sh writes its session dir to media/.record-session and the voice
-    # recorder's pid to <session>/pids; the recorder's parent is record.sh.
-    try:
-        session = open(os.path.join(ROOT, ".record-session")).read().strip()
-        rec_pid = int(open(os.path.join(session, "pids")).read().split()[0])
-        ppid = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(rec_pid)], capture_output=True,
-                                  text=True).stdout.strip())
-        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(ppid)], capture_output=True, text=True).stdout
-    except (OSError, ValueError):
-        return None
-    if "record.sh" not in cmd:
-        return None
-    print(f"adopted the running take: record.sh pid {ppid}, session {session}", flush=True)
-    return AdoptedRecorder(ppid)
-
-
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
@@ -3420,7 +3222,6 @@ with sqlite3.connect(DB) as _db:
     _db.execute(NARRATIONS_SQL)
     _db.execute(PAUSES_SQL)
     _db.execute(CUTS_SQL)
-recorder = adopt_running_take()
 backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
