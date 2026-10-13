@@ -1,0 +1,12 @@
+<!-- A callout's text box on the Annotate tab, in a component of its own so
+     typing touches only draft, here, and not the enclosing scope's bindings
+     (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component).
+     Its own file because SceneEditor uses it, not Main.xmlui
+     (https://www.xmlui.org/docs/howto/create-a-reusable-component).
+     The text goes up as a commit event when the box loses focus (TextBox has
+     no Enter event: https://www.xmlui.org/docs/reference/components/TextBox). -->
+<Component name="ItemText" var.draft="{$props.text}">
+  <TextBox id="box" width="220px" initialValue="{$props.text}" placeholder="Callout text"
+    onDidChange="(v) => draft = v"
+    onLostFocus="draft = box.value; emitEvent('commit', draft);" />
+</Component>
