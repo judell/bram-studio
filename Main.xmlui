@@ -1156,8 +1156,13 @@
            stretch and the player only shows it, as on the Cut tab; the
            player's own scrubber and play/pause stay yours. Play clip, Intro
            and Outro hear it (playAudition, for this player). Shown for the
-           chosen source while no take is open: one player at a time. -->
-      <VStack when="{!!sourceChoice.value &amp;&amp; !playing}">
+           chosen source while no take is open: one player at a time.
+           Collapsed behind "Make a scene", since an agent may have drafted
+           the scenes already
+           (https://www.xmlui.org/docs/reference/components/ExpandableItem). -->
+      <ExpandableItem when="{!!sourceChoice.value &amp;&amp; !playing}" summary="Make a scene"
+        iconPosition="start" fullWidthSummary="true">
+        <VStack>
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; nextClipFrom(lastSceneEnd(sourceChoice.value)); }" />
@@ -1206,7 +1211,8 @@
             " />
           <Spinner when="{clipBusy}" />
         </HStack>
-      </VStack>
+        </VStack>
+      </ExpandableItem>
       <!-- At page level, so it runs for the capture view and the take editor
            alike (audition.src: the source player). An audition stops at its end (playAudition), and yields to the
            player, whose scrubber and play/pause are always live: a pause
