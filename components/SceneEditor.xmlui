@@ -29,8 +29,6 @@
   var.calloutIn="{0}"
   var.calloutOut="{3}"
   var.editCallout="{null}"
-  var.playerTime="{0}"
-  var.lastSprite="{null}"
   var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}"
   var.cutSeq="{0}"
   var.narrating="{null}"
@@ -42,13 +40,13 @@
   var.curTail="none">
 
   <method name="refresh">
-    () => { edits.refetch(); narrs.refetch(); pauses.refetch(); cuts.refetch(); callouts.refetch(); savedSprites.refetch(); }
+    () => { narrs.refetch(); pauses.refetch(); cuts.refetch(); refreshItemLists(); }
   </method>
 
   <!-- Another scene opened while this one was: per-scene state starts over,
        as opening one from the list always did (openScene). The tabs reset
        their own (each listens to its take prop). -->
-  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; editCallout = null; calloutBox = null; lastSprite = null; curShape = null; curText = ''; curTail = 'none'; audition = null;" />
+  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; editCallout = null; calloutBox = null; curShape = null; curText = ''; curTail = 'none'; audition = null;" />
 
   <script>
     // Narrate over a stretch of the take being edited (serve_media.py's
@@ -62,6 +60,7 @@
     function startNarration(clip) {
       try {
         audition = null;
+        narrTab.setTime(clip[0]);
         takePlayer.pause();
         takePlayer.seek(clip[0]);
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
@@ -91,7 +90,7 @@
       narrBusy = false;
       resumeAt = clip ? clip[0] : takePlayer.getCurrentTime();
       cutSeq = cutSeq + 1;
-      edits.refetch();
+      undoTab.refresh();
       narrs.refetch(); pauses.refetch(); cuts.refetch();
     }
     // The audio strip's bars (under the take player): one per slice of
@@ -120,18 +119,24 @@
     // each lets go of the current item first.
     function letGoOfItem() {
       audition = null;
-      editCallout = null; calloutBox = null; lastSprite = null;
+      editCallout = null; calloutBox = null;
       curShape = null; curText = ''; curTail = 'none';
+    }
+    // After a save: the lists that show items, each refetched in the
+    // component that owns it (AnnotateTab's callouts, the canvas's sprites,
+    // UndoTab's history), so each reply re-renders only that component.
+    function refreshItemLists() {
+      annotTab.refresh();
+      canvas.refreshSprites();
+      undoTab.refresh();
     }
     // After an edit: the file reloads (cutSeq) and goes back to at
     // (resumeAt), and every list refetches.
     function afterEdit(at) {
       resumeAt = at;
       cutSeq = cutSeq + 1;
-      edits.refetch();
       narrs.refetch(); pauses.refetch(); cuts.refetch();
-      callouts.refetch();
-      savedSprites.refetch();
+      refreshItemLists();
     }
     function tabCut(c) {
       letGoOfItem();
@@ -170,7 +175,7 @@
       removeNarration.execute(r.id);
       resumeAt = r.at;
       cutSeq = cutSeq + 1;
-      narrs.refetch(); pauses.refetch(); cuts.refetch(); edits.refetch();
+      narrs.refetch(); pauses.refetch(); cuts.refetch(); undoTab.refresh();
     }
     function tabUndo(redo) {
       const at = takePlayer.getCurrentTime();
@@ -199,21 +204,17 @@
                                   body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
                                           t_in: t, t_out: out, tail: 'none', shape: shape } });
       editCallout = r.id;
-      edits.refetch();
       curShape = shape;
       curText = '';
       curTail = 'none';
       calloutBox = box;
       calloutIn = t;
       calloutOut = out;
-      lastSprite = null;
-      callouts.refetch();
-      savedSprites.refetch();
+      refreshItemLists();
     }
     // The current item's In or Out as the rules allow, for v (nudged, or
     // from the playhead): In at or above 0 and 0.1 s before Out, Out 0.1 s
-    // after In and within the scene. It only computes: the TimeEdges' handlers
-    // assign calloutIn / calloutOut themselves (see the comment there).
+    // after In and within the scene.
     function itemTime(which, v) {
       const end = takePlayer.duration || editDur;
       return which === 'in'
@@ -227,13 +228,66 @@
       calloutBox = nb;
       saveCurrentItem();
     }
+    // Every change to the current item is saved at once (/callouts/update).
+    // Actions.callApi, not an APICall: an APICall's inProgress is state here,
+    // and its changes re-rendered the editor.
     function saveCurrentItem() {
-      updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1,
-                              x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail,
-                              shape: curShape });
-      callouts.refetch();
-      savedSprites.refetch();
-      edits.refetch();
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/update', method: 'post', invalidates: [],
+                          body: { take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1,
+                                  x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail,
+                                  shape: curShape } });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      refreshItemLists();
+    }
+    // AnnotateTab's events. A row clicked: that item becomes current, and
+    // the playhead goes to its start; the current one clicked again (row
+    // null) lets go of it.
+    function selectItem(row) {
+      audition = null;
+      if (!row) {
+        letGoOfItem();
+        calloutIn = 0;
+        calloutOut = 3;
+        return;
+      }
+      editCallout = row.id;
+      curShape = row.shape || null;
+      curText = row.text;
+      curTail = row.tail || 'none';
+      calloutBox = { x1: row.x1, y1: row.y1, x2: row.x2, y2: row.y2 };
+      calloutIn = row.t_in;
+      calloutOut = row.t_out;
+      takePlayer.seek(row.t_in);
+    }
+    // In or Out nudged: saved, and the playhead goes there so the frame is seen.
+    function nudgeItemTime(which, d) {
+      const t = itemTime(which, (which === 'in' ? calloutIn : calloutOut) + d);
+      if (t === (which === 'in' ? calloutIn : calloutOut)) return;
+      if (which === 'in') calloutIn = t; else calloutOut = t;
+      takePlayer.seek(t);
+      saveCurrentItem();
+    }
+    // In or Out set from the playhead.
+    function itemFromPlayhead(which) {
+      const t = itemTime(which, takePlayer.getCurrentTime());
+      if (t === (which === 'in' ? calloutIn : calloutOut)) return;
+      if (which === 'in') calloutIn = t; else calloutOut = t;
+      saveCurrentItem();
+    }
+    function removeItem() {
+      const id = editCallout;
+      letGoOfItem();
+      calloutIn = 0;
+      calloutOut = 3;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/delete', method: 'post', invalidates: [], body: { id: id } });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      refreshItemLists();
     }
     // Auditions on the scene player: the same as the capture view's in
     // Main.xmlui (playSourceAudition and its 40 ms Timer, after the data below),
@@ -285,11 +339,6 @@
     }
   </script>
 
-  <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
-       a take (overlay.py). Add/delete edit the list; render burns them in from
-       the take's clean copy. -->
-  <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [editTake, &quot;callout&quot;, &quot;shape&quot;] }}" />
   <!-- The edited take's narrations (serve_media.py's narrations table), for
        the Narrate tab's list and the Cut and Pause tabs' warnings. -->
   <DataSource id="narrs" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -305,24 +354,11 @@
   <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="addCallout" method="post" url="http://127.0.0.1:8765/callouts/add"
-    body="{$param}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="updateCallout" method="post" url="http://127.0.0.1:8765/callouts/update"
-    body="{$param}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
-  <APICall id="deleteCallout" method="post" url="http://127.0.0.1:8765/callouts/delete"
-    body="{{ id: $param }}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
   <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
        its clean copy, callouts shifted). No onSuccess (xmlui-org/xmlui#3924).
        cutSeq goes into the take player's src so it reloads the changed video.
-       edits is the edited take's history for the Undo tab (GET
-       /takes/edits: its edits newest first, which one Undo would take back,
-       and whether Undo and Redo are possible); it is refetched after every
-       edit, undo and redo and whenever the takes change. undoEdit and
-       redoEdit step back and forth through it. -->
-  <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + (editTake || 0)}" />
+       The history Undo and Redo step through is UndoTab's (its edits);
+       undoEdit and redoEdit are here, with the other edits. -->
   <!-- The edited take's sound level per slice, for the audio strip under its
        player; cutSeq (bumped by every edit) makes an edited take refetch. -->
   <DataSource id="takeLevels" url="{'http://127.0.0.1:8765/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}"
@@ -333,41 +369,6 @@
   <APICall id="redoEdit" method="post" url="http://127.0.0.1:8765/takes/redo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <!-- Standing instrumentation for the Undo button (its enabled, on the Undo
-       tab): whenever one of its inputs changes, one undo-gate line in
-       serve_media.log (/undo/log) with every input, which ones changed and
-       whether Undo is on. After a narration, Undo stayed off while the server
-       said canUndo (2026-10-05); this names the input holding it. Sources by
-       name: https://www.xmlui.org/docs/reference/components/ChangeListener
-       The posts run concurrently and can arrive out of order, so each carries
-       pageMs (when the page saw the change): sort by it to read them in the
-       page's order. (A seq counter here was a reactive variable, and each
-       bump re-rendered the editor, ~220 ms: trace, 2026-10-13.) -->
-  <ChangeListener
-    listenToSources="{{
-      take: editTake,
-      edits: !!edits.value,
-      canUndo: !!(edits.value &amp;&amp; edits.value.canUndo),
-      undoing: undoEdit.inProgress,
-      redoing: redoEdit.inProgress,
-      cutting: cutTake.inProgress,
-      pausing: pauseTake.inProgress,
-      narrating: narrating,
-      narrBusy: narrBusy
-    }}"
-    onDidChange="(change) => {
-      const v = change.newValue;
-      try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
-                          body: { pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
-                                  undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
-                                  pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,
-                                  changed: change.changedSources,
-                                  enabled: !!(v.edits &amp;&amp; v.canUndo &amp;&amp; !v.undoing &amp;&amp; !v.redoing &amp;&amp; !v.cutting &amp;&amp; !v.pausing &amp;&amp; !v.narrating &amp;&amp; !v.narrBusy) } });
-      } catch (e) {
-        // A missing log line is no reason to bother the user.
-      }
-    }" />
   <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
     body="{{ id: $param.id, start: $param.start, end: $param.end }}"
     invalidates="{[]}"
@@ -393,9 +394,7 @@
       else if (next === 'end') endAudition();
     " />
   <!-- The take loaded in the take player (its URL); hidden while recording. -->
-  <!-- editSprite: the current item's sprite from the DataSource, or its
-       last one while the next loads; never another item's.
-       annotKind: what the editor places (callout, rect, ellipse, arrow or
+  <!-- annotKind: what the editor places (callout, rect, ellipse, arrow or
        pointer). The handles, and dragging, are AnnotationCanvas's
        (components/AnnotationCanvas.xmlui). -->
   <!-- The editor has no draft and nothing to save (take-editor-live-model). Command-drag places an item,
@@ -413,32 +412,13 @@
        paused position, it looked on screen where it isn't). Picking it,
        its In/Out nudges and placing it all put the playhead inside it.
        Clicking the current item's name in the list again lets go of it. -->
-  <VStack when="{playing}"
-    var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}">
+  <VStack when="{playing}">
     <!-- The player's close box (the tools are on the Annotate tab). -->
     <HStack verticalAlignment="center">
       <SpaceFiller />
       <Button icon="close" variant="ghost" aria-label="Close player"
         tooltip="Close the player" onClick="audition = null; emitEvent('close');" />
     </HStack>
-    <!-- Callouts (overlay.py), edited directly on the video: the player
-         shows the take's clean copy (no burned-in text, /clean/<file>) and
-         PointerLayer's anchors (xmlui-org/xmlui#3922) draw each callout on
-         it as a sprite from the server, made by the same code Export burns in with.
-         Items show between their in and out points; the current one
-         always shows, and dragging it moves it, and dragging one of its
-         eight handles resizes it, shown as an outline until the drag ends
-         and the new sprite arrives (AnnotationCanvas). Command-drag
-         places a new item. calloutSprite is the current item's sprite as
-         its fields stand now (with a callout's selection frame); the
-         server echoes the item's id, so a sprite still loading for the
-         previously current item is never shown for this one. -->
-    <DataSource id="calloutSprite" url="http://127.0.0.1:8765/callouts/sprite" method="POST"
-      when="{!!editCallout &amp;&amp; !!calloutBox &amp;&amp; !!editTake}"
-      body="{{ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, tail: curTail, shape: curShape, frame: !curShape }}"
-      onLoaded="(d) => lastSprite = d" />
-    <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
-      when="{!!editTake}" body="{{ take_id: editTake }}" />
     <!-- The picture: AnnotationCanvas (components/AnnotationCanvas.xmlui)
          draws the scene's items over the player and handles dragging,
          keeping per-move state in its own scope so a drag doesn't
@@ -448,12 +428,16 @@
          end, drawItem for a ⌘-drag. A move clamped to nothing saves
          nothing, so release() lets the canvas drop its drag offset. The
          player is its children, so takePlayer stays this page's. -->
-    <AnnotationCanvas id="canvas" aspect="{takeAspect}" time="{playerTime}"
+    <!-- Callouts (overlay.py), edited directly on the video: the player
+         shows the take's clean copy (no burned-in text, /clean/<file>) and
+         the canvas draws each item over it as a sprite from the server, made
+         by the same code Export burns in with (the sprites are the canvas's
+         own data). -->
+    <AnnotationCanvas id="canvas" take="{editTake}" aspect="{takeAspect}"
       tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
-      sprites="{savedSprites.value || []}"
-      current="{{ id: editCallout, box: calloutBox, shape: curShape, tIn: calloutIn, tOut: calloutOut, sprite: editSprite }}"
+      current="{{ id: editCallout, box: calloutBox, shape: curShape, text: curText, tail: curTail, tIn: calloutIn, tOut: calloutOut }}"
       onPickItem="(id) => {
-        const it = (callouts.value || []).find((c) => c.id === id);
+        const it = annotTab.find(id);
         if (it) {
           editCallout = it.id;
           curShape = it.shape || null;
@@ -462,7 +446,6 @@
           calloutBox = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
           calloutIn = it.t_in;
           calloutOut = it.t_out;
-          lastSprite = null;
         }
       }"
       onMoveItem="(d) => {
@@ -488,16 +471,13 @@
         // every DataSource and took a drawn shape ~3 s (trace, 2026-10-13).
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
         editCallout = r.id;
-        edits.refetch();
         curShape = shape;
         curText = '';
         curTail = 'none';
         calloutBox = box;
         calloutIn = t;
         calloutOut = out;
-        lastSprite = null;
-        callouts.refetch();
-        savedSprites.refetch();
+        refreshItemLists();
         editTabs.setActiveTabIndex(0);
       }">
       <!-- After an edit the file reloads (cutSeq changes src); it goes
@@ -512,17 +492,18 @@
         src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
         onLoadedMetadata="(e) => {
           takeAspect = e.videoWidth / e.videoHeight;
-          playerTime = takePlayer.getCurrentTime();
-          canvas.setTime(playerTime);
-          playhead.setTime(playerTime);
+          const t0 = takePlayer.getCurrentTime();
+          canvas.setTime(t0);
+          playhead.setTime(t0);
+          pauseTab.setTime(t0);
           if (resumeAt !== null) {
             takePlayer.seek(resumeAt);
             takePlayer.pause();
             resumeAt = null;
           }
         }"
-        onSeeked="(e) => { playerTime = e.currentTime; canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); }"
-        onPause="(e) => { playerTime = e.currentTime; canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); }" />
+        onSeeked="(e) => { canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }"
+        onPause="(e) => { canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }" />
     </AnnotationCanvas>
     <!-- Where the scene's audio lives: one bar per slice of the scene
          (takeLevels, serve_media.py's /takes/levels), its height the
@@ -537,9 +518,9 @@
          of 200 slots held the playhead: it stepped a slot at a time, and
          every 40 ms tick re-checked all 200). -->
     <VStack gap="0" var.lv="{takeLevels.value || lastLevels}"
-      when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}">
-      <Playhead id="playhead" span="{lv.binSecs * lv.levels.length}" time="{playerTime}" />
-      <HStack height="24px" gap="0" verticalAlignment="end">
+      var.showStrip="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}">
+      <Playhead id="playhead" span="{lv ? lv.binSecs * lv.levels.length : 1}" show="{showStrip}" />
+      <HStack height="24px" gap="0" verticalAlignment="end" when="{showStrip}">
         <Items data="{levelBars(lv, narrs.value || [])}">
           <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
             <Stack when="{$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
@@ -569,135 +550,20 @@
         if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrTab.close();
         if (label !== 'Pause') pauseTab.close();
       }">
-    <!-- Annotate: Add annotation and the tools (the current one solid),
-         then the scene's items, one row each. Add annotation places the
-         current tool in the middle of the picture at the playhead for 3 s
-         (addAnnotation); ⌘-drag places it where you drag. The tool is
-         remembered (studio.annotKind) and starts as Callout. Clicking a
-         row makes that item current and moves the playhead to its start
-         (again lets go of it); the current row offers its controls: text
-         and tail (a callout's), In and Out with one-frame nudges, Play
-         (its span, reading Stop while it plays) and ✕. Text and tail save
-         as they change; their boxes take curText and curTail
-         (initialValue), made fresh with the row. Every add, change and
-         delete is a step in the Undo tab's history (so edits.refetch()
-         after each); Export burns the items into the video. -->
+    <!-- Annotate: components/AnnotateTab.xmlui (the item list is its own).
+         The current item is here, shared with the canvas. -->
     <TabItem label="Annotate">
-    <VStack>
-      <HStack verticalAlignment="center">
-        <Button label="Add annotation" size="xs" variant="outlined"
-          tooltip="Place the current tool in the middle of the picture, from the playhead for 3 s"
-          onClick="addAnnotation()" />
-        <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
-          <Button label="{$item[1]}" size="xs"
-            variant="{annotKind === $item[0] ? 'solid' : 'outlined'}"
-            tooltip="What Add annotation places, and ⌘-drag on the picture (click, for Pointer)"
-            onClick="annotKind = $item[0]; writeLocalStorage('studio.annotKind', $item[0]);" />
-        </Items>
-      </HStack>
-      <Items data="{callouts.value || []}">
-        <HStack verticalAlignment="center">
-          <Button size="xs" variant="{$item.id === editCallout ? 'solid' : 'ghost'}"
-            label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
-            onClick="
-              audition = null;
-              if ($item.id === editCallout) {
-                editCallout = null;
-                calloutBox = null;
-                lastSprite = null;
-                curShape = null;
-                curText = '';
-                curTail = 'none';
-                calloutIn = 0;
-                calloutOut = 3;
-              } else {
-                editCallout = $item.id;
-                curShape = $item.shape || null;
-                curText = $item.text;
-                curTail = $item.tail || 'none';
-                calloutBox = { x1: $item.x1, y1: $item.y1, x2: $item.x2, y2: $item.y2 };
-                calloutIn = $item.t_in;
-                calloutOut = $item.t_out;
-                lastSprite = null;
-                takePlayer.seek($item.t_in);
-              }
-            " />
-          <!-- The current item's controls. In and Out are TimeEdges
-               (components/TimeEdge.xmlui): « » move the time 1 s, ‹ › one
-               frame (0.04 s at 25 fps), and the time itself sets it from
-               the playhead; each saves at once and takes the playhead
-               there so the frame is seen. -->
-          <HStack when="{$item.id === editCallout}" verticalAlignment="center">
-            <!-- The text box is its own component (ItemText, after the
-                 App), so a keystroke re-evaluates only its subtree, not
-                 every binding in App scope
-                 (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component);
-                 the text is saved when the box loses focus. -->
-            <ItemText when="{!curShape}" text="{curText}"
-              onCommit="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }" />
-            <!-- In and Out: each handler assigns calloutIn / calloutOut
-                 itself, and itemTime only computes. When a function did the
-                 assigning (nudgeItem, setItemTime), called from a handler in
-                 this Items row that didn't name those variables, it did
-                 nothing at all: handler done in under 1 ms, no seek, no save
-                 (traces 2026-10-13T214026, T220656, T221127). The cause is
-                 xmlui-org/xmlui#3940 (part A): below a VStack with a var.,
-                 then Tabs, then Items, a script function's assignment fails
-                 with "Left value variable (…) not found in the scope", in the
-                 console only. Assigning in the handler, or naming the variable
-                 there, works. A nudge takes the playhead there so the frame is
-                 seen; each change is saved. -->
-            <TimeEdge what="In" text="{calloutIn.toFixed(2) + ' s'}"
-              onNudge="(d) => { const t = itemTime('in', calloutIn + d); if (t !== calloutIn) { calloutIn = t; takePlayer.seek(t); saveCurrentItem(); } }"
-              onToPlayhead="const t = itemTime('in', takePlayer.getCurrentTime()); if (t !== calloutIn) { calloutIn = t; saveCurrentItem(); }" />
-            <TimeEdge what="Out" text="{calloutOut.toFixed(2) + ' s'}"
-              onNudge="(d) => { const t = itemTime('out', calloutOut + d); if (t !== calloutOut) { calloutOut = t; takePlayer.seek(t); saveCurrentItem(); } }"
-              onToPlayhead="const t = itemTime('out', takePlayer.getCurrentTime()); if (t !== calloutOut) { calloutOut = t; saveCurrentItem(); }" />
-            <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
-            <Select when="{!curShape}" initialValue="{curTail}" width="120px"
-              onDidChange="(v) => {
-                if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curTail) {
-                  curTail = v;
-                  updateCallout.execute({ take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1, x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: v, shape: curShape });
-                  callouts.refetch();
-                  savedSprites.refetch();
-                  edits.refetch();
-                }
-              }">
-              <Option value="none" label="No tail" />
-              <Option value="nw" label="Tail ↖ nw" />
-              <Option value="n" label="Tail ↑ n" />
-              <Option value="ne" label="Tail ↗ ne" />
-              <Option value="e" label="Tail → e" />
-              <Option value="se" label="Tail ↘ se" />
-              <Option value="s" label="Tail ↓ s" />
-              <Option value="sw" label="Tail ↙ sw" />
-              <Option value="w" label="Tail ← w" />
-            </Select>
-            <Button label="{audition &amp;&amp; audition.kind === 'item' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
-              tooltip="Play this item's span"
-              onClick="audition &amp;&amp; audition.kind === 'item' ? stopAudition() : playAudition(calloutIn, calloutOut, 'item')" />
-            <Button icon="close" size="xs" variant="ghost"
-              aria-label="Remove this item" tooltip="Remove this item from the scene"
-              onClick="
-                audition = null;
-                deleteCallout.execute(editCallout);
-                edits.refetch();
-                editCallout = null;
-                calloutBox = null;
-                lastSprite = null;
-                curShape = null;
-                curText = '';
-                curTail = 'none';
-                calloutIn = 0;
-                calloutOut = 3;
-                callouts.refetch();
-                savedSprites.refetch();
-              " />
-          </HStack>
-        </HStack>
-      </Items>
-    </VStack>
+      <AnnotateTab id="annotTab" take="{editTake}" kind="{annotKind}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
+        item="{{ id: editCallout, shape: curShape, text: curText, tail: curTail, tIn: calloutIn, tOut: calloutOut }}"
+        onTool="(k) => { annotKind = k; writeLocalStorage('studio.annotKind', k); }"
+        onAdd="addAnnotation()"
+        onSelect="(row) => selectItem(row)"
+        onText="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }"
+        onTail="(v) => { if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curTail) { curTail = v; saveCurrentItem(); } }"
+        onNudge="(e) => nudgeItemTime(e.which, e.d)"
+        onToPlayhead="(which) => itemFromPlayhead(which)"
+        onPlay="playAudition(calloutIn, calloutOut, 'item')" onStopPlay="stopAudition()"
+        onRemove="removeItem()" />
     </TabItem>
     <!-- Cut: components/CutTab.xmlui. -->
     <TabItem label="Cut">
@@ -712,7 +578,7 @@
     <!-- Pause: components/PauseTab.xmlui. -->
     <TabItem label="Pause">
       <PauseTab id="pauseTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
-        pauses="{pauses.value || []}" narrs="{narrs.value || []}" playerTime="{playerTime}"
+        pauses="{pauses.value || []}" narrs="{narrs.value || []}"
         pausing="{pauseTake.inProgress}" cutting="{cutTake.inProgress}" narrating="{!!narrating}" narrBusy="{narrBusy}"
         onSeek="(t) => tabSeek(t)" onHush="audition = null"
         onPlay="(a) => playAudition(a.start, a.stop, a.kind)" onStopPlay="stopAudition()"
@@ -721,7 +587,7 @@
     <!-- Narrate: components/NarrateTab.xmlui. -->
     <TabItem label="Narrate">
       <NarrateTab id="narrTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
-        narrs="{narrs.value || []}" playerTime="{narrating ? playerTime : 0}"
+        narrs="{narrs.value || []}"
         narrating="{narrating}" narrBusy="{narrBusy}" dictating="{!!$props.dictating}"
         cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" removing="{removeNarration.inProgress}"
         onSeek="(t) => tabSeek(t)" onHush="audition = null"
@@ -732,7 +598,7 @@
     </TabItem>
     <!-- Undo: components/UndoTab.xmlui. -->
     <TabItem label="Undo">
-      <UndoTab edits="{edits.value}"
+      <UndoTab id="undoTab" take="{editTake}"
         undoing="{undoEdit.inProgress}" redoing="{redoEdit.inProgress}"
         cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" narrating="{!!narrating}" narrBusy="{narrBusy}"
         onUndo="tabUndo(false)" onRedo="tabUndo(true)" />
@@ -747,18 +613,17 @@
          playhead follow the player every 40 ms. The player's timeUpdate
          arrives about four times a second, which showed items a third of a
          second late (measured 2026-10-01: an item set to 2.0-5.0 s was on
-         screen 2.32-5.37 s). The time goes to them (setTime), not to
-         playerTime: each assignment here re-rendered the whole editor,
-         ~220 ms, so playback kept the page busy (trace, 2026-10-13).
-         playerTime is the paused playhead (seeked, pause), for the Pause
-         tab; it follows every tick only while a narration records, for the
-         Narrate tab's progress. -->
+         screen 2.32-5.37 s). The time goes to them by method (setTime),
+         not to a variable here: each assignment here re-rendered the whole
+         editor, ~220 ms (trace, 2026-10-13). The Pause tab gets it on load,
+         seek and pause; the Narrate tab every tick while a narration
+         records, for its progress. -->
     <Timer interval="40" enabled="{!takePlayer.paused}"
       onTick="
         const t = takePlayer.getCurrentTime();
         canvas.setTime(t);
         playhead.setTime(t);
-        if (narrating) playerTime = t;
+        if (narrating) narrTab.setTime(t);
       " />
   </VStack>
 </Component>

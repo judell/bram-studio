@@ -20,15 +20,16 @@
      it). Play, Intro and Outro hear it as judell/av plays a clip, its intro
      and its outro (https://github.com/judell/av av.js).
 
-     Props: take, duration, audition, narrs (the list), playerTime (the
-     playhead; live only while narrating), narrating (the clip being
+     Props: take, duration, audition, narrs (the list), narrating (the clip being
      recorded, or null), narrBusy, dictating, cutting, pausing, removing.
      Events: seek(t), hush(), play({start, stop, kind}), stopPlay(),
      needTime(tag) (answered with atPlayhead(tag, t)), narrate(clip),
      stopNarrate(), removeNarr({id, at}).
-     Methods: atPlayhead(tag, t), landed(t), close(). -->
+     Methods: atPlayhead(tag, t), landed(t), close(), setTime(t) (the
+     playhead, live while narrating). -->
 <Component name="NarrateTab"
   var.dur="{$props.duration || 0}"
+  var.time="{0}"
   var.narrClip="{[0, 1]}"
   var.narrSeed="{[0, 1]}"
   var.narrAdding="{false}"
@@ -52,6 +53,12 @@
   </method>
   <method name="landed">
     (t) => { narrAdding = false; narrSel = null; narrSelAt = t; }
+  </method>
+  <!-- The playhead, pushed by the editor (on load, seek and pause; every
+       tick while a narration records), so a seek re-renders this tab, not
+       the editor. -->
+  <method name="setTime">
+    (t) => { time = t; }
   </method>
   <method name="close">
     () => { narrAdding = false; }
@@ -96,7 +103,7 @@
       <HStack when="{!!$props.narrating}" verticalAlignment="center">
         <Text value="{$props.narrating ? $props.narrating[0].toFixed(2) + ' s' : ''}" />
         <ProgressBar width="*"
-          value="{$props.narrating ? Math.max(0, Math.min(1, ($props.playerTime - $props.narrating[0]) / ($props.narrating[1] - $props.narrating[0]))) : 0}" />
+          value="{$props.narrating ? Math.max(0, Math.min(1, (time - $props.narrating[0]) / ($props.narrating[1] - $props.narrating[0]))) : 0}" />
         <Text value="{$props.narrating ? $props.narrating[1].toFixed(2) + ' s' : ''}" />
       </HStack>
       <HStack verticalAlignment="center">
@@ -104,7 +111,7 @@
           tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
           enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? emitEvent('stopPlay') : emitEvent('play', { start: narrClip[0], stop: narrClip[1], kind: 'narr-preview' })" />
-        <Button label="{$props.narrating ? '⏹ Stop recording · ' + Math.max(0, $props.narrating[1] - $props.playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+        <Button label="{$props.narrating ? '⏹ Stop recording · ' + Math.max(0, $props.narrating[1] - time).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
           size="xs" themeColor="attention"
           tooltip="{$props.narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
           enabled="{!$props.narrBusy &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing}"

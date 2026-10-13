@@ -1,0 +1,97 @@
+<!-- The scene editor's Annotate tab: Add annotation and the tools (the
+     current one solid), then the scene's items, one row each. Its own
+     component, holding the item list (callouts), so that the list's refetch
+     after every save re-renders only this tab, not the editor (a Chrome
+     profile of one In/Out nudge, 2026-10-13, showed seven passes over the
+     whole editor, 225-920 ms each, most of them driven by replies such as
+     this list's: Trace-20261013T161009.json.gz).
+
+     Add annotation places the current tool in the middle of the picture at
+     the playhead for 3 s; ⌘-drag places it where you drag (both in the
+     editor). The tool is remembered (studio.annotKind) and starts as
+     Callout. Clicking a row makes that item current and moves the playhead
+     to its start (again lets go of it); the current row offers its
+     controls: text and tail (a callout's), In and Out with one-frame
+     nudges, Play (its span, reading Stop while it plays) and ✕. Every
+     change is saved at once by the editor; every add, change and delete is
+     a step in the Undo tab's history; Export burns the items into the video.
+
+     Props: take, kind (the tool), audition ({kind, start, stop} or null),
+     item (the current one: {id, shape, text, tail, tIn, tOut}, id null for
+     none). Events (the editor owns the current item, the player and the
+     saves): tool(kind), add(), select(row or null), text(v), tail(v),
+     nudge({which, d}) (which: 'in' or 'out'), toPlayhead(which), play(),
+     stopPlay(), remove().
+     Methods: refresh() (the list), find(id) (a row, for the canvas's
+     picks; https://www.xmlui.org/docs/howto/expose-a-method-from-a-component). -->
+<Component name="AnnotateTab">
+
+  <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
+       a take (overlay.py). -->
+  <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [$props.take, &quot;callout&quot;, &quot;shape&quot;] }}" />
+
+  <method name="refresh">
+    () => { callouts.refetch(); }
+  </method>
+  <method name="find">
+    (id) => { return (callouts.value || []).find((c) => c.id === id) || null; }
+  </method>
+
+  <VStack>
+    <HStack verticalAlignment="center">
+      <Button label="Add annotation" size="xs" variant="outlined"
+        tooltip="Place the current tool in the middle of the picture, from the playhead for 3 s"
+        onClick="emitEvent('add')" />
+      <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
+        <Button label="{$item[1]}" size="xs"
+          variant="{$props.kind === $item[0] ? 'solid' : 'outlined'}"
+          tooltip="What Add annotation places, and ⌘-drag on the picture (click, for Pointer)"
+          onClick="emitEvent('tool', $item[0])" />
+      </Items>
+    </HStack>
+    <Items data="{callouts.value || []}">
+      <HStack verticalAlignment="center">
+        <Button size="xs" variant="{$item.id === $props.item.id ? 'solid' : 'ghost'}"
+          label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
+          onClick="emitEvent('select', $item.id === $props.item.id ? null : $item)" />
+        <!-- The current item's controls. In and Out are TimeEdges
+             (components/TimeEdge.xmlui): « » move the time 1 s, ‹ › one
+             frame (0.04 s at 25 fps), and the time itself sets it from the
+             playhead; the editor saves each change at once and takes the
+             playhead there so the frame is seen. -->
+        <HStack when="{$item.id === $props.item.id}" verticalAlignment="center">
+          <!-- The text box is its own component (ItemText), so a keystroke
+               re-evaluates only its subtree
+               (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component);
+               the text is saved when the box loses focus. -->
+          <ItemText when="{!$props.item.shape}" text="{$props.item.text}"
+            onCommit="(v) => emitEvent('text', v)" />
+          <TimeEdge what="In" text="{$props.item.tIn.toFixed(2) + ' s'}"
+            onNudge="(d) => emitEvent('nudge', { which: 'in', d: d })" onToPlayhead="emitEvent('toPlayhead', 'in')" />
+          <TimeEdge what="Out" text="{$props.item.tOut.toFixed(2) + ' s'}"
+            onNudge="(d) => emitEvent('nudge', { which: 'out', d: d })" onToPlayhead="emitEvent('toPlayhead', 'out')" />
+          <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
+          <Select when="{!$props.item.shape}" initialValue="{$props.item.tail}" width="120px"
+            onDidChange="(v) => emitEvent('tail', v)">
+            <Option value="none" label="No tail" />
+            <Option value="nw" label="Tail ↖ nw" />
+            <Option value="n" label="Tail ↑ n" />
+            <Option value="ne" label="Tail ↗ ne" />
+            <Option value="e" label="Tail → e" />
+            <Option value="se" label="Tail ↘ se" />
+            <Option value="s" label="Tail ↓ s" />
+            <Option value="sw" label="Tail ↙ sw" />
+            <Option value="w" label="Tail ← w" />
+          </Select>
+          <Button label="{$props.audition &amp;&amp; $props.audition.kind === 'item' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+            tooltip="Play this item's span"
+            onClick="$props.audition &amp;&amp; $props.audition.kind === 'item' ? emitEvent('stopPlay') : emitEvent('play')" />
+          <Button icon="close" size="xs" variant="ghost"
+            aria-label="Remove this item" tooltip="Remove this item from the scene"
+            onClick="emitEvent('remove')" />
+        </HStack>
+      </HStack>
+    </Items>
+  </VStack>
+</Component>

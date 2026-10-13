@@ -5,19 +5,17 @@
      them, as a transformed element is drawn over later ordinary ones
      (https://www.xmlui.org/docs/styles-and-themes/layout-props#transform).
 
-     Props: span (the seconds the bars cover), time (the paused playhead, to
-     start from). While the scene plays the editor calls setTime(t) every
-     40 ms, so a tick re-renders only this, not the editor
+     Props: span (the seconds the bars cover), show (the strip is shown).
+     The editor calls setTime(t) on load, seek and pause, and every 40 ms
+     while the scene plays, so a tick re-renders only this, not the editor
      (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component).
-     time follows its prop until setTime first assigns it
-     (https://www.xmlui.org/docs/scripting, "var.x is reactive only until
-     you explicitly assign"); the editor calls setTime wherever the prop
-     changes, so the two agree. -->
-<Component name="Playhead" var.time="{$props.time || 0}">
+     It stays mounted while hidden (show, not when), so it keeps the time
+     it was given before the strip's levels arrive. -->
+<Component name="Playhead" var.time="{0}">
   <method name="setTime">
     (t) => { time = t; }
   </method>
-  <HStack height="8px" gap="0">
+  <HStack height="8px" gap="0" when="{!!$props.show}">
     <Stack height="8px" width="{Math.min(100, Math.max(0, time / ($props.span || 1) * 100)) + '%'}" />
     <Stack width="2px" height="32px" transform="translateY(0)" backgroundColor="$color-surface-900" />
   </HStack>

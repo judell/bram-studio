@@ -3,7 +3,7 @@
      state re-renders only this tab.
 
      Add opens the adding row: the point (the slider is the player's
-     playhead: playerTime re-seeds its initialValue, which fires no events,
+     playhead: time re-seeds its initialValue, which fires no events,
      https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain,
      and dragging it seeks the player), drawn as a plain line
      (https://www.xmlui.org/docs/howto/style-slider-track-thumb-and-range);
@@ -17,13 +17,14 @@
      back out (/pauses/remove; Undo puts it back).
 
      Props: take, duration, audition, pauses and narrs (the lists),
-     playerTime (the paused playhead), pausing, cutting, narrating,
-     narrBusy. Events: seek(t), hush(), play({start, stop, kind}),
+     pausing, cutting, narrating, narrBusy. The playhead comes by method
+     (setTime: time). Events: seek(t), hush(), play({start, stop, kind}),
      stopPlay(), insert({seconds}) (the editor reads the playhead, calls
      inserted(at) and inserts there), removePause({id, at}).
      Methods: inserted(at), close(). -->
 <Component name="PauseTab"
   var.dur="{$props.duration || 0}"
+  var.time="{0}"
   var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}"
   var.pauseAdding="{false}"
   var.pauseSel="{null}"
@@ -34,6 +35,12 @@
 
   <method name="inserted">
     (at) => { pauseAdding = false; pauseSel = null; pauseSelAt = at; }
+  </method>
+  <!-- The playhead, pushed by the editor (on load, seek and pause; every
+       tick while a narration records), so a seek re-renders this tab, not
+       the editor. -->
+  <method name="setTime">
+    (t) => { time = t; }
   </method>
   <method name="close">
     () => { pauseAdding = false; }
@@ -48,15 +55,15 @@
       <Theme backgroundColor-range-Slider="$color-surface-300" backgroundColor-track-Slider="$color-surface-300"
         backgroundColor-range-Slider--disabled="$color-surface-300" backgroundColor-track-Slider--disabled="$color-surface-300">
       <Slider id="pauseSlider" width="100%" minValue="{0}" maxValue="{dur}" step="{0.04}"
-        initialValue="{$props.playerTime || 0}"
+        initialValue="{time || 0}"
         valueFormat="{(v) => v.toFixed(2) + 's'}"
         enabled="{!$props.pausing}"
         onDidChange="(v) => emitEvent('seek', v)" />
       </Theme>
       <!-- The point the pause goes in at is the playhead: its TimeEdge
            nudges it (within the scene), and the slider follows. -->
-      <TimeEdge what="At" text="{($props.playerTime || 0).toFixed(2) + ' s'}" playhead="{false}" enabled="{!$props.pausing}"
-        onNudge="(d) => emitEvent('seek', Math.max(0, Math.min(Math.round((($props.playerTime || 0) + d) * 100) / 100, dur)))" />
+      <TimeEdge what="At" text="{time.toFixed(2) + ' s'}" playhead="{false}" enabled="{!$props.pausing}"
+        onNudge="(d) => emitEvent('seek', Math.max(0, Math.min(Math.round((time + d) * 100) / 100, dur)))" />
       <HStack verticalAlignment="center">
         <NumberBox width="110px" initialValue="{pauseSecs}" minValue="{0.5}" maxValue="{30}" step="{0.5}"
           endText="s" tooltip="How long the pause lasts (remembered as the default)"
@@ -67,7 +74,7 @@
             }
           }" />
         <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
-          tooltip="{'Hold the frame at ' + ($props.playerTime || 0).toFixed(2) + ' s (the playhead) for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
+          tooltip="{'Hold the frame at ' + time.toFixed(2) + ' s (the playhead) for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
           enabled="{!$props.pausing &amp;&amp; !$props.cutting &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy &amp;&amp; !$props.audition}"
           handlerTimeoutMs:onClick="0"
           onClick="emitEvent('insert', { seconds: pauseSecs })" />
@@ -78,8 +85,8 @@
       <!-- A pause that falls inside a narration takes away its ✕, as a cut
            through one does. -->
       <Text color="$color-warn-700"
-        when="{($props.narrs || []).some((n) => $props.playerTime > n.t_in + 0.04 &amp;&amp; $props.playerTime &lt; n.t_out - 0.04)}"
-        value="{'This pause falls inside the narration at ' + ($props.narrs || []).filter((n) => $props.playerTime > n.t_in + 0.04 &amp;&amp; $props.playerTime &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
+        when="{($props.narrs || []).some((n) => time > n.t_in + 0.04 &amp;&amp; time &lt; n.t_out - 0.04)}"
+        value="{'This pause falls inside the narration at ' + ($props.narrs || []).filter((n) => time > n.t_in + 0.04 &amp;&amp; time &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
     </VStack>
     <Items data="{$props.pauses || []}">
       <HStack verticalAlignment="center"

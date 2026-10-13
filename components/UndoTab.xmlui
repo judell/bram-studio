@@ -9,36 +9,79 @@
      from its row (https://www.xmlui.org/docs/howto/highlight-rows-conditionally)
      left the tint as separate blocks with gaps between them.
 
-     Props: edits (/takes/edits: {edits, canUndo, canRedo, note}), and
-     what's running: undoing, redoing, cutting, pausing, narrating,
-     narrBusy. Events: undo(), redo() (the editor lets go of the current
+     It owns the history (edits, GET /takes/edits: {edits, canUndo,
+     canRedo, note}), refetched after every save and edit through
+     refresh(), so that refetch re-renders only this tab (it re-rendered
+     the whole editor: Chrome profile, 2026-10-13).
+     Props: take, and what's running: undoing, redoing, cutting, pausing,
+     narrating, narrBusy. Events: undo(), redo() (the editor lets go of the current
      item first, as a cut does: the take's items are swapped with its
      files). -->
 <Component name="UndoTab"
   var.busy="{$props.undoing || $props.redoing || $props.cutting || $props.pausing || $props.narrating || $props.narrBusy}">
+
+  <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + ($props.take || 0)}" />
+
+  <method name="refresh">
+    () => { edits.refetch(); }
+  </method>
+
+  <!-- Standing instrumentation for the Undo button: whenever one of its
+       inputs changes, one undo-gate line in serve_media.log (/undo/log) with
+       every input, which ones changed and whether Undo is on. After a
+       narration, Undo stayed off while the server said canUndo
+       (2026-10-05); this names the input holding it. Sources by name:
+       https://www.xmlui.org/docs/reference/components/ChangeListener
+       The posts run concurrently and can arrive out of order, so each
+       carries pageMs (when the page saw the change): sort by it. -->
+  <ChangeListener
+    listenToSources="{{
+      take: $props.take,
+      edits: !!edits.value,
+      canUndo: !!(edits.value &amp;&amp; edits.value.canUndo),
+      undoing: !!$props.undoing,
+      redoing: !!$props.redoing,
+      cutting: !!$props.cutting,
+      pausing: !!$props.pausing,
+      narrating: !!$props.narrating,
+      narrBusy: !!$props.narrBusy
+    }}"
+    onDidChange="(change) => {
+      const v = change.newValue;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
+                          body: { pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
+                                  undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
+                                  pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,
+                                  changed: change.changedSources,
+                                  enabled: !!(v.edits &amp;&amp; v.canUndo &amp;&amp; !v.undoing &amp;&amp; !v.redoing &amp;&amp; !v.cutting &amp;&amp; !v.pausing &amp;&amp; !v.narrating &amp;&amp; !v.narrBusy) } });
+      } catch (e) {
+        // A missing log line is no reason to bother the user.
+      }
+    }" />
   <VStack>
     <HStack verticalAlignment="center">
       <Button label="Undo" size="xs" variant="outlined"
         tooltip="Take back the tinted edit"
-        enabled="{!!$props.edits &amp;&amp; $props.edits.canUndo &amp;&amp; !busy}"
+        enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !busy}"
         handlerTimeoutMs:onClick="0"
         onClick="emitEvent('undo')" />
       <Button label="Redo" size="xs" variant="outlined"
         tooltip="Put back the edit just above the tinted one"
-        enabled="{!!$props.edits &amp;&amp; $props.edits.canRedo &amp;&amp; !busy}"
+        enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !busy}"
         handlerTimeoutMs:onClick="0"
         onClick="emitEvent('redo')" />
       <Spinner when="{$props.undoing || $props.redoing}" />
-      <Text variant="secondary" when="{!!$props.edits &amp;&amp; !!$props.edits.note}" value="{$props.edits.note}" />
+      <Text variant="secondary" when="{!!edits.value &amp;&amp; !!edits.value.note}" value="{edits.value.note}" />
     </HStack>
-    <Text variant="secondary" when="{!!$props.edits &amp;&amp; $props.edits.edits.length === 0}"
+    <Text variant="secondary" when="{!!edits.value &amp;&amp; edits.value.edits.length === 0}"
       value="No edits to this scene yet." />
-    <VStack gap="0" when="{!!$props.edits &amp;&amp; $props.edits.edits.length > 0}">
+    <VStack gap="0" when="{!!edits.value &amp;&amp; edits.value.edits.length > 0}">
       <HStack paddingHorizontal="$space-2" paddingVertical="$space-1">
         <Text variant="secondary" width="200px" value="When" />
         <Text variant="secondary" value="Edit" />
       </HStack>
-      <Items data="{$props.edits ? $props.edits.edits : []}">
+      <Items data="{edits.value ? edits.value.edits : []}">
         <HStack verticalAlignment="center" paddingHorizontal="$space-2" paddingVertical="$space-1"
           backgroundColor="{$item.current ? '$color-primary-100' : 'transparent'}">
           <Text width="200px" when="{!$item.undone}" value="{$item.when}" />
