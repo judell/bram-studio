@@ -916,10 +916,13 @@
         <ExpandableItem width="*" iconPosition="start" fullWidthSummary="true">
           <property name="summary">
             <!-- One run of text, not columns: spaced out, the facts read as
-                 headers for the rows below, which they aren't. -->
+                 headers for the rows below, which they aren't. The facts
+                 take what the name leaves (width="*") and wrap there, not
+                 under the pencil, Open and Delete
+                 (https://www.xmlui.org/docs/layout#hstack). -->
             <HStack verticalAlignment="center" width="100%" gap="$space-2">
               <Text value="{$item.name}" variant="{$item.open ? 'strong' : 'inherit'}" />
-              <Text variant="secondary" value="{projectFacts($item)}" />
+              <Text variant="secondary" value="{projectFacts($item)}" width="*" />
             </HStack>
           </property>
         <!-- Rows are parted by a light rule and a little padding, not a gap
