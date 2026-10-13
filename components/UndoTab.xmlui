@@ -1,0 +1,52 @@
+<!-- The scene editor's Undo tab: the scene's edits (cut, pause, narrate, a
+     narration removed), newest first, with when each was made. Its own
+     component, as CutTab is, so an edit elsewhere in the editor doesn't
+     re-render the history. The tinted row is the edit Undo takes back: the
+     most recent one still in effect. Undo moves the tint down a row and
+     leaves the undone edit above it, dimmed; Redo puts the edit just above
+     the tint back. A new edit discards the undone ones. The table is plain
+     rows, not a Table: Table has no per-row style, and tinting each cell
+     from its row (https://www.xmlui.org/docs/howto/highlight-rows-conditionally)
+     left the tint as separate blocks with gaps between them.
+
+     Props: edits (/takes/edits: {edits, canUndo, canRedo, note}), and
+     what's running: undoing, redoing, cutting, pausing, narrating,
+     narrBusy. Events: undo(), redo() (the editor lets go of the current
+     item first, as a cut does: the take's items are swapped with its
+     files). -->
+<Component name="UndoTab"
+  var.busy="{$props.undoing || $props.redoing || $props.cutting || $props.pausing || $props.narrating || $props.narrBusy}">
+  <VStack>
+    <HStack verticalAlignment="center">
+      <Button label="Undo" size="xs" variant="outlined"
+        tooltip="Take back the tinted edit"
+        enabled="{!!$props.edits &amp;&amp; $props.edits.canUndo &amp;&amp; !busy}"
+        handlerTimeoutMs:onClick="0"
+        onClick="emitEvent('undo')" />
+      <Button label="Redo" size="xs" variant="outlined"
+        tooltip="Put back the edit just above the tinted one"
+        enabled="{!!$props.edits &amp;&amp; $props.edits.canRedo &amp;&amp; !busy}"
+        handlerTimeoutMs:onClick="0"
+        onClick="emitEvent('redo')" />
+      <Spinner when="{$props.undoing || $props.redoing}" />
+      <Text variant="secondary" when="{!!$props.edits &amp;&amp; !!$props.edits.note}" value="{$props.edits.note}" />
+    </HStack>
+    <Text variant="secondary" when="{!!$props.edits &amp;&amp; $props.edits.edits.length === 0}"
+      value="No edits to this scene yet." />
+    <VStack gap="0" when="{!!$props.edits &amp;&amp; $props.edits.edits.length > 0}">
+      <HStack paddingHorizontal="$space-2" paddingVertical="$space-1">
+        <Text variant="secondary" width="200px" value="When" />
+        <Text variant="secondary" value="Edit" />
+      </HStack>
+      <Items data="{$props.edits ? $props.edits.edits : []}">
+        <HStack verticalAlignment="center" paddingHorizontal="$space-2" paddingVertical="$space-1"
+          backgroundColor="{$item.current ? '$color-primary-100' : 'transparent'}">
+          <Text width="200px" when="{!$item.undone}" value="{$item.when}" />
+          <Text width="200px" when="{$item.undone}" variant="secondary" value="{$item.when}" />
+          <Text when="{!$item.undone}" value="{$item.what}" />
+          <Text when="{$item.undone}" variant="secondary" value="{$item.what + ' (undone)'}" />
+        </HStack>
+      </Items>
+    </VStack>
+  </VStack>
+</Component>

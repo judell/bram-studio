@@ -1,0 +1,202 @@
+<!-- The scene editor's Cut tab: the scene's cuts (serve_media.py's cuts
+     table) and Add cut. Its own component so that its state (the stretch
+     being marked, the adding row, the selected cut) re-renders only this
+     tab, and an edit elsewhere in the editor leaves it alone: XMLUI skips a
+     component whose props are unchanged (measured 2026-10-13: 30 parent
+     assignments over a 300-row subtree took 5,102 ms inline, ~310 ms in a
+     component; https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component).
+
+     Add opens the adding row: the slider's two handles mark the stretch
+     (https://www.xmlui.org/docs/reference/components/Slider), from the
+     playhead, 5 s, in one-frame steps; moving a handle seeks the player to
+     it (lastCut tells which one moved); nudges move either end. Play cut,
+     Intro and Outro hear the marked stretch; nothing changes on disk until
+     Cut, which re-encodes two files, so its click has no handler timeout
+     (https://www.xmlui.org/docs/managed-react/cooperative-concurrency).
+     After a cut the row closes and the new cut is selected (cutSelAt: its
+     seam, until the list has its row). A cut's row selects it and moves the
+     playhead to its seam; the selected one offers Play the join (2 s either
+     side of the seam) and its ✕, which puts the removed stretch back
+     (/cuts/restore; Undo takes that back).
+
+     Props: take (the scene's id), duration (s), audition ({kind, start,
+     stop} or null, for the Play/Stop labels), cuts and narrs (the lists),
+     cutting, pausing, narrating, narrBusy (what's running).
+     Events (the editor owns the player and the edits;
+     https://www.xmlui.org/docs/howto/emit-a-custom-event-from-a-component):
+     seek(t), hush() (end an audition), play({start, stop, kind}),
+     stopPlay(), needTime(tag) (the editor answers with atPlayhead(tag, t),
+     the live playhead: emitEvent returns nothing), cut({start, end}),
+     restore({id, at}).
+     Methods (https://www.xmlui.org/docs/howto/pass-arguments-to-a-component-method):
+     atPlayhead(tag, t), close() (the tab was left), reset() (after Undo or
+     Redo, which change the scene's times). -->
+<Component name="CutTab"
+  var.take="{$props.take}"
+  var.dur="{$props.duration || 0}"
+  var.lastCut="{[0, 1]}"
+  var.cutSeed="{[0, 1]}"
+  var.cutAdding="{false}"
+  var.cutSel="{null}"
+  var.cutSelAt="{null}">
+
+  <!-- Another scene: start over. -->
+  <ChangeListener listenTo="{$props.take}"
+    onDidChange="lastCut = [0, 1]; cutSeed = [0, 1]; cutAdding = false; cutSel = null; cutSelAt = null;" />
+
+  <method name="atPlayhead">
+    (tag, t) => {
+      if (tag === 'add') {
+        const s = Math.max(0, Math.min(t, dur - 0.12));
+        cutSeed = [s, Math.min(dur, s + 5)];
+        lastCut = cutSeed;
+        cutAdding = true;
+      } else {
+        setCut(tag, t);
+      }
+    }
+  </method>
+  <method name="close">
+    () => { cutAdding = false; }
+  </method>
+  <method name="reset">
+    () => { lastCut = [0, 1]; cutSeed = [0, 1]; }
+  </method>
+
+  <script>
+    // Before a cut: ask the server what it would remove (/takes/cut with
+    // dryRun: the narrations and pauses it goes through, items it leaves
+    // under 0.05 s, earlier cuts' seams inside it) and, if anything, confirm.
+    // A cut through a narration keeps its sound outside the cut but drops its
+    // row, so the Narrate tab stops listing it (2026-10-05). True: go ahead.
+    // confirm(): https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete
+    function confirmCut(start, end) {
+      const d = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/cut', method: 'post', invalidates: [],
+                                  body: { id: take, start: start, end: end, dryRun: true } });
+      const s = (t) => t.toFixed(2);
+      const lines = []
+        .concat(d.narrations.map(n => 'the narration at ' + s(n.t_in) + '–' + s(n.t_out) + ' s'))
+        .concat(d.pauses.map(z => 'the ' + z.seconds + ' s pause at ' + s(z.at) + ' s'))
+        .concat(d.items.map(o => 'the ' + o.kind + (o.text ? ' "' + o.text + '"' : '') + ' at ' + s(o.t_in) + ' s'))
+        .concat(d.seams.map(c => 'the earlier cut at ' + s(c.at) + ' s'));
+      if (lines.length === 0) return true;
+      return confirm('Cut ' + s(start) + '–' + s(end) + ' s?',
+                     'This cut removes ' + lines.join(', ') + '. A narration\'s sound outside the cut stays in the scene, '
+                     + 'but it leaves the Narrate list. Undo brings everything back.',
+                     'Cut', 'Keep');
+    }
+    // One end of the cut set to t (nudged, or from the playhead): at least
+    // 0.12 s apart (the slider's minStepsBetweenThumbs) and within the
+    // scene; re-seeds cutSeed (which fires no slider events) so the handles
+    // follow, and shows that frame, as dragging a handle does.
+    function setCut(which, t) {
+      const c = lastCut;
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.12)) : c[0];
+      const e = which === 'end' ? Math.min(dur, Math.max(Math.round(t * 100) / 100, c[0] + 0.12)) : c[1];
+      if (s !== c[0] || e !== c[1]) {
+        cutSeed = [s, e];
+        lastCut = cutSeed;
+      }
+      emitEvent('seek', which === 'start' ? s : e);
+    }
+  </script>
+
+  <VStack>
+    <Button label="Add cut" size="xs" variant="outlined" when="{!cutAdding}"
+      tooltip="Mark a stretch from the playhead to remove"
+      enabled="{!$props.cutting}"
+      onClick="emitEvent('hush'); emitEvent('needTime', 'add');" />
+    <VStack when="{cutAdding}">
+      <!-- valueFormat is a sync callback: one arrow expression, in braces
+           (https://www.xmlui.org/docs/howto/keep-sync-callbacks-to-one-expression).
+           The handles are placed by re-seeding through initialValue
+           (cutSeed), which fires no events, not by setValue
+           (https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain);
+           lastCut follows them, from didChange and alongside each re-seed. -->
+      <Slider id="cutSlider" width="100%" minValue="{0}" maxValue="{dur}" step="{0.04}"
+        initialValue="{cutSeed}" minStepsBetweenThumbs="{3}"
+        valueFormat="{(v) => v.toFixed(2) + 's'}"
+        enabled="{!$props.cutting}"
+        onDidChange="(v) => {
+          emitEvent('seek', v[0] !== lastCut[0] ? v[0] : v[1]);
+          lastCut = v;
+        }" />
+      <!-- The cut's ends, one group each: « » move it 1 s, ‹ › one frame,
+           and the player shows the frame there, as dragging a handle does;
+           the time itself sets that end from the playhead. -->
+      <HStack verticalAlignment="center">
+        <TimeEdge what="Start" text="{lastCut[0].toFixed(2) + ' s'}" enabled="{!$props.cutting}"
+          onNudge="(d) => { setCut('start', lastCut[0] + d); }" onToPlayhead="emitEvent('needTime', 'start')" />
+        <TimeEdge what="End" text="{lastCut[1].toFixed(2) + ' s'}" enabled="{!$props.cutting}"
+          onNudge="(d) => { setCut('end', lastCut[1] + d); }" onToPlayhead="emitEvent('needTime', 'end')" />
+      </HStack>
+      <HStack verticalAlignment="center">
+        <!-- Hear the stretch the cut would remove, as the Narrate tab's rows
+             hear a narration: whole, or its first or last 3 s. Nothing
+             changes on disk until Cut. -->
+        <Button label="Play cut" size="xs" variant="outlined"
+          tooltip="Play the stretch the cut would remove, from start to end. Nothing is changed."
+          enabled="{!$props.cutting}"
+          onClick="emitEvent('play', { start: lastCut[0], stop: lastCut[1], kind: 'cut-clip' })" />
+        <Button label="Intro 3s" size="xs" variant="outlined"
+          tooltip="Play the marked stretch's first 3 seconds"
+          enabled="{!$props.cutting}"
+          onClick="emitEvent('play', { start: lastCut[0], stop: Math.min(lastCut[0] + 3, lastCut[1]), kind: 'cut-intro' })" />
+        <Button label="Outro 3s" size="xs" variant="outlined"
+          tooltip="Play the marked stretch's last 3 seconds"
+          enabled="{!$props.cutting}"
+          onClick="emitEvent('play', { start: Math.max(lastCut[1] - 3, lastCut[0]), stop: lastCut[1], kind: 'cut-outro' })" />
+        <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
+          tooltip="Remove this stretch from the scene (Undo brings it back)"
+          enabled="{!$props.cutting &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          handlerTimeoutMs:onClick="0"
+          onClick="
+            const c = lastCut;
+            if (confirmCut(c[0], c[1])) {
+              cutAdding = false;
+              cutSel = null;
+              cutSelAt = c[0];
+              lastCut = [0, 1]; cutSeed = [0, 1];
+              emitEvent('cut', { start: c[0], end: c[1] });
+            }
+          " />
+        <Button label="Cancel" size="xs" variant="ghost" enabled="{!$props.cutting}"
+          onClick="emitEvent('hush'); cutAdding = false;" />
+        <Spinner when="{$props.cutting}" />
+      </HStack>
+      <!-- A cut through a narration takes away its ✕ (the audio kept for
+           removing it no longer fits; serve_media.py drops its row, with
+           one frame of slack at its ends). Say so before the click; it
+           doesn't block, since Undo brings the row back. -->
+      <Text color="$color-warn-700"
+        when="{($props.narrs || []).some((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04)}"
+        value="{'This cut goes through the narration at ' + ($props.narrs || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
+    </VStack>
+    <Items data="{$props.cuts || []}">
+      <HStack verticalAlignment="center"
+        var.sel="{cutSel === $item.id || (cutSel === null &amp;&amp; cutSelAt !== null &amp;&amp; Math.abs($item.at - cutSelAt) &lt; 0.06)}">
+        <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
+          label="{'Cut ' + $item.seconds.toFixed(2) + ' s at ' + $item.at.toFixed(2) + ' s'}"
+          enabled="{!$props.cutting}"
+          onClick="
+            cutSel = $item.id;
+            cutSelAt = null;
+            emitEvent('seek', $item.at);
+          " />
+        <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'cut-join' &amp;&amp; Math.abs($props.audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? 'Stop' : 'Play the join'}"
+          size="xs" variant="outlined" tooltip="Play from 2 s before this cut's seam to 2 s after it"
+          onClick="$props.audition &amp;&amp; $props.audition.kind === 'cut-join' &amp;&amp; Math.abs($props.audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: Math.max(0, $item.at - 2), stop: $item.at + 2, kind: 'cut-join' })" />
+        <Button when="{sel}" icon="close" size="xs" variant="ghost"
+          aria-label="Restore this cut"
+          tooltip="Put the removed stretch back at this seam (Undo takes it out again)"
+          enabled="{!$props.cutting &amp;&amp; !$props.pausing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          handlerTimeoutMs:onClick="0"
+          onClick="
+            cutSel = null;
+            cutSelAt = null;
+            emitEvent('restore', { id: $item.id, at: $item.at });
+          " />
+      </HStack>
+    </Items>
+  </VStack>
+</Component>

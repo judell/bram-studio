@@ -1,0 +1,154 @@
+<!-- The scene editor's Narrate tab: the scene's narrations, and Add
+     narration. Its own component, as CutTab is, so its state re-renders
+     only this tab.
+
+     Add opens the adding row: the two-handle slider (narrSeed re-seeds it,
+     narrClip follows it) from the playhead, 10 s; Play, to hear what is
+     there now before narrating over it; Narrate; Cancel. Narrate plays the
+     clip muted, without the player's own controls, while the mic records
+     (the editor's startNarration; its Timer stops it at the clip's end), or
+     Stop does earlier, and the scene's audio there is replaced (Undo takes
+     it back). While narrating, the clip's start and end show with a
+     ProgressBar between them
+     (https://www.xmlui.org/docs/reference/components/ProgressBar) and Stop
+     counts down, since the player's own controls are hidden. Once it lands
+     (the editor calls landed(t)), the adding row closes and the new
+     narration is selected (narrSelAt: its start, until the list has its
+     row). A narration's row selects it (and moves the playhead to its
+     start); the selected one shows Play, Intro 3s, Outro 3s and its ✕,
+     which puts back the audio it replaced (/narrate/remove; Undo restores
+     it). Play, Intro and Outro hear it as judell/av plays a clip, its intro
+     and its outro (https://github.com/judell/av av.js).
+
+     Props: take, duration, audition, narrs (the list), playerTime (the
+     playhead; live only while narrating), narrating (the clip being
+     recorded, or null), narrBusy, dictating, cutting, pausing, removing.
+     Events: seek(t), hush(), play({start, stop, kind}), stopPlay(),
+     needTime(tag) (answered with atPlayhead(tag, t)), narrate(clip),
+     stopNarrate(), removeNarr({id, at}).
+     Methods: atPlayhead(tag, t), landed(t), close(). -->
+<Component name="NarrateTab"
+  var.dur="{$props.duration || 0}"
+  var.narrClip="{[0, 1]}"
+  var.narrSeed="{[0, 1]}"
+  var.narrAdding="{false}"
+  var.narrSel="{null}"
+  var.narrSelAt="{null}">
+
+  <ChangeListener listenTo="{$props.take}"
+    onDidChange="narrClip = [0, 1]; narrSeed = [0, 1]; narrAdding = false; narrSel = null; narrSelAt = null;" />
+
+  <method name="atPlayhead">
+    (tag, t) => {
+      if (tag === 'add') {
+        const s = Math.max(0, Math.min(t, dur - 0.52));
+        narrSeed = [s, Math.min(dur, s + 10)];
+        narrClip = narrSeed;
+        narrAdding = true;
+      } else {
+        setNarr(tag, t);
+      }
+    }
+  </method>
+  <method name="landed">
+    (t) => { narrAdding = false; narrSel = null; narrSelAt = t; }
+  </method>
+  <method name="close">
+    () => { narrAdding = false; }
+  </method>
+
+  <script>
+    // One end of the narration set to t (nudged, or from the playhead): at
+    // least 0.52 s apart (the slider's minStepsBetweenThumbs) and within the
+    // scene; re-seeds narrSeed so the handles follow, and shows the frame.
+    function setNarr(which, t) {
+      const c = narrClip;
+      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.52)) : c[0];
+      const e = which === 'end' ? Math.min(dur, Math.max(Math.round(t * 100) / 100, c[0] + 0.52)) : c[1];
+      if (s !== c[0] || e !== c[1]) {
+        narrSeed = [s, e];
+        narrClip = narrSeed;
+      }
+      emitEvent('seek', which === 'start' ? s : e);
+    }
+  </script>
+
+  <VStack>
+    <Button label="Add narration" size="xs" variant="outlined" when="{!narrAdding}"
+      tooltip="Mark a stretch from the playhead to narrate over"
+      enabled="{!$props.narrBusy}"
+      onClick="emitEvent('hush'); emitEvent('needTime', 'add');" />
+    <VStack when="{narrAdding}">
+      <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{dur}" step="{0.04}"
+        initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
+        valueFormat="{(v) => v.toFixed(2) + 's'}"
+        enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+        onDidChange="(v) => {
+          emitEvent('seek', v[0] !== narrClip[0] ? v[0] : v[1]);
+          narrClip = v;
+        }" />
+      <HStack when="{!$props.narrating}" verticalAlignment="center">
+        <TimeEdge what="Start" text="{narrClip[0].toFixed(2) + ' s'}" enabled="{!$props.narrBusy}"
+          onNudge="(d) => { setNarr('start', narrClip[0] + d); }" onToPlayhead="emitEvent('needTime', 'start')" />
+        <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!$props.narrBusy}"
+          onNudge="(d) => { setNarr('end', narrClip[1] + d); }" onToPlayhead="emitEvent('needTime', 'end')" />
+      </HStack>
+      <HStack when="{!!$props.narrating}" verticalAlignment="center">
+        <Text value="{$props.narrating ? $props.narrating[0].toFixed(2) + ' s' : ''}" />
+        <ProgressBar width="*"
+          value="{$props.narrating ? Math.max(0, Math.min(1, ($props.playerTime - $props.narrating[0]) / ($props.narrating[1] - $props.narrating[0]))) : 0}" />
+        <Text value="{$props.narrating ? $props.narrating[1].toFixed(2) + ' s' : ''}" />
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Button label="{$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+          tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
+          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          onClick="$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? emitEvent('stopPlay') : emitEvent('play', { start: narrClip[0], stop: narrClip[1], kind: 'narr-preview' })" />
+        <Button label="{$props.narrating ? '⏹ Stop recording · ' + Math.max(0, $props.narrating[1] - $props.playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+          size="xs" themeColor="attention"
+          tooltip="{$props.narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
+          enabled="{!$props.narrBusy &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing}"
+          handlerTimeoutMs:onClick="0"
+          onClick="$props.narrating ? emitEvent('stopNarrate') : emitEvent('narrate', narrClip);" />
+        <Button label="Cancel" size="xs" variant="ghost" when="{!$props.narrating}" enabled="{!$props.narrBusy}"
+          onClick="emitEvent('hush'); narrAdding = false;" />
+        <Spinner when="{$props.narrBusy}" />
+      </HStack>
+    </VStack>
+    <Items data="{$props.narrs || []}">
+      <HStack verticalAlignment="center"
+        var.sel="{narrSel === $item.id || (narrSel === null &amp;&amp; narrSelAt !== null &amp;&amp; Math.abs($item.t_in - narrSelAt) &lt; 0.06)}">
+        <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
+          label="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
+          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          onClick="
+            narrSel = $item.id;
+            narrSelAt = null;
+            emitEvent('seek', $item.t_in);
+          " />
+        <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'clip' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+          tooltip="Play this narration from start to end"
+          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          onClick="$props.audition &amp;&amp; $props.audition.kind === 'clip' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: $item.t_in, stop: $item.t_out, kind: 'clip' })" />
+        <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'intro' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Intro 3s'}" size="xs" variant="outlined"
+          tooltip="Play this narration's first 3 seconds"
+          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          onClick="$props.audition &amp;&amp; $props.audition.kind === 'intro' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: $item.t_in, stop: Math.min($item.t_in + 3, $item.t_out), kind: 'intro' })" />
+        <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'outro' &amp;&amp; Math.abs($props.audition.stop - $item.t_out) &lt; 0.05 ? 'Stop' : 'Outro 3s'}" size="xs" variant="outlined"
+          tooltip="Play this narration's last 3 seconds"
+          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          onClick="$props.audition &amp;&amp; $props.audition.kind === 'outro' &amp;&amp; Math.abs($props.audition.stop - $item.t_out) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: Math.max($item.t_out - 3, $item.t_in), stop: $item.t_out, kind: 'outro' })" />
+        <Button when="{sel}" icon="close" size="xs" variant="ghost"
+          aria-label="Remove this narration"
+          tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
+          enabled="{!$props.removing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          handlerTimeoutMs:onClick="0"
+          onClick="
+            narrSel = null;
+            narrSelAt = null;
+            emitEvent('removeNarr', { id: $item.id, at: $item.t_in });
+          " />
+      </HStack>
+    </Items>
+  </VStack>
+</Component>

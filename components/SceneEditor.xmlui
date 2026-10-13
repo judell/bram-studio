@@ -1,9 +1,11 @@
 <!-- The scene editor: the open scene's player with its items drawn over
      it (AnnotationCanvas), the audio strip, and the Annotate, Cut, Pause,
      Narrate and Undo tabs. Its own component so that its state (the current
-     item, the cut, pause and narration being set up, the playhead) lives in
-     this scope: an edit re-evaluates this subtree, not every binding in
-     Main.xmlui. At App level, each change re-ran all 54 App variables'
+     item, the audition, the playhead) lives in this scope: an edit
+     re-evaluates this subtree, not every binding in Main.xmlui. The Cut,
+     Pause, Narrate and Undo tabs are components of their own (CutTab,
+     PauseTab, NarrateTab, UndoTab), each owning its selection and adding
+     row, so an edit here skips them while their props are unchanged. At App level, each change re-ran all 54 App variables'
      bindings: an Inspector trace and a Chrome profile (2026-10-13) put an
      item's select, add, move or text commit at 1.2-2.8 s, almost all of it
      re-rendering (https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component).
@@ -30,25 +32,11 @@
   var.playerTime="{0}"
   var.lastSprite="{null}"
   var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}"
-  var.lastCut="{[0, 1]}"
-  var.cutSeed="{[0, 1]}"
   var.cutSeq="{0}"
-  var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}"
-  var.narrClip="{[0, 1]}"
-  var.narrSeed="{[0, 1]}"
   var.narrating="{null}"
   var.narrBusy="{false}"
   var.resumeAt="{null}"
   var.lastLevels="{null}"
-  var.narrAdding="{false}"
-  var.pauseAdding="{false}"
-  var.cutAdding="{false}"
-  var.cutSel="{null}"
-  var.cutSelAt="{null}"
-  var.pauseSel="{null}"
-  var.pauseSelAt="{null}"
-  var.narrSel="{null}"
-  var.narrSelAt="{null}"
   var.curShape="{null}"
   var.curText=""
   var.curTail="none">
@@ -58,8 +46,9 @@
   </method>
 
   <!-- Another scene opened while this one was: per-scene state starts over,
-       as opening one from the list always did (openScene). -->
-  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; lastCut = [0, 1]; cutSeed = [0, 1]; narrClip = [0, 1]; narrSeed = [0, 1]; editCallout = null; calloutBox = null; lastSprite = null; curShape = null; curText = ''; curTail = 'none'; audition = null; narrAdding = false; narrSel = null; narrSelAt = null; pauseAdding = false; pauseSel = null; pauseSelAt = null; cutAdding = false; cutSel = null; cutSelAt = null;" />
+       as opening one from the list always did (openScene). The tabs reset
+       their own (each listens to its take prop). -->
+  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; editCallout = null; calloutBox = null; lastSprite = null; curShape = null; curText = ''; curTail = 'none'; audition = null;" />
 
   <script>
     // Narrate over a stretch of the take being edited (serve_media.py's
@@ -70,41 +59,20 @@
     // hides its controls and runs the Timer that calls stopNarration at the
     // clip's end. /narrate/stop writes the take (both files), so narrBusy
     // shows a spinner until it answers.
-    function startNarration() {
+    function startNarration(clip) {
       try {
         audition = null;
         takePlayer.pause();
-        takePlayer.seek(narrClip[0]);
+        takePlayer.seek(clip[0]);
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
-                          body: { id: editTake, start: narrClip[0], end: narrClip[1] } });
-        narrating = narrClip;
+                          body: { id: editTake, start: clip[0], end: clip[1] } });
+        narrating = clip;
         takePlayer.play();
         Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/go', method: 'post' });
       } catch (e) {
         narrating = null;
         toast.error(e.message);
       }
-    }
-    // Before a cut: ask the server what it would remove (/takes/cut with
-    // dryRun: the narrations and pauses it goes through, items it leaves
-    // under 0.05 s, earlier cuts' seams inside it) and, if anything, confirm.
-    // A cut through a narration keeps its sound outside the cut but drops its
-    // row, so the Narrate tab stops listing it (2026-10-05). True: go ahead.
-    // confirm(): https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete
-    function confirmCut(start, end) {
-      const d = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/cut', method: 'post', invalidates: [],
-                                  body: { id: editTake, start: start, end: end, dryRun: true } });
-      const s = (t) => t.toFixed(2);
-      const lines = []
-        .concat(d.narrations.map(n => 'the narration at ' + s(n.t_in) + '–' + s(n.t_out) + ' s'))
-        .concat(d.pauses.map(z => 'the ' + z.seconds + ' s pause at ' + s(z.at) + ' s'))
-        .concat(d.items.map(o => 'the ' + o.kind + (o.text ? ' "' + o.text + '"' : '') + ' at ' + s(o.t_in) + ' s'))
-        .concat(d.seams.map(c => 'the earlier cut at ' + s(c.at) + ' s'));
-      if (lines.length === 0) return true;
-      return confirm('Cut ' + s(start) + '–' + s(end) + ' s?',
-                     'This cut removes ' + lines.join(', ') + '. A narration\'s sound outside the cut stays in the scene, '
-                     + 'but it leaves the Narrate list. Undo brings everything back.',
-                     'Cut', 'Keep');
     }
     function stopNarration() {
       const clip = narrating;
@@ -116,9 +84,7 @@
         // Done: the adding row closes and the new narration is selected in
         // the list (by its start, until the list has its row). A refused
         // narration (nothing said) keeps the adding row open, to retry.
-        narrAdding = false;
-        narrSel = null;
-        narrSelAt = clip ? clip[0] : null;
+        if (clip) narrTab.landed(clip[0]);
       } catch (e) {
         toast.error(e.message);
       }
@@ -142,53 +108,77 @@
                  tip: what + ' · ' + level + ' at ' + t.toFixed(2) + ' s' };
       });
     }
-    // Cut's nudges: move one end of the marked stretch by delta seconds,
-    // re-place the handles by re-seeding cutSeed (which fires no slider
-    // events), and show that frame, as dragging a handle does. The stretch
-    // stays within the take and at least 0.12 s long, as the slider's
-    // minStepsBetweenThumbs keeps it.
-    // The narration's ends, as the cut's: nudged or typed (TimeEdge), at
-    // least 0.52 s apart (as the slider's minStepsBetweenThumbs) and within
-    // the scene; re-seeds narrSeed so the handles follow, and shows the frame.
-    function nudgeNarr(which, delta) {
-      setNarr(which, (which === 'start' ? narrClip[0] : narrClip[1]) + delta);
-    }
-    function setNarr(which, t) {
-      const end = takePlayer.duration || editDur;
-      const c = narrClip;
-      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.52)) : c[0];
-      const e = which === 'end' ? Math.min(end, Math.max(Math.round(t * 100) / 100, c[0] + 0.52)) : c[1];
+    // The tabs' events (CutTab, PauseTab, NarrateTab, UndoTab). The tabs
+    // own their selections and adding rows; the player, the audition, the
+    // current item and the edits stay here.
+    // A tab moved the playhead (a handle, a nudge, a row): any audition ends.
+    function tabSeek(t) {
       audition = null;
-      if (s !== c[0] || e !== c[1]) {
-        narrSeed = [s, e];
-        narrClip = narrSeed;
+      takePlayer.seek(t);
+    }
+    // A cut, pause, Undo or Redo retimes the take's items on the server, so
+    // each lets go of the current item first.
+    function letGoOfItem() {
+      audition = null;
+      editCallout = null; calloutBox = null; lastSprite = null;
+      curShape = null; curText = ''; curTail = 'none';
+    }
+    // After an edit: the file reloads (cutSeq) and goes back to at
+    // (resumeAt), and every list refetches.
+    function afterEdit(at) {
+      resumeAt = at;
+      cutSeq = cutSeq + 1;
+      edits.refetch();
+      narrs.refetch(); pauses.refetch(); cuts.refetch();
+      callouts.refetch();
+      savedSprites.refetch();
+    }
+    function tabCut(c) {
+      letGoOfItem();
+      cutTake.execute({ id: editTake, start: c.start, end: c.end });
+      afterEdit(c.start);
+    }
+    function tabRestoreCut(r) {
+      letGoOfItem();
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: r.id } });
+      } catch (e) {
+        toast.error(e.message);
       }
-      takePlayer.seek(which === 'start' ? s : e);
+      afterEdit(r.at);
     }
-    // Where a pause goes in: the playhead. Its TimeEdge moves the playhead
-    // (within the scene); the slider's handle follows, since its initialValue
-    // is the playhead.
-    function setPauseAt(t) {
-      const end = takePlayer.duration || editDur;
-      audition = null;
-      takePlayer.seek(Math.max(0, Math.min(Math.round(t * 100) / 100, end)));
+    // Insert pause: at the live playhead, which only the player knows.
+    function tabInsertPause(p) {
+      const at = takePlayer.getCurrentTime();
+      letGoOfItem();
+      pauseTab.inserted(at);
+      pauseTake.execute({ id: editTake, at: at, seconds: p.seconds });
+      afterEdit(at);
     }
-    function nudgeCut(which, delta) {
-      setCut(which, (which === 'start' ? lastCut[0] : lastCut[1]) + delta);
-    }
-    // One end of the cut set to t (nudged, or typed into its TimeEdge): at
-    // least 0.12 s apart and within the scene, as dragging a handle allows.
-    function setCut(which, t) {
-      const end = takePlayer.duration || editDur;
-      const c = lastCut;
-      const s = which === 'start' ? Math.max(0, Math.min(Math.round(t * 100) / 100, c[1] - 0.12)) : c[0];
-      const e = which === 'end' ? Math.min(end, Math.max(Math.round(t * 100) / 100, c[0] + 0.12)) : c[1];
-      audition = null;
-      if (s !== c[0] || e !== c[1]) {
-        cutSeed = [s, e];
-        lastCut = cutSeed;
+    function tabRemovePause(r) {
+      letGoOfItem();
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/pauses/remove', method: 'post', invalidates: [], body: { id: r.id } });
+      } catch (e) {
+        toast.error(e.message);
       }
-      takePlayer.seek(which === 'start' ? s : e);
+      afterEdit(r.at);
+    }
+    // Removing a narration changes only the audio: the items stay.
+    function tabRemoveNarr(r) {
+      audition = null;
+      removeNarration.execute(r.id);
+      resumeAt = r.at;
+      cutSeq = cutSeq + 1;
+      narrs.refetch(); pauses.refetch(); cuts.refetch(); edits.refetch();
+    }
+    function tabUndo(redo) {
+      const at = takePlayer.getCurrentTime();
+      letGoOfItem();
+      resumeAt = at;
+      if (redo) redoEdit.execute(editTake); else undoEdit.execute(editTake);
+      cutTab.reset();
+      afterEdit(at);
     }
     // Add annotation: the current tool (annotKind) in the middle of the
     // picture, from the playhead for 3 s (to the scene's end), saved and
@@ -575,9 +565,9 @@
     <Tabs id="editTabs" keepMounted="true" when="{!!editTake &amp;&amp; editDur > 0}"
       onDidChange="(index, id, label) => {
         audition = null;
-        if (label !== 'Cut') cutAdding = false;
-        if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrAdding = false;
-        if (label !== 'Pause') pauseAdding = false;
+        if (label !== 'Cut') cutTab.close();
+        if (label !== 'Narrate' &amp;&amp; !narrating &amp;&amp; !narrBusy) narrTab.close();
+        if (label !== 'Pause') pauseTab.close();
       }">
     <!-- Annotate: Add annotation and the tools (the current one solid),
          then the scene's items, one row each. Add annotation places the
@@ -709,456 +699,43 @@
       </Items>
     </VStack>
     </TabItem>
-    <!-- Cut: the scene's cuts (serve_media.py's cuts table) and Add cut,
-         as on the Narrate and Pause tabs. Add opens the adding row: the
-         slider's two handles mark the stretch
-         (https://www.xmlui.org/docs/reference/components/Slider), from the
-         playhead, 5 s, in one-frame steps; moving a handle seeks the player
-         to it (lastCut tells which one moved); nudges move either end.
-         Play cut, Intro and Outro hear the marked stretch; nothing changes
-         on disk until Cut, which re-encodes two files, so its click has no
-         handler timeout
-         (https://www.xmlui.org/docs/managed-react/cooperative-concurrency).
-         After a cut the row closes and the new cut is selected (cutSelAt:
-         its seam, until the list has its row). A cut's row selects it and
-         moves the playhead to its seam; the selected one offers Play the
-         join (2 s either side of the seam) and its ✕, which puts the
-         removed stretch back (/cuts/restore; Undo takes that back). -->
+    <!-- Cut: components/CutTab.xmlui. -->
     <TabItem label="Cut">
-    <VStack>
-      <Button label="Add cut" size="xs" variant="outlined" when="{!cutAdding}"
-        tooltip="Mark a stretch from the playhead to remove"
-        enabled="{!cutTake.inProgress}"
-        onClick="
-          const end = takePlayer.duration || editDur;
-          const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.12));
-          audition = null;
-          cutSeed = [s, Math.min(end, s + 5)];
-          lastCut = cutSeed;
-          cutAdding = true;
-        " />
-      <VStack when="{cutAdding}">
-      <!-- valueFormat is a sync callback: one arrow expression, in braces
-           (https://www.xmlui.org/docs/howto/keep-sync-callbacks-to-one-expression).
-           The handles are placed by re-seeding through initialValue
-           (cutSeed), which fires no events, not by setValue
-           (https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain);
-           lastCut follows them, from didChange and alongside each re-seed. -->
-      <Slider id="cutSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
-        initialValue="{cutSeed}" minStepsBetweenThumbs="{3}"
-        valueFormat="{(v) => v.toFixed(2) + 's'}"
-        enabled="{!cutTake.inProgress}"
-        onDidChange="(v) => {
-          audition = null;
-          takePlayer.seek(v[0] !== lastCut[0] ? v[0] : v[1]);
-          lastCut = v;
-        }" />
-      <!-- The cut's ends, one group each: « » move it 1 s, ‹ › one frame
-           (nudgeCut), and the player shows the frame there, as dragging
-           a handle does. Nothing here reads the playhead: the handles and
-           nudges set the cut, the player only shows it, and its own
-           controls stay yours. The groups are tight inside ($space-1),
-           as In and Out are on the Annotate tab. -->
-      <HStack verticalAlignment="center">
-        <TimeEdge what="Start" text="{lastCut[0].toFixed(2) + ' s'}" enabled="{!cutTake.inProgress}"
-          onNudge="(d) => nudgeCut('start', d)" onToPlayhead="setCut('start', takePlayer.getCurrentTime())" />
-        <TimeEdge what="End" text="{lastCut[1].toFixed(2) + ' s'}" enabled="{!cutTake.inProgress}"
-          onNudge="(d) => nudgeCut('end', d)" onToPlayhead="setCut('end', takePlayer.getCurrentTime())" />
-      </HStack>
-      <HStack verticalAlignment="center">
-      <!-- Hear the stretch the cut would remove (playAudition), as the
-           Narrate tab's rows hear a narration: whole, or its first or last
-           3 s. Nothing changes on disk until Cut. -->
-      <Button label="Play cut" size="xs" variant="outlined"
-        tooltip="Play the stretch the cut would remove, from start to end. Nothing is changed."
-        enabled="{!cutTake.inProgress}"
-        onClick="playAudition(lastCut[0], lastCut[1], 'cut-clip')" />
-      <Button label="Intro 3s" size="xs" variant="outlined"
-        tooltip="Play the marked stretch's first 3 seconds"
-        enabled="{!cutTake.inProgress}"
-        onClick="playAudition(lastCut[0], Math.min(lastCut[0] + 3, lastCut[1]), 'cut-intro')" />
-      <Button label="Outro 3s" size="xs" variant="outlined"
-        tooltip="Play the marked stretch's last 3 seconds"
-        enabled="{!cutTake.inProgress}"
-        onClick="playAudition(Math.max(lastCut[1] - 3, lastCut[0]), lastCut[1], 'cut-outro')" />
-      <Button label="{'Cut ' + (lastCut[1] - lastCut[0]).toFixed(2) + 's'}" size="xs" themeColor="attention"
-        tooltip="Remove this stretch from the scene (Undo brings it back)"
-        enabled="{!cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-        handlerTimeoutMs:onClick="0"
-        onClick="
-          if (confirmCut(lastCut[0], lastCut[1])) {
-            audition = null;
-            editCallout = null; calloutBox = null; lastSprite = null;
-            curShape = null; curText = ''; curTail = 'none';
-            cutTake.execute({ id: editTake, start: lastCut[0], end: lastCut[1] });
-            resumeAt = lastCut[0];
-            cutAdding = false;
-            cutSel = null;
-            cutSelAt = lastCut[0];
-            cutSeq = cutSeq + 1;
-            lastCut = [0, 1]; cutSeed = [0, 1];
-            edits.refetch();
-            narrs.refetch(); pauses.refetch(); cuts.refetch();
-            callouts.refetch();
-            savedSprites.refetch();
-          }
-        " />
-      <Button label="Cancel" size="xs" variant="ghost" enabled="{!cutTake.inProgress}"
-        onClick="audition = null; cutAdding = false;" />
-      <Spinner when="{cutTake.inProgress}" />
-      </HStack>
-      <!-- A cut through a narration takes away its ✕ (the audio kept for
-           removing it no longer fits; serve_media.py drops its row, with
-           one frame of slack at its ends). Say so before the click; it
-           doesn't block, since Undo brings the row back. -->
-      <Text color="$color-warn-700"
-        when="{(narrs.value || []).some((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04)}"
-        value="{'This cut goes through the narration at ' + (narrs.value || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
-      </VStack>
-      <Items data="{cuts.value || []}">
-        <HStack verticalAlignment="center"
-          var.sel="{cutSel === $item.id || (cutSel === null &amp;&amp; cutSelAt !== null &amp;&amp; Math.abs($item.at - cutSelAt) &lt; 0.06)}">
-          <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
-            label="{'Cut ' + $item.seconds.toFixed(2) + ' s at ' + $item.at.toFixed(2) + ' s'}"
-            enabled="{!cutTake.inProgress}"
-            onClick="
-              audition = null;
-              cutSel = $item.id;
-              cutSelAt = null;
-              takePlayer.seek($item.at);
-            " />
-          <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'cut-join' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? 'Stop' : 'Play the join'}"
-            size="xs" variant="outlined" tooltip="Play from 2 s before this cut's seam to 2 s after it"
-            onClick="audition &amp;&amp; audition.kind === 'cut-join' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? stopAudition() : playAudition(Math.max(0, $item.at - 2), $item.at + 2, 'cut-join')" />
-          <Button when="{sel}" icon="close" size="xs" variant="ghost"
-            aria-label="Restore this cut"
-            tooltip="Put the removed stretch back at this seam (Undo takes it out again)"
-            enabled="{!cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-            handlerTimeoutMs:onClick="0"
-            onClick="
-              audition = null;
-              editCallout = null; calloutBox = null; lastSprite = null;
-              curShape = null; curText = ''; curTail = 'none';
-              try {
-                Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: $item.id } });
-              } catch (e) {
-                toast.error(e.message);
-              }
-              cutSel = null;
-              cutSelAt = null;
-              resumeAt = $item.at;
-              cutSeq = cutSeq + 1;
-              edits.refetch();
-              narrs.refetch(); pauses.refetch(); cuts.refetch();
-              callouts.refetch();
-              savedSprites.refetch();
-            " />
-        </HStack>
-      </Items>
-    </VStack>
+      <CutTab id="cutTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
+        cuts="{cuts.value || []}" narrs="{narrs.value || []}"
+        cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" narrating="{!!narrating}" narrBusy="{narrBusy}"
+        onSeek="(t) => tabSeek(t)" onHush="audition = null"
+        onPlay="(a) => playAudition(a.start, a.stop, a.kind)" onStopPlay="stopAudition()"
+        onNeedTime="(tag) => cutTab.atPlayhead(tag, takePlayer.getCurrentTime())"
+        onCut="(c) => tabCut(c)" onRestore="(r) => tabRestoreCut(r)" />
     </TabItem>
-    <!-- Pause: the scene's pauses (serve_media.py's pauses table) and Add
-         pause, as on the Narrate tab. Add opens the adding row: the point
-         (the slider is the player's playhead: playerTime re-seeds its
-         initialValue, which fires no events,
-         https://www.xmlui.org/docs/howto/drive-a-slider-with-a-runtime-domain,
-         and dragging it seeks the player), drawn as a plain line
-         (https://www.xmlui.org/docs/howto/style-slider-track-thumb-and-range);
-         the seconds (remembered as the next default,
-         https://www.xmlui.org/docs/globals#local-storage-utilities);
-         Insert; Cancel. (A Play of 2 s either side of the point was
-         removed as not useful, 2026-10-05.)
-         Once inserted the row closes and the new pause is selected
-         (pauseSelAt: its point, until the list has its row). A pause's
-         row selects it and moves the playhead to it; the selected one
-         offers Play (2 s before to 2 s after) and its ✕, which cuts the
-         held stretch back out (/pauses/remove; Undo puts it back). -->
+    <!-- Pause: components/PauseTab.xmlui. -->
     <TabItem label="Pause">
-    <VStack>
-      <Button label="Add pause" size="xs" variant="outlined" when="{!pauseAdding}"
-        tooltip="Hold a frame, with silence, at a point you choose"
-        enabled="{!pauseTake.inProgress}"
-        onClick="audition = null; pauseAdding = true;" />
-      <VStack when="{pauseAdding}">
-        <Theme backgroundColor-range-Slider="$color-surface-300" backgroundColor-track-Slider="$color-surface-300"
-          backgroundColor-range-Slider--disabled="$color-surface-300" backgroundColor-track-Slider--disabled="$color-surface-300">
-        <Slider id="pauseSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
-          initialValue="{playerTime}"
-          valueFormat="{(v) => v.toFixed(2) + 's'}"
-          enabled="{!pauseTake.inProgress}"
-          onDidChange="(v) => {
-            audition = null;
-            takePlayer.seek(v);
-          }" />
-        </Theme>
-        <!-- The point the pause goes in at is the playhead: its TimeEdge
-             nudges it (setPauseAt), and the slider follows. -->
-        <TimeEdge what="At" text="{playerTime.toFixed(2) + ' s'}" playhead="{false}" enabled="{!pauseTake.inProgress}"
-          onNudge="(d) => setPauseAt(playerTime + d)" />
-        <HStack verticalAlignment="center">
-          <NumberBox width="110px" initialValue="{pauseSecs}" minValue="{0.5}" maxValue="{30}" step="{0.5}"
-            endText="s" tooltip="How long the pause lasts (remembered as the default)"
-            onDidChange="(v) => {
-              if (v >= 0.5 &amp;&amp; v &lt;= 30) {
-                pauseSecs = v;
-                writeLocalStorage('studio.pauseSeconds', v);
-              }
-            }" />
-          <Button label="{'Insert ' + pauseSecs + 's pause'}" size="xs" themeColor="attention"
-            tooltip="{'Hold the frame at ' + playerTime.toFixed(2) + ' s (the playhead) for ' + pauseSecs + ' s, with silence (Undo takes it back)'}"
-            enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy &amp;&amp; !audition}"
-            handlerTimeoutMs:onClick="0"
-            onClick="
-              const at = takePlayer.getCurrentTime();
-              audition = null;
-              editCallout = null; calloutBox = null; lastSprite = null;
-              curShape = null; curText = ''; curTail = 'none';
-              pauseTake.execute({ id: editTake, at: at, seconds: pauseSecs });
-              pauseAdding = false;
-              pauseSel = null;
-              pauseSelAt = at;
-              resumeAt = at;
-              cutSeq = cutSeq + 1;
-              edits.refetch();
-              narrs.refetch(); pauses.refetch(); cuts.refetch();
-              callouts.refetch();
-              savedSprites.refetch();
-            " />
-          <Button label="Cancel" size="xs" variant="ghost" enabled="{!pauseTake.inProgress}"
-            onClick="audition = null; pauseAdding = false;" />
-          <Spinner when="{pauseTake.inProgress}" />
-        </HStack>
-        <!-- The same warning for a pause that falls inside a narration. -->
-        <Text color="$color-warn-700"
-          when="{(narrs.value || []).some((n) => playerTime > n.t_in + 0.04 &amp;&amp; playerTime &lt; n.t_out - 0.04)}"
-          value="{'This pause falls inside the narration at ' + (narrs.value || []).filter((n) => playerTime > n.t_in + 0.04 &amp;&amp; playerTime &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
-      </VStack>
-      <Items data="{pauses.value || []}">
-        <HStack verticalAlignment="center"
-          var.sel="{pauseSel === $item.id || (pauseSel === null &amp;&amp; pauseSelAt !== null &amp;&amp; Math.abs($item.at - pauseSelAt) &lt; 0.06)}">
-          <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
-            label="{'Pause at ' + $item.at.toFixed(2) + ' s · ' + $item.seconds + ' s'}"
-            enabled="{!pauseTake.inProgress}"
-            onClick="
-              audition = null;
-              pauseSel = $item.id;
-              pauseSelAt = null;
-              takePlayer.seek($item.at);
-            " />
-          <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'pause-row' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? 'Stop' : 'Play'}"
-            size="xs" variant="outlined" tooltip="Play from 2 s before this pause to 2 s after it"
-            onClick="audition &amp;&amp; audition.kind === 'pause-row' &amp;&amp; Math.abs(audition.start - Math.max(0, $item.at - 2)) &lt; 0.05 ? stopAudition() : playAudition(Math.max(0, $item.at - 2), $item.at + $item.seconds + 2, 'pause-row')" />
-          <Button when="{sel}" icon="close" size="xs" variant="ghost"
-            aria-label="Remove this pause"
-            tooltip="Remove this pause: its held frame and silence come out of the scene (Undo puts it back)"
-            enabled="{!pauseTake.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-            handlerTimeoutMs:onClick="0"
-            onClick="
-              audition = null;
-              editCallout = null; calloutBox = null; lastSprite = null;
-              curShape = null; curText = ''; curTail = 'none';
-              try {
-                Actions.callApi({ url: 'http://127.0.0.1:8765/pauses/remove', method: 'post', invalidates: [], body: { id: $item.id } });
-              } catch (e) {
-                toast.error(e.message);
-              }
-              pauseSel = null;
-              pauseSelAt = null;
-              resumeAt = $item.at;
-              cutSeq = cutSeq + 1;
-              edits.refetch();
-              narrs.refetch(); pauses.refetch(); cuts.refetch();
-              callouts.refetch();
-              savedSprites.refetch();
-            " />
-        </HStack>
-      </Items>
-    </VStack>
+      <PauseTab id="pauseTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
+        pauses="{pauses.value || []}" narrs="{narrs.value || []}" playerTime="{playerTime}"
+        pausing="{pauseTake.inProgress}" cutting="{cutTake.inProgress}" narrating="{!!narrating}" narrBusy="{narrBusy}"
+        onSeek="(t) => tabSeek(t)" onHush="audition = null"
+        onPlay="(a) => playAudition(a.start, a.stop, a.kind)" onStopPlay="stopAudition()"
+        onInsert="(p) => tabInsertPause(p)" onRemovePause="(r) => tabRemovePause(r)" />
     </TabItem>
-    <!-- Narrate: the scene's narrations, and Add narration. Add opens the
-         adding row: the two-handle slider (narrSeed re-seeds it, narrClip
-         follows it) from the playhead, 10 s; Play, to hear what is there
-         now before narrating over it (playAudition); Narrate; Cancel.
-         Narrate plays the clip muted, without the player's own controls,
-         while the mic records; the Timer after the Tabs stops it at the
-         clip's end (a Timer waits for its handler before ticking again:
-         https://www.xmlui.org/docs/reference/components/Timer), or Stop
-         does earlier, and the scene's audio there is replaced (Undo, on
-         the Undo tab, takes it back). While narrating, the clip's
-         start and end show with a ProgressBar between them
-         (https://www.xmlui.org/docs/reference/components/ProgressBar) and
-         Stop counts down, since the player's own controls are hidden.
-         Once it lands, the adding row closes and the new narration is
-         selected (narrSelAt: its start, until the list has its row). A
-         narration's row selects it (and moves the playhead to its start);
-         the selected one shows Play, Intro 3s, Outro 3s and its ✕. -->
+    <!-- Narrate: components/NarrateTab.xmlui. -->
     <TabItem label="Narrate">
-    <VStack>
-      <Button label="Add narration" size="xs" variant="outlined" when="{!narrAdding}"
-        tooltip="Mark a stretch from the playhead to narrate over"
-        enabled="{!narrBusy}"
-        onClick="
-          const end = takePlayer.duration || editDur;
-          const s = Math.max(0, Math.min(takePlayer.getCurrentTime(), end - 0.52));
-          audition = null;
-          narrSeed = [s, Math.min(end, s + 10)];
-          narrClip = narrSeed;
-          narrAdding = true;
-        " />
-      <VStack when="{narrAdding}">
-        <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{editDur}" step="{0.04}"
-          initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
-          valueFormat="{(v) => v.toFixed(2) + 's'}"
-          enabled="{!narrating &amp;&amp; !narrBusy}"
-          onDidChange="(v) => {
-            audition = null;
-            takePlayer.seek(v[0] !== narrClip[0] ? v[0] : v[1]);
-            narrClip = v;
-          }" />
-        <HStack when="{!narrating}" verticalAlignment="center">
-          <TimeEdge what="Start" text="{narrClip[0].toFixed(2) + ' s'}" enabled="{!narrBusy}"
-            onNudge="(d) => nudgeNarr('start', d)" onToPlayhead="setNarr('start', takePlayer.getCurrentTime())" />
-          <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!narrBusy}"
-            onNudge="(d) => nudgeNarr('end', d)" onToPlayhead="setNarr('end', takePlayer.getCurrentTime())" />
-        </HStack>
-        <HStack when="{!!narrating}" verticalAlignment="center">
-          <Text value="{narrating ? narrating[0].toFixed(2) + ' s' : ''}" />
-          <ProgressBar width="*"
-            value="{narrating ? Math.max(0, Math.min(1, (playerTime - narrating[0]) / (narrating[1] - narrating[0]))) : 0}" />
-          <Text value="{narrating ? narrating[1].toFixed(2) + ' s' : ''}" />
-        </HStack>
-        <HStack verticalAlignment="center">
-          <Button label="{audition &amp;&amp; audition.kind === 'narr-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
-            tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="audition &amp;&amp; audition.kind === 'narr-preview' ? stopAudition() : playAudition(narrClip[0], narrClip[1], 'narr-preview')" />
-          <Button label="{narrating ? '⏹ Stop recording · ' + Math.max(0, narrating[1] - playerTime).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
-            size="xs" themeColor="attention"
-            tooltip="{narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
-            enabled="{!narrBusy &amp;&amp; !$props.dictating &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress}"
-            handlerTimeoutMs:onClick="0"
-            onClick="narrating ? stopNarration() : startNarration();" />
-          <Button label="Cancel" size="xs" variant="ghost" when="{!narrating}" enabled="{!narrBusy}"
-            onClick="audition = null; narrAdding = false;" />
-          <Spinner when="{narrBusy}" />
-        </HStack>
-      </VStack>
-      <!-- The scene's narrations, one row each; the ✕ puts back the audio a
-           narration replaced (/narrate/remove), at any time, and Undo on the
-           Undo tab restores it. Play, Intro and Outro hear it as judell/av
-           plays a clip, its intro and its outro
-           (https://github.com/judell/av av.js). -->
-      <Items data="{narrs.value || []}">
-        <HStack verticalAlignment="center"
-          var.sel="{narrSel === $item.id || (narrSel === null &amp;&amp; narrSelAt !== null &amp;&amp; Math.abs($item.t_in - narrSelAt) &lt; 0.06)}">
-          <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
-            label="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="
-              audition = null;
-              narrSel = $item.id;
-              narrSelAt = null;
-              takePlayer.seek($item.t_in);
-            " />
-          <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'clip' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Play'}" size="xs" variant="outlined"
-            tooltip="Play this narration from start to end"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="audition &amp;&amp; audition.kind === 'clip' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? stopAudition() : playAudition($item.t_in, $item.t_out, 'clip')" />
-          <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'intro' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Intro 3s'}" size="xs" variant="outlined"
-            tooltip="Play this narration's first 3 seconds"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="audition &amp;&amp; audition.kind === 'intro' &amp;&amp; Math.abs(audition.start - $item.t_in) &lt; 0.05 ? stopAudition() : playAudition($item.t_in, Math.min($item.t_in + 3, $item.t_out), 'intro')" />
-          <Button when="{sel}" label="{audition &amp;&amp; audition.kind === 'outro' &amp;&amp; Math.abs(audition.stop - $item.t_out) &lt; 0.05 ? 'Stop' : 'Outro 3s'}" size="xs" variant="outlined"
-            tooltip="Play this narration's last 3 seconds"
-            enabled="{!narrating &amp;&amp; !narrBusy}"
-            onClick="audition &amp;&amp; audition.kind === 'outro' &amp;&amp; Math.abs(audition.stop - $item.t_out) &lt; 0.05 ? stopAudition() : playAudition(Math.max($item.t_out - 3, $item.t_in), $item.t_out, 'outro')" />
-          <Button when="{sel}" icon="close" size="xs" variant="ghost"
-            aria-label="Remove this narration"
-            tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
-            enabled="{!removeNarration.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-            handlerTimeoutMs:onClick="0"
-            onClick="
-              audition = null;
-              narrSel = null;
-              narrSelAt = null;
-              removeNarration.execute($item.id);
-              resumeAt = $item.t_in;
-              cutSeq = cutSeq + 1;
-              narrs.refetch(); pauses.refetch(); cuts.refetch(); edits.refetch();
-            " />
-        </HStack>
-      </Items>
-    </VStack>
+      <NarrateTab id="narrTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
+        narrs="{narrs.value || []}" playerTime="{narrating ? playerTime : 0}"
+        narrating="{narrating}" narrBusy="{narrBusy}" dictating="{!!$props.dictating}"
+        cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" removing="{removeNarration.inProgress}"
+        onSeek="(t) => tabSeek(t)" onHush="audition = null"
+        onPlay="(a) => playAudition(a.start, a.stop, a.kind)" onStopPlay="stopAudition()"
+        onNeedTime="(tag) => narrTab.atPlayhead(tag, takePlayer.getCurrentTime())"
+        onNarrate="(clip) => startNarration(clip)" onStopNarrate="stopNarration()"
+        onRemoveNarr="(r) => tabRemoveNarr(r)" />
     </TabItem>
-    <!-- History: the take's edits (cut, pause, narrate, a narration
-         removed), newest first, with when each was made. The tinted row
-         is the edit Undo takes back: the most recent one still in effect.
-         Undo moves the tint down a row and leaves the undone edit above
-         it, dimmed; Redo puts the edit just above the tint back. A new
-         edit discards the undone ones. The table is plain rows, not a
-         Table: Table has no per-row style, and tinting each cell from its
-         row (https://www.xmlui.org/docs/howto/highlight-rows-conditionally)
-         left the tint as separate blocks with gaps between them.
-         Both buttons let go of the current item first, as a cut does:
-         the take's items are swapped with its files. -->
+    <!-- Undo: components/UndoTab.xmlui. -->
     <TabItem label="Undo">
-    <VStack>
-      <HStack verticalAlignment="center">
-        <Button label="Undo" size="xs" variant="outlined"
-          tooltip="Take back the tinted edit"
-          enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-          handlerTimeoutMs:onClick="0"
-          onClick="
-            audition = null;
-            editCallout = null; calloutBox = null; lastSprite = null;
-            curShape = null; curText = ''; curTail = 'none';
-            resumeAt = takePlayer.getCurrentTime();
-            undoEdit.execute(editTake);
-            cutSeq = cutSeq + 1;
-            lastCut = [0, 1]; cutSeed = [0, 1];
-            edits.refetch();
-            narrs.refetch(); pauses.refetch(); cuts.refetch();
-            callouts.refetch();
-            savedSprites.refetch();
-          " />
-        <Button label="Redo" size="xs" variant="outlined"
-          tooltip="Put back the edit just above the tinted one"
-          enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !undoEdit.inProgress &amp;&amp; !redoEdit.inProgress &amp;&amp; !cutTake.inProgress &amp;&amp; !pauseTake.inProgress &amp;&amp; !narrating &amp;&amp; !narrBusy}"
-          handlerTimeoutMs:onClick="0"
-          onClick="
-            audition = null;
-            editCallout = null; calloutBox = null; lastSprite = null;
-            curShape = null; curText = ''; curTail = 'none';
-            resumeAt = takePlayer.getCurrentTime();
-            redoEdit.execute(editTake);
-            cutSeq = cutSeq + 1;
-            lastCut = [0, 1]; cutSeed = [0, 1];
-            edits.refetch();
-            narrs.refetch(); pauses.refetch(); cuts.refetch();
-            callouts.refetch();
-            savedSprites.refetch();
-          " />
-        <Spinner when="{undoEdit.inProgress || redoEdit.inProgress}" />
-        <Text variant="secondary" when="{!!edits.value &amp;&amp; !!edits.value.note}" value="{edits.value.note}" />
-      </HStack>
-      <Text variant="secondary" when="{!!edits.value &amp;&amp; edits.value.edits.length === 0}"
-        value="No edits to this scene yet." />
-      <VStack gap="0" when="{!!edits.value &amp;&amp; edits.value.edits.length > 0}">
-        <HStack paddingHorizontal="$space-2" paddingVertical="$space-1">
-          <Text variant="secondary" width="200px" value="When" />
-          <Text variant="secondary" value="Edit" />
-        </HStack>
-        <Items data="{edits.value ? edits.value.edits : []}">
-          <HStack verticalAlignment="center" paddingHorizontal="$space-2" paddingVertical="$space-1"
-            backgroundColor="{$item.current ? '$color-primary-100' : 'transparent'}">
-            <Text width="200px" when="{!$item.undone}" value="{$item.when}" />
-            <Text width="200px" when="{$item.undone}" variant="secondary" value="{$item.when}" />
-            <Text when="{!$item.undone}" value="{$item.what}" />
-            <Text when="{$item.undone}" variant="secondary" value="{$item.what + ' (undone)'}" />
-          </HStack>
-        </Items>
-      </VStack>
-    </VStack>
+      <UndoTab edits="{edits.value}"
+        undoing="{undoEdit.inProgress}" redoing="{redoEdit.inProgress}"
+        cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" narrating="{!!narrating}" narrBusy="{narrBusy}"
+        onUndo="tabUndo(false)" onRedo="tabUndo(true)" />
     </TabItem>
     </Tabs>
     </Theme>
