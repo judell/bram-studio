@@ -147,6 +147,10 @@
     // the playhead actually stopped, to measure how close the 40 ms Timer
     // gets. invalidates: [] keeps the log call from refetching every list.
     // (Not from / to: the markup's script parser rejects from as a name.)
+    // Named ...SourceAudition, not playAudition etc.: SceneEditor has its own
+    // playAudition, yieldAudition and endAudition, and inside its VStack with
+    // a var. these (Main's) won and drove the wrong player
+    // (xmlui-org/xmlui#3940, part B).
     function playSourceAudition(start, stop, kind, src) {
       // The capture view's source player (the scene player's are SceneEditor's).
       const P = sourcePlayer;

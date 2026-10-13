@@ -650,15 +650,13 @@
                  assigning (nudgeItem, setItemTime), called from a handler in
                  this Items row that didn't name those variables, it did
                  nothing at all: handler done in under 1 ms, no seek, no save
-                 (traces 2026-10-13T214026, T220656, T221127, on a box at
-                 8.66-11.66 s). It worked in the one build whose handler named
-                 calloutIn and calloutOut (a probe, T214935), and the text box's
-                 handler, which assigns curText itself, works. An assignment
-                 the engine can't resolve stops a handler silently
-                 (https://www.xmlui.org/docs/scripting, "Assigning through a
-                 non-script base fails silently"). Why the row narrows what a
-                 called function can assign: no doc found. A nudge takes the
-                 playhead there so the frame is seen; each change is saved. -->
+                 (traces 2026-10-13T214026, T220656, T221127). The cause is
+                 xmlui-org/xmlui#3940 (part A): below a VStack with a var.,
+                 then Tabs, then Items, a script function's assignment fails
+                 with "Left value variable (…) not found in the scope", in the
+                 console only. Assigning in the handler, or naming the variable
+                 there, works. A nudge takes the playhead there so the frame is
+                 seen; each change is saved. -->
             <TimeEdge what="In" text="{calloutIn.toFixed(2) + ' s'}"
               onNudge="(d) => { const t = itemTime('in', calloutIn + d); if (t !== calloutIn) { calloutIn = t; takePlayer.seek(t); saveCurrentItem(); } }"
               onToPlayhead="const t = itemTime('in', takePlayer.getCurrentTime()); if (t !== calloutIn) { calloutIn = t; saveCurrentItem(); }" />
