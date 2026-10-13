@@ -1611,6 +1611,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.log_audition()
         if self.path == "/undo/log":
             return self.log_undo_gate()
+        if self.path == "/page/health":
+            return self.log_page_health()
         if self.path == "/voicetest":
             return self.run_voicetest()
         if self.path == "/delete":
@@ -3092,6 +3094,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         fields = " ".join(f"{k}={json.dumps(v)}" for k, v in body.items())
         print(f"undo-gate: seq={json.dumps(seq)} pageMs={json.dumps(page_ms)} "
               f"enabled={json.dumps(enabled)} changed={changed or '-'} {fields}", flush=True)
+        self.send_json(200, {"logged": 1})
+
+    def log_page_health(self):
+        # {uptimeS, heapMB, videos, nodes}: the page's own measure of itself
+        # every 5 minutes (studioPageHealth in index.html, its Timer in
+        # Main.xmlui). The page got sluggish after days open and a refresh
+        # helped (2026-10-12); growth across these lines names what built up.
+        # Kept as standing instrumentation.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        heap = body.get("heapMB")
+        print(f"page-health: uptime={body.get('uptimeS')}s "
+              f"heap={'-' if heap is None else str(heap) + 'MB'} "
+              f"videos={body.get('videos')} nodes={body.get('nodes')}", flush=True)
         self.send_json(200, {"logged": 1})
 
     def run_voicetest(self):

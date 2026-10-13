@@ -1235,6 +1235,19 @@
            no tick read as a scrub about 0.9 s in, every other press
            (2026-10-03, 11.99-19.64 s yielded at 12.87 s). A yield is logged
            (yieldAudition). -->
+      <!-- Every 5 minutes the page logs its own size (studioPageHealth in
+           index.html) to serve_media.log as a page-health line: it got
+           sluggish after days open and a refresh helped (2026-10-12).
+           invalidates: [] keeps the post from refetching every list. -->
+      <Timer interval="300000"
+        onTick="
+          try {
+            Actions.callApi({ url: 'http://127.0.0.1:8765/page/health', method: 'post', invalidates: [],
+                              body: window.studioPageHealth() });
+          } catch (e) {
+            // A missing log line is no reason to bother the user.
+          }
+        " />
       <Timer interval="40" enabled="{!!audition}"
         onTick="
           const P = audition &amp;&amp; audition.src ? sourcePlayer : takePlayer;

@@ -9,6 +9,21 @@
          which only sees page functions that exist when it starts. -->
     <script src="/__shell/dictation.js"></script>
     <script src="/studio-dictation.js"></script>
+    <!-- The page's measure of itself, for Main.xmlui's page-health Timer
+         (logged by serve_media.py's /page/health). It reads the browser
+         outside the app, so it lives here; it must exist before the engine
+         starts. heapMB is Chrome/WebKit's performance.memory, else null. -->
+    <script>
+      window.studioPageHealth = function () {
+        const mem = performance.memory;
+        return {
+          uptimeS: Math.round(performance.now() / 1000),
+          heapMB: mem ? Math.round(mem.usedJSHeapSize / 1048576) : null,
+          videos: document.getElementsByTagName("video").length,
+          nodes: document.getElementsByTagName("*").length,
+        };
+      };
+    </script>
     <!-- Experimental XMLUI build with MediaPlayer (xmlui-org/xmlui#3913); revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
     <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after
