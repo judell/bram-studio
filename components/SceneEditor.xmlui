@@ -51,8 +51,7 @@
   var.narrSelAt="{null}"
   var.curShape="{null}"
   var.curText=""
-  var.curTail="none"
-  var.undoLogSeq="{0}">
+  var.curTail="none">
 
   <method name="refresh">
     () => { edits.refetch(); narrs.refetch(); pauses.refetch(); cuts.refetch(); callouts.refetch(); savedSprites.refetch(); }
@@ -221,32 +220,15 @@
       callouts.refetch();
       savedSprites.refetch();
     }
-    // The current item's In or Out, one frame (delta) earlier or later: In
-    // stays at or above 0 and 0.1 s before Out, Out 0.1 s after In and within
-    // the scene. Saved at once, and the playhead goes there so the frame is
-    // seen.
-    function nudgeItem(which, delta) {
-      setItemTime(which, (which === 'in' ? calloutIn : calloutOut) + delta);
-    }
-    // The current item's In or Out set to v (nudged, or typed into its
-    // TimeEdge), by the same rules.
-    function setItemTime(which, v) {
+    // The current item's In or Out as the rules allow, for v (nudged, or
+    // from the playhead): In at or above 0 and 0.1 s before Out, Out 0.1 s
+    // after In and within the scene. It only computes: the TimeEdges' handlers
+    // assign calloutIn / calloutOut themselves (see the comment there).
+    function itemTime(which, v) {
       const end = takePlayer.duration || editDur;
-      const t = which === 'in'
+      return which === 'in'
         ? Math.max(0, Math.min(Math.round(v * 100) / 100, calloutOut - 0.1))
         : Math.min(end, Math.max(Math.round(v * 100) / 100, calloutIn + 0.1));
-      if (t !== (which === 'in' ? calloutIn : calloutOut)) {
-        if (which === 'in') calloutIn = t; else calloutOut = t;
-        takePlayer.seek(t);
-        saveCurrentItem();
-      }
-    }
-    // The current item's In or Out set from the playhead.
-    function setItemEdge(which) {
-      const p = takePlayer.getCurrentTime();
-      if (which === 'in') calloutIn = Math.max(0, Math.min(p, calloutOut - 0.1));
-      else calloutOut = Math.max(p, calloutIn + 0.1);
-      saveCurrentItem();
     }
     // A drag's end (AnnotationCanvas's moveItem / resizeItem): the current
     // item's new box, saved; the new sprite that follows clears the canvas's
@@ -268,9 +250,9 @@
     // here for takePlayer only; each scope keeps its own `audition`.
     function playAudition(start, stop, kind) {
       const end = takePlayer.duration || editDur;
-      const a = { start: Math.max(0, start), stop: Math.min(end, stop), kind, startedMs: Date.now(),
-                  at: Math.max(0, start), atMs: Date.now(), src: false };
+      const a = { start: Math.max(0, start), stop: Math.min(end, stop), kind, startedMs: Date.now() };
       takePlayer.seek(a.start);
+      clock.start(a.start);
       audition = a;
       takePlayer.play();
     }
@@ -278,6 +260,11 @@
     // pause and end the audition, unlogged, since nothing was measured.
     function stopAudition() {
       const a = audition;
+      // A second click within 600 ms (the clock's start-up window) is a
+      // double-click, not a Stop: pausing a play() still starting makes the
+      // browser report "the play() request was interrupted by a call to
+      // pause()" (trace 2026-10-13T220656: Play clicked twice 270 ms apart).
+      if (a && 600 > Date.now() - a.startedMs) return;
       if (a) takePlayer.pause();
       audition = null;
       if (a && a.returnTo !== undefined) takePlayer.seek(a.returnTo);
@@ -363,8 +350,9 @@
        said canUndo (2026-10-05); this names the input holding it. Sources by
        name: https://www.xmlui.org/docs/reference/components/ChangeListener
        The posts run concurrently and can arrive out of order, so each carries
-       seq (undoLogSeq, this page's count) and pageMs (when the page saw the
-       change): sort by seq to read them in the page's order. -->
+       pageMs (when the page saw the change): sort by it to read them in the
+       page's order. (A seq counter here was a reactive variable, and each
+       bump re-rendered the editor, ~220 ms: trace, 2026-10-13.) -->
   <ChangeListener
     listenToSources="{{
       take: editTake,
@@ -379,11 +367,9 @@
     }}"
     onDidChange="(change) => {
       const v = change.newValue;
-      undoLogSeq = undoLogSeq + 1;
-      const seq = undoLogSeq;
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
-                          body: { seq: seq, pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
+                          body: { pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
                                   undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
                                   pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,
                                   changed: change.changedSources,
@@ -403,24 +389,18 @@
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
 
+  <!-- An audition's 40 ms clock. Its per-tick bookkeeping (where the
+       playhead was, and when) is AuditionClock's, so a tick changes nothing
+       here unless the audition ends: rewriting audition every tick
+       re-rendered the whole editor, ~220 ms each (trace, 2026-10-13). -->
+  <AuditionClock id="clock" />
   <Timer interval="40" enabled="{!!audition}"
     onTick="
-      const P = takePlayer;
-      const t = P.getCurrentTime();
-      const now = Date.now();
-      const young = !!audition &amp;&amp; now - audition.startedMs &lt; 600;
-      const landed = !!audition &amp;&amp; t >= audition.start - 0.15 &amp;&amp; t &lt;= audition.start + 0.9;
-      if (audition &amp;&amp; P.paused) {
-        audition = now - audition.startedMs > 600 ? null : { ...audition, at: audition.start, atMs: now };
-      } else if (audition &amp;&amp; young &amp;&amp; !landed) {
-        audition = { ...audition, at: audition.start, atMs: now };
-      } else if (audition &amp;&amp; (t > audition.at + (now - audition.atMs) / 1000 + 0.3 || t &lt; audition.at - 0.3)) {
-        yieldAudition(t);
-      } else if (audition &amp;&amp; t >= audition.stop) {
-        endAudition();
-      } else {
-        audition = { ...audition, at: t, atMs: now };
-      }
+      const t = takePlayer.getCurrentTime();
+      const next = audition ? clock.step(t, takePlayer.paused, audition) : null;
+      if (next === 'drop') audition = null;
+      else if (next === 'yield') yieldAudition(t);
+      else if (next === 'end') endAudition();
     " />
   <!-- The take loaded in the take player (its URL); hidden while recording. -->
   <!-- editSprite: the current item's sprite from the DataSource, or its
@@ -437,15 +417,14 @@
        or dragging an item on the picture, or its name in the list, makes
        it current. annotKind is only the tool: what the next Command-drag
        places. A cut, a pause or Undo retimes items on the server, so
-       each of those lets go of the current item. curShown: the current
-       item is on the picture, with its handles, only within its In and
+       each of those lets go of the current item. The current
+       item is on the picture (AnnotationCanvas's shown), with its handles, only within its In and
        Out, paused or playing, as it will be in the take (shown at every
        paused position, it looked on screen where it isn't). Picking it,
        its In/Out nudges and placing it all put the playhead inside it.
        Clicking the current item's name in the list again lets go of it. -->
   <VStack when="{playing}"
-    var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}"
-    var.curShown="{!!editCallout &amp;&amp; playerTime >= calloutIn &amp;&amp; playerTime &lt;= calloutOut}">
+    var.editSprite="{calloutSprite.value &amp;&amp; calloutSprite.value.id === editCallout ? calloutSprite.value : (lastSprite &amp;&amp; lastSprite.id === editCallout ? lastSprite : null)}">
     <!-- The player's close box (the tools are on the Annotate tab). -->
     <HStack verticalAlignment="center">
       <SpaceFiller />
@@ -482,7 +461,7 @@
     <AnnotationCanvas id="canvas" aspect="{takeAspect}" time="{playerTime}"
       tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
       sprites="{savedSprites.value || []}"
-      current="{{ id: editCallout, box: calloutBox, shape: curShape, shown: curShown, sprite: editSprite }}"
+      current="{{ id: editCallout, box: calloutBox, shape: curShape, tIn: calloutIn, tOut: calloutOut, sprite: editSprite }}"
       onPickItem="(id) => {
         const it = (callouts.value || []).find((c) => c.id === id);
         if (it) {
@@ -543,14 +522,17 @@
         src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
         onLoadedMetadata="(e) => {
           takeAspect = e.videoWidth / e.videoHeight;
+          playerTime = takePlayer.getCurrentTime();
+          canvas.setTime(playerTime);
+          playhead.setTime(playerTime);
           if (resumeAt !== null) {
             takePlayer.seek(resumeAt);
             takePlayer.pause();
             resumeAt = null;
           }
         }"
-        onTimeUpdate="(e) => playerTime = e.currentTime"
-        onSeeked="(e) => playerTime = e.currentTime" />
+        onSeeked="(e) => { playerTime = e.currentTime; canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); }"
+        onPause="(e) => { playerTime = e.currentTime; canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); }" />
     </AnnotationCanvas>
     <!-- Where the scene's audio lives: one bar per slice of the scene
          (takeLevels, serve_media.py's /takes/levels), its height the
@@ -560,22 +542,13 @@
          there (the tooltip behavior works on any visual component:
          https://www.xmlui.org/docs/behaviors#tooltip). The bars don't
          depend on the playhead, so they are drawn once per load. The
-         playhead is a 2 px line in a thin row just above them, after a
-         spacer playerTime / (slice length x slices) wide, so it sits over
-         the exact time on the bars' own scale and is the one thing that
-         moves as the scene plays (it was the marker in whichever of 200
-         slots held the playhead: it stepped a slot at a time, and every
-         40 ms tick re-checked all 200). The line is 32 px, its 8 px row
-         plus the bars' 24 px, so it hangs down across the bars; the no-op
-         transform puts it above them, as a transformed element is drawn
-         over later ordinary ones
-         (https://www.xmlui.org/docs/styles-and-themes/layout-props#transform). -->
+         playhead line above them (components/Playhead.xmlui) is the one
+         thing that moves as the scene plays (it was the marker in whichever
+         of 200 slots held the playhead: it stepped a slot at a time, and
+         every 40 ms tick re-checked all 200). -->
     <VStack gap="0" var.lv="{takeLevels.value || lastLevels}"
       when="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}">
-      <HStack height="8px" gap="0">
-        <Stack height="8px" width="{Math.min(100, Math.max(0, playerTime / (lv.binSecs * lv.levels.length) * 100)) + '%'}" />
-        <Stack width="2px" height="32px" transform="translateY(0)" backgroundColor="$color-surface-900" />
-      </HStack>
+      <Playhead id="playhead" span="{lv.binSecs * lv.levels.length}" time="{playerTime}" />
       <HStack height="24px" gap="0" verticalAlignment="end">
         <Items data="{levelBars(lv, narrs.value || [])}">
           <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
@@ -672,10 +645,26 @@
                  the text is saved when the box loses focus. -->
             <ItemText when="{!curShape}" text="{curText}"
               onCommit="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }" />
+            <!-- In and Out: each handler assigns calloutIn / calloutOut
+                 itself, and itemTime only computes. When a function did the
+                 assigning (nudgeItem, setItemTime), called from a handler in
+                 this Items row that didn't name those variables, it did
+                 nothing at all: handler done in under 1 ms, no seek, no save
+                 (traces 2026-10-13T214026, T220656, T221127, on a box at
+                 8.66-11.66 s). It worked in the one build whose handler named
+                 calloutIn and calloutOut (a probe, T214935), and the text box's
+                 handler, which assigns curText itself, works. An assignment
+                 the engine can't resolve stops a handler silently
+                 (https://www.xmlui.org/docs/scripting, "Assigning through a
+                 non-script base fails silently"). Why the row narrows what a
+                 called function can assign: no doc found. A nudge takes the
+                 playhead there so the frame is seen; each change is saved. -->
             <TimeEdge what="In" text="{calloutIn.toFixed(2) + ' s'}"
-              onNudge="(d) => nudgeItem('in', d)" onToPlayhead="setItemEdge('in')" />
+              onNudge="(d) => { const t = itemTime('in', calloutIn + d); if (t !== calloutIn) { calloutIn = t; takePlayer.seek(t); saveCurrentItem(); } }"
+              onToPlayhead="const t = itemTime('in', takePlayer.getCurrentTime()); if (t !== calloutIn) { calloutIn = t; saveCurrentItem(); }" />
             <TimeEdge what="Out" text="{calloutOut.toFixed(2) + ' s'}"
-              onNudge="(d) => nudgeItem('out', d)" onToPlayhead="setItemEdge('out')" />
+              onNudge="(d) => { const t = itemTime('out', calloutOut + d); if (t !== calloutOut) { calloutOut = t; takePlayer.seek(t); saveCurrentItem(); } }"
+              onToPlayhead="const t = itemTime('out', takePlayer.getCurrentTime()); if (t !== calloutOut) { calloutOut = t; saveCurrentItem(); }" />
             <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
             <Select when="{!curShape}" initialValue="{curTail}" width="120px"
               onDidChange="(v) => {
@@ -1179,11 +1168,22 @@
       onTick="
         if (narrating &amp;&amp; takePlayer.getCurrentTime() >= Math.min(narrating[1], takePlayer.duration || narrating[1]) - 0.05) stopNarration();
       " />
-    <!-- While the take plays, playerTime follows the player every 40 ms.
-         The player's timeUpdate arrives about four times a second, which
-         showed items a third of a second late (measured 2026-10-01: an
-         item set to 2.0-5.0 s was on screen 2.32-5.37 s). -->
+    <!-- While the take plays, the picture (canvas) and the audio strip's
+         playhead follow the player every 40 ms. The player's timeUpdate
+         arrives about four times a second, which showed items a third of a
+         second late (measured 2026-10-01: an item set to 2.0-5.0 s was on
+         screen 2.32-5.37 s). The time goes to them (setTime), not to
+         playerTime: each assignment here re-rendered the whole editor,
+         ~220 ms, so playback kept the page busy (trace, 2026-10-13).
+         playerTime is the paused playhead (seeked, pause), for the Pause
+         tab; it follows every tick only while a narration records, for the
+         Narrate tab's progress. -->
     <Timer interval="40" enabled="{!takePlayer.paused}"
-      onTick="playerTime = takePlayer.getCurrentTime()" />
+      onTick="
+        const t = takePlayer.getCurrentTime();
+        canvas.setTime(t);
+        playhead.setTime(t);
+        if (narrating) playerTime = t;
+      " />
   </VStack>
 </Component>

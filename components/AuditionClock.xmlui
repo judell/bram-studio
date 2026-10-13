@@ -1,0 +1,44 @@
+<!-- An audition's clock: where the playhead was at the last 40 ms tick (at)
+     and when (atMs). It changes on every tick, so it lives here and not in
+     SceneEditor, where every assignment re-rendered the whole editor (~220 ms
+     a tick in an Inspector trace, 2026-10-13:
+     https://www.xmlui.org/docs/howto/confine-a-hot-input-to-its-own-component).
+     It draws nothing.
+
+     Methods (https://www.xmlui.org/docs/howto/pass-arguments-to-a-component-method):
+     start(s), when an audition starts at s; step(t, paused, a), on each tick,
+     with the playhead t, whether the player is paused and the audition
+     {start, stop, startedMs}. step returns what the editor should do:
+     'drop' (still paused 600 ms after the start: the play never began),
+     'yield' (the playhead jumped: someone scrubbed), 'end' (it reached the
+     stop), or null (keep going). For 600 ms after the start the playhead may
+     still be on its way to the start, so that isn't a jump. -->
+<Component name="AuditionClock" var.at="{0}" var.atMs="{0}">
+  <method name="start">
+    (s) => { at = s; atMs = Date.now(); }
+  </method>
+  <method name="step">
+    (t, paused, a) => {
+      const now = Date.now();
+      const young = now - a.startedMs &lt; 600;
+      const landed = t >= a.start - 0.15 &amp;&amp; t &lt;= a.start + 0.9;
+      if (paused) {
+        if (now - a.startedMs > 600) return 'drop';
+        at = a.start;
+        atMs = now;
+        return null;
+      }
+      if (young &amp;&amp; !landed) {
+        at = a.start;
+        atMs = now;
+        return null;
+      }
+      if (t > at + (now - atMs) / 1000 + 0.3 || t &lt; at - 0.3) return 'yield';
+      if (t >= a.stop) return 'end';
+      at = t;
+      atMs = now;
+      return null;
+    }
+  </method>
+  <Fragment />
+</Component>
