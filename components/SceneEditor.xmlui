@@ -25,19 +25,13 @@
   var.editDur="{$props.duration || 0}"
   var.audition="{null}"
   var.takeAspect="{undefined}"
-  var.calloutBox="{null}"
-  var.calloutIn="{0}"
-  var.calloutOut="{3}"
-  var.editCallout="{null}"
   var.annotKind="{readLocalStorage('studio.annotKind', 'callout')}"
   var.cutSeq="{0}"
   var.narrating="{null}"
   var.narrBusy="{false}"
   var.resumeAt="{null}"
   var.lastLevels="{null}"
-  var.curShape="{null}"
-  var.curText=""
-  var.curTail="none">
+  var.item="{null}">
 
   <method name="refresh">
     () => { narrs.refetch(); pauses.refetch(); cuts.refetch(); refreshItemLists(); }
@@ -46,7 +40,7 @@
   <!-- Another scene opened while this one was: per-scene state starts over,
        as opening one from the list always did (openScene). The tabs reset
        their own (each listens to its take prop). -->
-  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; editCallout = null; calloutBox = null; curShape = null; curText = ''; curTail = 'none'; audition = null;" />
+  <ChangeListener listenTo="{editTake}" onDidChange="resumeAt = null; lastLevels = null; item = null; audition = null;" />
 
   <script>
     // Narrate over a stretch of the take being edited (serve_media.py's
@@ -93,20 +87,6 @@
       undoTab.refresh();
       narrs.refetch(); pauses.refetch(); cuts.refetch();
     }
-    // The audio strip's bars (under the take player): one per slice of
-    // /takes/levels, px tall for its level from -60 dB (1 px) to 0 dB (24 px),
-    // narr when its middle falls inside a narration, and tip, what hovering
-    // it says.
-    function levelBars(lv, narrations) {
-      return lv.levels.map((db, i) => {
-        const t = (i + 0.5) * lv.binSecs;
-        const n = narrations.find((r) => t >= r.t_in && !(t > r.t_out));
-        const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Scene audio';
-        const level = db > -60 ? Math.round(db) + ' dB' : 'silence';
-        return { px: Math.max(1, Math.round(Math.min(1, (db + 60) / 60) * 24)), narr: !!n,
-                 tip: what + ' · ' + level + ' at ' + t.toFixed(2) + ' s' };
-      });
-    }
     // The tabs' events (CutTab, PauseTab, NarrateTab, UndoTab). The tabs
     // own their selections and adding rows; the player, the audition, the
     // current item and the edits stay here.
@@ -119,8 +99,12 @@
     // each lets go of the current item first.
     function letGoOfItem() {
       audition = null;
-      editCallout = null; calloutBox = null;
-      curShape = null; curText = ''; curTail = 'none';
+      item = null;
+    }
+    // A scene's item (a callouts row) as the current item.
+    function rowItem(r) {
+      return { id: r.id, box: { x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 }, shape: r.shape || null,
+               text: r.text, tail: r.tail || 'none', tIn: r.t_in, tOut: r.t_out };
     }
     // After a save: the lists that show items, each refetched in the
     // component that owns it (AnnotateTab's callouts, the canvas's sprites,
@@ -203,13 +187,7 @@
       const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [],
                                   body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
                                           t_in: t, t_out: out, tail: 'none', shape: shape } });
-      editCallout = r.id;
-      curShape = shape;
-      curText = '';
-      curTail = 'none';
-      calloutBox = box;
-      calloutIn = t;
-      calloutOut = out;
+      item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
       refreshItemLists();
     }
     // The current item's In or Out as the rules allow, for v (nudged, or
@@ -218,14 +196,14 @@
     function itemTime(which, v) {
       const end = takePlayer.duration || editDur;
       return which === 'in'
-        ? Math.max(0, Math.min(Math.round(v * 100) / 100, calloutOut - 0.1))
-        : Math.min(end, Math.max(Math.round(v * 100) / 100, calloutIn + 0.1));
+        ? Math.max(0, Math.min(Math.round(v * 100) / 100, item.tOut - 0.1))
+        : Math.min(end, Math.max(Math.round(v * 100) / 100, item.tIn + 0.1));
     }
     // A drag's end (AnnotationCanvas's moveItem / resizeItem): the current
     // item's new box, saved; the new sprite that follows clears the canvas's
     // drag state.
     function saveBox(nb) {
-      calloutBox = nb;
+      item = { ...item, box: nb };
       saveCurrentItem();
     }
     // Every change to the current item is saved at once (/callouts/update).
@@ -234,9 +212,9 @@
     function saveCurrentItem() {
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/update', method: 'post', invalidates: [],
-                          body: { take_id: editTake, id: editCallout, text: curText, x1: calloutBox.x1, y1: calloutBox.y1,
-                                  x2: calloutBox.x2, y2: calloutBox.y2, t_in: calloutIn, t_out: calloutOut, tail: curTail,
-                                  shape: curShape } });
+                          body: { take_id: editTake, id: item.id, text: item.text, x1: item.box.x1, y1: item.box.y1,
+                                  x2: item.box.x2, y2: item.box.y2, t_in: item.tIn, t_out: item.tOut, tail: item.tail,
+                                  shape: item.shape } });
       } catch (e) {
         toast.error(e.message);
       }
@@ -249,39 +227,29 @@
       audition = null;
       if (!row) {
         letGoOfItem();
-        calloutIn = 0;
-        calloutOut = 3;
         return;
       }
-      editCallout = row.id;
-      curShape = row.shape || null;
-      curText = row.text;
-      curTail = row.tail || 'none';
-      calloutBox = { x1: row.x1, y1: row.y1, x2: row.x2, y2: row.y2 };
-      calloutIn = row.t_in;
-      calloutOut = row.t_out;
+      item = rowItem(row);
       takePlayer.seek(row.t_in);
     }
     // In or Out nudged: saved, and the playhead goes there so the frame is seen.
     function nudgeItemTime(which, d) {
-      const t = itemTime(which, (which === 'in' ? calloutIn : calloutOut) + d);
-      if (t === (which === 'in' ? calloutIn : calloutOut)) return;
-      if (which === 'in') calloutIn = t; else calloutOut = t;
+      const t = itemTime(which, (which === 'in' ? item.tIn : item.tOut) + d);
+      if (t === (which === 'in' ? item.tIn : item.tOut)) return;
+      item = which === 'in' ? { ...item, tIn: t } : { ...item, tOut: t };
       takePlayer.seek(t);
       saveCurrentItem();
     }
     // In or Out set from the playhead.
     function itemFromPlayhead(which) {
       const t = itemTime(which, takePlayer.getCurrentTime());
-      if (t === (which === 'in' ? calloutIn : calloutOut)) return;
-      if (which === 'in') calloutIn = t; else calloutOut = t;
+      if (t === (which === 'in' ? item.tIn : item.tOut)) return;
+      item = which === 'in' ? { ...item, tIn: t } : { ...item, tOut: t };
       saveCurrentItem();
     }
     function removeItem() {
-      const id = editCallout;
+      const id = item.id;
       letGoOfItem();
-      calloutIn = 0;
-      calloutOut = 3;
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/delete', method: 'post', invalidates: [], body: { id: id } });
       } catch (e) {
@@ -399,9 +367,10 @@
        (components/AnnotationCanvas.xmlui). -->
   <!-- The editor has no draft and nothing to save (take-editor-live-model). Command-drag places an item,
        which is saved at once (/callouts/add) and becomes the current one.
-       editCallout is the current item's id; calloutBox, calloutIn,
-       calloutOut, curShape, curText and curTail hold its fields, set when
-       it is placed or selected and at each change, and every change is
+       item is the current item, one object ({id, box, shape, text, tail,
+       tIn, tOut}, or null), assigned once when it is placed or selected
+       and once at each change, since each assignment is a render pass
+       (Chrome profile, 2026-10-13), and every change is
        saved at once (/callouts/update) and the lists refetched. Clicking
        or dragging an item on the picture, or its name in the list, makes
        it current. annotKind is only the tool: what the next Command-drag
@@ -435,31 +404,23 @@
          own data). -->
     <AnnotationCanvas id="canvas" take="{editTake}" aspect="{takeAspect}"
       tool="{annotKind === 'arrow' || annotKind === 'line' || annotKind === 'pointer' ? annotKind : 'rect'}"
-      current="{{ id: editCallout, box: calloutBox, shape: curShape, text: curText, tail: curTail, tIn: calloutIn, tOut: calloutOut }}"
+      current="{item}"
       onPickItem="(id) => {
         const it = annotTab.find(id);
-        if (it) {
-          editCallout = it.id;
-          curShape = it.shape || null;
-          curText = it.text;
-          curTail = it.tail || 'none';
-          calloutBox = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 };
-          calloutIn = it.t_in;
-          calloutOut = it.t_out;
-        }
+        if (it) item = rowItem(it);
       }"
       onMoveItem="(d) => {
-        const c = calloutBox;
+        const c = item ? item.box : null;
         const dx = c ? Math.min(Math.max(d.dx, -Math.min(c.x1, c.x2)), 1 - Math.max(c.x1, c.x2)) : 0;
         const dy = c ? Math.min(Math.max(d.dy, -Math.min(c.y1, c.y2)), 1 - Math.max(c.y1, c.y2)) : 0;
-        if (!editCallout || (dx === 0 &amp;&amp; dy === 0)) {
+        if (!item || (dx === 0 &amp;&amp; dy === 0)) {
           canvas.release();
         } else {
           saveBox({ x1: c.x1 + dx, y1: c.y1 + dy, x2: c.x2 + dx, y2: c.y2 + dy });
         }
       }"
       onResizeItem="(nb) => {
-        if (editCallout) saveBox(nb); else canvas.release();
+        if (item) saveBox(nb); else canvas.release();
       }"
       onDrawItem="(e) => {
         const t = takePlayer.getCurrentTime();
@@ -470,13 +431,7 @@
         // invalidates: [], as in addAnnotation: the default refetched
         // every DataSource and took a drawn shape ~3 s (trace, 2026-10-13).
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
-        editCallout = r.id;
-        curShape = shape;
-        curText = '';
-        curTail = 'none';
-        calloutBox = box;
-        calloutIn = t;
-        calloutOut = out;
+        item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
         refreshItemLists();
         editTabs.setActiveTabIndex(0);
       }">
@@ -494,7 +449,7 @@
           takeAspect = e.videoWidth / e.videoHeight;
           const t0 = takePlayer.getCurrentTime();
           canvas.setTime(t0);
-          playhead.setTime(t0);
+          strip.setTime(t0);
           pauseTab.setTime(t0);
           if (resumeAt !== null) {
             takePlayer.seek(resumeAt);
@@ -502,33 +457,14 @@
             resumeAt = null;
           }
         }"
-        onSeeked="(e) => { canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }"
-        onPause="(e) => { canvas.setTime(e.currentTime); playhead.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }" />
+        onSeeked="(e) => { canvas.setTime(e.currentTime); strip.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }"
+        onPause="(e) => { canvas.setTime(e.currentTime); strip.setTime(e.currentTime); pauseTab.setTime(e.currentTime); }" />
     </AnnotationCanvas>
-    <!-- Where the scene's audio lives: one bar per slice of the scene
-         (takeLevels, serve_media.py's /takes/levels), its height the
-         slice's level from -60 dB (none) to 0 dB, coloured as a narration
-         or the scene's own sound. A scene with no audio (every slice under
-         -60 dB) shows no strip. Hovering a bar says which, and the level
-         there (the tooltip behavior works on any visual component:
-         https://www.xmlui.org/docs/behaviors#tooltip). The bars don't
-         depend on the playhead, so they are drawn once per load. The
-         playhead line above them (components/Playhead.xmlui) is the one
-         thing that moves as the scene plays (it was the marker in whichever
-         of 200 slots held the playhead: it stepped a slot at a time, and
-         every 40 ms tick re-checked all 200). -->
-    <VStack gap="0" var.lv="{takeLevels.value || lastLevels}"
-      var.showStrip="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}">
-      <Playhead id="playhead" span="{lv ? lv.binSecs * lv.levels.length : 1}" show="{showStrip}" />
-      <HStack height="24px" gap="0" verticalAlignment="end" when="{showStrip}">
-        <Items data="{levelBars(lv, narrs.value || [])}">
-          <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
-            <Stack when="{$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
-            <Stack when="{!$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
-          </VStack>
-        </Items>
-      </HStack>
-    </VStack>
+    <!-- Where the scene's audio lives, and the playhead over it:
+         components/AudioStrip.xmlui. A scene with no audio (every slice
+         under -60 dB) shows no strip. -->
+    <AudioStrip id="strip" levels="{takeLevels.value || lastLevels}" narrs="{narrs.value || []}"
+      show="{!!editTake &amp;&amp; editDur > 0 &amp;&amp; !!(takeLevels.value || lastLevels) &amp;&amp; (takeLevels.value || lastLevels).levels.some((db) => db > -60)}" />
     <!-- The take's edits, one per tab (https://www.xmlui.org/docs/reference/components/Tabs):
          in each, the slider at full width, then its controls on a second
          row. keepMounted: Tabs otherwise unmounts the hidden tabs, and a
@@ -554,15 +490,15 @@
          The current item is here, shared with the canvas. -->
     <TabItem label="Annotate">
       <AnnotateTab id="annotTab" take="{editTake}" kind="{annotKind}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
-        item="{{ id: editCallout, shape: curShape, text: curText, tail: curTail, tIn: calloutIn, tOut: calloutOut }}"
+        item="{item}"
         onTool="(k) => { annotKind = k; writeLocalStorage('studio.annotKind', k); }"
         onAdd="addAnnotation()"
         onSelect="(row) => selectItem(row)"
-        onText="(v) => { if (calloutBox &amp;&amp; v !== curText) { curText = v; saveCurrentItem(); } }"
-        onTail="(v) => { if (editCallout &amp;&amp; calloutBox &amp;&amp; !curShape &amp;&amp; v !== curTail) { curTail = v; saveCurrentItem(); } }"
+        onText="(v) => { if (item &amp;&amp; v !== item.text) { item = { ...item, text: v }; saveCurrentItem(); } }"
+        onTail="(v) => { if (item &amp;&amp; !item.shape &amp;&amp; v !== item.tail) { item = { ...item, tail: v }; saveCurrentItem(); } }"
         onNudge="(e) => nudgeItemTime(e.which, e.d)"
         onToPlayhead="(which) => itemFromPlayhead(which)"
-        onPlay="playAudition(calloutIn, calloutOut, 'item')" onStopPlay="stopAudition()"
+        onPlay="playAudition(item.tIn, item.tOut, 'item')" onStopPlay="stopAudition()"
         onRemove="removeItem()" />
     </TabItem>
     <!-- Cut: components/CutTab.xmlui. -->
@@ -622,7 +558,7 @@
       onTick="
         const t = takePlayer.getCurrentTime();
         canvas.setTime(t);
-        playhead.setTime(t);
+        strip.setTime(t);
         if (narrating) narrTab.setTime(t);
       " />
   </VStack>

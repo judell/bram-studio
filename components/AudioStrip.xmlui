@@ -1,0 +1,50 @@
+<!-- The scene editor's audio strip: where the scene's audio lives, one bar
+     per slice of the scene (/takes/levels), its height the slice's level
+     from -60 dB (none) to 0 dB, coloured as a narration or the scene's own
+     sound, with the playhead line above (components/Playhead.xmlui).
+     Hovering a bar says which, and the level there (the tooltip behavior
+     works on any visual component:
+     https://www.xmlui.org/docs/behaviors#tooltip).
+
+     Its own component so the ~200 bars aren't rebuilt on every editor
+     render: in the editor, levelBars() ran in a binding, so each item edit
+     made a new array and re-rendered every bar. Here they change only when
+     the levels or the narrations do; XMLUI skips a component whose props
+     are unchanged.
+
+     Props: levels (/takes/levels: {binSecs, levels}), narrs (the scene's
+     narrations), show (the scene has audio to show). Method: setTime(t),
+     the playhead, passed to the Playhead. -->
+<Component name="AudioStrip">
+  <method name="setTime">
+    (t) => { playhead.setTime(t); }
+  </method>
+
+  <script>
+    // One bar per slice: px tall for its level from -60 dB (1 px) to 0 dB
+    // (24 px), narr when its middle falls inside a narration, and tip,
+    // what hovering it says.
+    function levelBars(lv, narrations) {
+      return lv.levels.map((db, i) => {
+        const t = (i + 0.5) * lv.binSecs;
+        const n = narrations.find((r) => t >= r.t_in && !(t > r.t_out));
+        const what = n ? 'Narration ' + n.t_in.toFixed(2) + '–' + n.t_out.toFixed(2) + ' s' : 'Scene audio';
+        const level = db > -60 ? Math.round(db) + ' dB' : 'silence';
+        return { px: Math.max(1, Math.round(Math.min(1, (db + 60) / 60) * 24)), narr: !!n,
+                 tip: what + ' · ' + level + ' at ' + t.toFixed(2) + ' s' };
+      });
+    }
+  </script>
+
+  <VStack gap="0">
+    <Playhead id="playhead" span="{$props.levels ? $props.levels.binSecs * $props.levels.levels.length : 1}" show="{!!$props.show}" />
+    <HStack height="24px" gap="0" verticalAlignment="end" when="{!!$props.show}">
+      <Items data="{levelBars($props.levels, $props.narrs || [])}">
+        <VStack width="*" height="100%" verticalAlignment="end" tooltip="{$item.tip}">
+          <Stack when="{$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-warn-500" />
+          <Stack when="{!$item.narr}" width="100%" height="{$item.px + 'px'}" backgroundColor="$color-primary-400" />
+        </VStack>
+      </Items>
+    </HStack>
+  </VStack>
+</Component>
