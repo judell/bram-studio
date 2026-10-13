@@ -94,7 +94,11 @@ and `work/`. To move it into a project, stop `serve_media.py` and run
 ## What you need
 
 - [Bram](https://github.com/judell/bram), with this project as its target app, and
-  `python3 serve_media.py` running (port 8765).
+  Studio's server running (port 8765): `./start.sh` starts `serve_media.py` in the
+  background, logging to `serve_media.log`, or says it's already running and whether
+  it's running code older than the files on disk. `./start.sh --restart` restarts it
+  after a server change, unless a narration, render or export is under way. Bram
+  doesn't start it.
 - `ffmpeg`, Python 3 with Pillow, and Apple's Command Line Tools for `swiftc`
   (`xcode-select --install`; about 2.4 GB, not the full Xcode app; Homebrew installs
   them too). `serve_media.py` compiles `record_native.swift`, the narration recorder, on
