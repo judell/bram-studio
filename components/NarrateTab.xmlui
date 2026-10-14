@@ -26,7 +26,7 @@
      stopNarrate(), removeNarr({id, at}).
      Methods: atPlayhead(tag, t), landed(t), close(), setTime(t) (the
      playhead, live while narrating). -->
-<Component name="NarrateTab"
+<Component name="NarrateTab" var.sceneBusy="{false}"
   var.dur="{$props.duration || 0}"
   var.narrClip="{[0, 1]}"
   var.narrSeed="{[0, 1]}"
@@ -82,21 +82,21 @@
   <VStack>
     <Button label="Add narration" size="xs" variant="outlined" when="{!narrAdding}"
       tooltip="Mark a stretch from the playhead to narrate over"
-      enabled="{!$props.narrBusy}"
+      enabled="{!sceneBusy &amp;&amp; (!$props.narrBusy)}"
       onClick="emitEvent('hush'); emitEvent('needTime', 'add');" />
     <VStack when="{narrAdding}">
       <Slider id="narrSlider" width="100%" minValue="{0}" maxValue="{dur}" step="{0.04}"
         initialValue="{narrSeed}" minStepsBetweenThumbs="{13}"
         valueFormat="{(v) => v.toFixed(2) + 's'}"
-        enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+        enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
         onDidChange="(v) => {
           emitEvent('seek', v[0] !== narrClip[0] ? v[0] : v[1]);
           narrClip = v;
         }" />
       <HStack when="{!$props.narrating}" verticalAlignment="center">
-        <TimeEdge what="Start" text="{narrClip[0].toFixed(2) + ' s'}" enabled="{!$props.narrBusy}"
+        <TimeEdge what="Start" text="{narrClip[0].toFixed(2) + ' s'}" enabled="{!sceneBusy &amp;&amp; (!$props.narrBusy)}"
           onNudge="(d) => { setNarr('start', narrClip[0] + d); }" onToPlayhead="emitEvent('needTime', 'start')" />
-        <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!$props.narrBusy}"
+        <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!sceneBusy &amp;&amp; (!$props.narrBusy)}"
           onNudge="(d) => { setNarr('end', narrClip[1] + d); }" onToPlayhead="emitEvent('needTime', 'end')" />
       </HStack>
       <NarrCountdown id="countdown" when="{!!$props.narrating}" clip="{$props.narrating}"
@@ -104,17 +104,17 @@
       <HStack verticalAlignment="center">
         <Button label="{$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
           tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
-          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? emitEvent('stopPlay') : emitEvent('play', { start: narrClip[0], stop: narrClip[1], kind: 'narr-preview' })" />
         <!-- From the click until the mic is live (starting) the button says
              so, disabled, so there's no doubt it was pressed. -->
         <Button when="{!$props.narrating}" label="{$props.starting ? 'Starting the mic…' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
           size="xs" themeColor="attention"
           tooltip="{$props.narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
-          enabled="{!$props.narrBusy &amp;&amp; !$props.starting &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrBusy &amp;&amp; !$props.starting &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing)}"
           handlerTimeoutMs:onClick="0"
           onClick="$props.narrating ? emitEvent('stopNarrate') : emitEvent('narrate', narrClip);" />
-        <Button label="Cancel" size="xs" variant="ghost" when="{!$props.narrating}" enabled="{!$props.narrBusy}"
+        <Button label="Cancel" size="xs" variant="ghost" when="{!$props.narrating}" enabled="{!sceneBusy &amp;&amp; (!$props.narrBusy)}"
           onClick="emitEvent('hush'); narrAdding = false;" />
         <Spinner when="{$props.narrBusy || $props.starting}" />
       </HStack>
@@ -130,7 +130,7 @@
         var.sel="{narrSel === $item.id || (narrSel === null &amp;&amp; narrSelAt !== null &amp;&amp; Math.abs($item.t_in - narrSelAt) &lt; 0.06)}">
         <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
           label="{'Narration ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
-          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
           onClick="
             narrSel = $item.id;
             narrSelAt = null;
@@ -138,20 +138,20 @@
           " />
         <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'clip' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Play'}" size="xs" variant="outlined"
           tooltip="Play this narration from start to end"
-          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'clip' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: $item.t_in, stop: $item.t_out, kind: 'clip' })" />
         <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'intro' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? 'Stop' : 'Intro 3s'}" size="xs" variant="outlined"
           tooltip="Play this narration's first 3 seconds"
-          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'intro' &amp;&amp; Math.abs($props.audition.start - $item.t_in) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: $item.t_in, stop: Math.min($item.t_in + 3, $item.t_out), kind: 'intro' })" />
         <Button when="{sel}" label="{$props.audition &amp;&amp; $props.audition.kind === 'outro' &amp;&amp; Math.abs($props.audition.stop - $item.t_out) &lt; 0.05 ? 'Stop' : 'Outro 3s'}" size="xs" variant="outlined"
           tooltip="Play this narration's last 3 seconds"
-          enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (!$props.narrating &amp;&amp; !$props.narrBusy)}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'outro' &amp;&amp; Math.abs($props.audition.stop - $item.t_out) &lt; 0.05 ? emitEvent('stopPlay') : emitEvent('play', { start: Math.max($item.t_out - 3, $item.t_in), stop: $item.t_out, kind: 'outro' })" />
         <Button when="{sel}" icon="close" size="xs" variant="ghost"
           aria-label="Remove this narration"
           tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
-          enabled="{goneId === null &amp;&amp; !$props.removing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{!sceneBusy &amp;&amp; (goneId === null &amp;&amp; !$props.removing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy)}"
           handlerTimeoutMs:onClick="0"
           onClick="
             goneId = $item.id;
@@ -161,6 +161,13 @@
           " />
       </HStack>
     </Items>
+    <!-- sceneBusy: from an edit's start (SceneEditor's tabsBusy) until the scene
+         player has loaded the edited file. A play started before then is
+         cancelled by the reload (a narration was lost that way, 2026-10-14),
+         and lists still show the timeline before the edit, so this tab's
+         controls are off. The Timer frees them if the reload never comes. -->
+    <Timer interval="10000" enabled="{sceneBusy}" onTick="sceneBusy = false" />
   </VStack>
   <method name="cancelRemoval">() => { goneId = null; }</method>
+  <method name="setBusy">(b) => { sceneBusy = b; }</method>
 </Component>

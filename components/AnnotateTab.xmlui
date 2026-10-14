@@ -24,7 +24,7 @@
      stopPlay(), remove().
      Methods: refresh() (the list), find(id) (a row, for the canvas's
      picks; https://www.xmlui.org/docs/howto/expose-a-method-from-a-component). -->
-<Component name="AnnotateTab" var.goneId="{null}">
+<Component name="AnnotateTab" var.sceneBusy="{false}" var.goneId="{null}">
 
   <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
        a take (overlay.py). -->
@@ -41,11 +41,11 @@
 
   <VStack>
     <HStack verticalAlignment="center">
-      <Button label="Add annotation" size="xs" variant="outlined"
+      <Button enabled="{!sceneBusy}" label="Add annotation" size="xs" variant="outlined"
         tooltip="Place the current tool in the middle of the picture, from the playhead for 3 s"
         onClick="emitEvent('add')" />
       <Items data="{[['callout', 'Callout'], ['rect', 'Box'], ['ellipse', 'Oval'], ['arrow', 'Arrow'], ['line', 'Line'], ['pointer', 'Pointer']]}">
-        <Button label="{$item[1]}" size="xs"
+        <Button enabled="{!sceneBusy}" label="{$item[1]}" size="xs"
           variant="{$props.kind === $item[0] ? 'solid' : 'outlined'}"
           tooltip="What Add annotation places, and ⌘-drag on the picture (click, for Pointer)"
           onClick="emitEvent('tool', $item[0])" />
@@ -59,7 +59,7 @@
     <ChangeListener listenTo="{callouts.value}" onDidChange="goneId = null" />
     <Items data="{(callouts.value || []).filter((c) => c.id !== goneId)}">
       <HStack verticalAlignment="center">
-        <Button size="xs" variant="{$item.id === $props.item.id ? 'solid' : 'ghost'}"
+        <Button enabled="{!sceneBusy}" size="xs" variant="{$item.id === $props.item.id ? 'solid' : 'ghost'}"
           label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
           onClick="emitEvent('select', $item.id === $props.item.id ? null : $item)" />
         <!-- The current item's controls. In and Out are TimeEdges
@@ -74,12 +74,12 @@
                the text is saved when the box loses focus. -->
           <ItemText when="{!$props.item.shape}" text="{$props.item.text}"
             onCommit="(v) => emitEvent('text', v)" />
-          <TimeEdge what="In" text="{$props.item.tIn.toFixed(2) + ' s'}"
+          <TimeEdge enabled="{!sceneBusy}" what="In" text="{$props.item.tIn.toFixed(2) + ' s'}"
             onNudge="(d) => emitEvent('nudge', { which: 'in', d: d })" onToPlayhead="emitEvent('toPlayhead', 'in')" />
-          <TimeEdge what="Out" text="{$props.item.tOut.toFixed(2) + ' s'}"
+          <TimeEdge enabled="{!sceneBusy}" what="Out" text="{$props.item.tOut.toFixed(2) + ' s'}"
             onNudge="(d) => emitEvent('nudge', { which: 'out', d: d })" onToPlayhead="emitEvent('toPlayhead', 'out')" />
           <!-- Tail: a speech-bubble pointer off the box at a compass point. -->
-          <Select when="{!$props.item.shape}" initialValue="{$props.item.tail}" width="120px"
+          <Select enabled="{!sceneBusy}" when="{!$props.item.shape}" initialValue="{$props.item.tail}" width="120px"
             onDidChange="(v) => emitEvent('tail', v)">
             <Option value="none" label="No tail" />
             <Option value="nw" label="Tail ↖ nw" />
@@ -91,15 +91,22 @@
             <Option value="sw" label="Tail ↙ sw" />
             <Option value="w" label="Tail ← w" />
           </Select>
-          <Button label="{$props.audition &amp;&amp; $props.audition.kind === 'item' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
+          <Button enabled="{!sceneBusy}" label="{$props.audition &amp;&amp; $props.audition.kind === 'item' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
             tooltip="Play this item's span"
             onClick="$props.audition &amp;&amp; $props.audition.kind === 'item' ? emitEvent('stopPlay') : emitEvent('play')" />
           <Button icon="close" size="xs" variant="ghost"
             aria-label="Remove this item" tooltip="Remove this item from the scene"
-            enabled="{goneId === null}"
+            enabled="{!sceneBusy &amp;&amp; (goneId === null)}"
             onClick="goneId = $item.id; emitEvent('remove')" />
         </HStack>
       </HStack>
     </Items>
+    <!-- sceneBusy: from an edit's start (SceneEditor's tabsBusy) until the scene
+         player has loaded the edited file. A play started before then is
+         cancelled by the reload (a narration was lost that way, 2026-10-14),
+         and lists still show the timeline before the edit, so this tab's
+         controls are off. The Timer frees them if the reload never comes. -->
+    <Timer interval="10000" enabled="{sceneBusy}" onTick="sceneBusy = false" />
   </VStack>
+  <method name="setBusy">(b) => { sceneBusy = b; }</method>
 </Component>

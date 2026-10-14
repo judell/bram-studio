@@ -17,7 +17,7 @@
      narrating, narrBusy. Events: undo(), redo() (the editor lets go of the current
      item first, as a cut does: the take's items are swapped with its
      files). -->
-<Component name="UndoTab"
+<Component name="UndoTab" var.sceneBusy="{false}"
   var.busy="{$props.undoing || $props.redoing || $props.cutting || $props.pausing || $props.narrating || $props.narrBusy}">
 
   <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + ($props.take || 0)}" />
@@ -63,12 +63,12 @@
     <HStack verticalAlignment="center">
       <Button label="Undo" size="xs" variant="outlined"
         tooltip="Take back the tinted edit"
-        enabled="{!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !busy}"
+        enabled="{!sceneBusy &amp;&amp; (!!edits.value &amp;&amp; edits.value.canUndo &amp;&amp; !busy)}"
         handlerTimeoutMs:onClick="0"
         onClick="emitEvent('undo')" />
       <Button label="Redo" size="xs" variant="outlined"
         tooltip="Put back the edit just above the tinted one"
-        enabled="{!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !busy}"
+        enabled="{!sceneBusy &amp;&amp; (!!edits.value &amp;&amp; edits.value.canRedo &amp;&amp; !busy)}"
         handlerTimeoutMs:onClick="0"
         onClick="emitEvent('redo')" />
       <Spinner when="{$props.undoing || $props.redoing}" />
@@ -91,5 +91,12 @@
         </HStack>
       </Items>
     </VStack>
+    <!-- sceneBusy: from an edit's start (SceneEditor's tabsBusy) until the scene
+         player has loaded the edited file. A play started before then is
+         cancelled by the reload (a narration was lost that way, 2026-10-14),
+         and lists still show the timeline before the edit, so this tab's
+         controls are off. The Timer frees them if the reload never comes. -->
+    <Timer interval="10000" enabled="{sceneBusy}" onTick="sceneBusy = false" />
   </VStack>
+  <method name="setBusy">(b) => { sceneBusy = b; }</method>
 </Component>

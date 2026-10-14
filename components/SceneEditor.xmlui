@@ -80,6 +80,7 @@
     // the log showed that burst (2026-10-13; what's needed is refetched by
     // name; https://www.xmlui.org/docs/howto/control-cache-invalidation).
     function stopNarration() {
+      tabsBusy(true);
       const clip = narrating;
       takePlayer.pause();
       narrating = null;
@@ -126,6 +127,14 @@
       canvas.refreshSprites();
       undoTab.refresh();
     }
+    // An edit is done when the player has loaded its result, not when the
+    // server answers: until then a play is cancelled by the reload, and the
+    // lists show the old timeline. Each tab turns its controls off from an
+    // edit's start until the player's loadedMetadata (by method, so this
+    // component doesn't redraw).
+    function tabsBusy(b) {
+      cutTab.setBusy(b); pauseTab.setBusy(b); narrTab.setBusy(b); annotTab.setBusy(b); undoTab.setBusy(b);
+    }
     // After an edit: the file reloads (cutSeq) and goes back to at
     // (resumeAt), and every list refetches.
     function afterEdit(at) {
@@ -135,11 +144,13 @@
       refreshItemLists();
     }
     function tabCut(c) {
+      tabsBusy(true);
       letGoOfItem();
       cutTake.execute({ id: editTake, start: c.start, end: c.end });
       afterEdit(c.start);
     }
     function tabRestoreCut(r) {
+      tabsBusy(true);
       letGoOfItem();
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: r.id } });
@@ -151,6 +162,7 @@
     }
     // Insert pause: at the live playhead, which only the player knows.
     function tabInsertPause(p) {
+      tabsBusy(true);
       const at = takePlayer.getCurrentTime();
       letGoOfItem();
       pauseTab.inserted(at);
@@ -158,6 +170,7 @@
       afterEdit(at);
     }
     function tabRemovePause(r) {
+      tabsBusy(true);
       letGoOfItem();
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/pauses/remove', method: 'post', invalidates: [], body: { id: r.id } });
@@ -169,6 +182,7 @@
     }
     // Removing a narration changes only the audio: the items stay.
     function tabRemoveNarr(r) {
+      tabsBusy(true);
       audition = null;
       removeNarration.execute(r.id);
       resumeAt = r.at;
@@ -176,6 +190,7 @@
       narrs.refetch(); pauses.refetch(); cuts.refetch(); undoTab.refresh();
     }
     function tabUndo(redo) {
+      tabsBusy(true);
       const at = takePlayer.getCurrentTime();
       letGoOfItem();
       resumeAt = at;
@@ -471,6 +486,7 @@
         muted="{!!narrating}" controls="{!narrating}"
         src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
         onLoadedMetadata="(e) => {
+          tabsBusy(false);
           takeAspect = e.videoWidth / e.videoHeight;
           const t0 = takePlayer.getCurrentTime();
           canvas.setTime(t0);
