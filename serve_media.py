@@ -50,6 +50,7 @@ page refetches then instead of polling.
 """
 import collections
 import hashlib
+import math
 import http.server
 import json
 import mimetypes
@@ -67,6 +68,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import overlay
 import studio_paths
@@ -978,6 +980,77 @@ def edit_what(name, saved):
 def file_stat(path):
     st = os.stat(path)
     return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def seam_cut(path, start, end, out):
+    # Cut start..end out of a take's file (a cut: cut_stretch), re-encoding
+    # only the video around the seam: the frames before the keyframe at or
+    # before the cut, and from the first keyframe at or after it, are stream-
+    # copied by exact frame count; only the frames between those keyframes
+    # and the cut are re-encoded (overlay.ENC, the takes' settings), and the
+    # pieces are joined by stream copy. The audio is cut as cut_stretch's
+    # chain cuts it (10 ms fades at the join) and re-encoded whole (~1 s for
+    # a 47 s scene). Frames are kept as trim keeps them: t < start, t >= end.
+    # A full re-encode of each file was ~3.5-5 s; this was 1.1-3.0 s on the
+    # same cuts, with the same frame count, durations within a frame, a clean
+    # decode, and every frame 43-53 dB PSNR from the full re-encode
+    # (prototype, 2026-10-13). Returns the number of frames re-encoded;
+    # raises on anything unexpected, and the caller falls back to the chain.
+    rate = probe(path, "stream=r_frame_rate", "v:0")
+    num, den = (int(x) for x in rate.split("/"))
+    fps = num / den
+    packets = [l.split(",") for l in probe(path, "packet=pts_time,flags", "v:0").splitlines() if l]
+    total = len(packets)
+    keys = sorted(round(float(p[0]) * fps) for p in packets if len(p) > 1 and "K" in p[1])
+    if not keys or keys[0] != 0:
+        raise ValueError("the first frame isn't a keyframe")
+    fs, fe = math.ceil(start * fps - 1e-6), math.ceil(end * fps - 1e-6)
+    if not 0 <= fs < fe <= total:
+        raise ValueError(f"frames {fs}-{fe} of {total}")
+    k1 = max(k for k in keys if k <= fs)
+    k2 = next((k for k in keys if k >= fe), total)
+    dur = float(probe(path, "format=duration") or 0)
+    work = tempfile.mkdtemp(prefix="seam-")
+    try:
+        enc = [*overlay.ENC, "-r", rate]
+        pieces, jobs = [], []
+        def piece(name, cmd):
+            pieces.append(name)
+            jobs.append(["ffmpeg", "-v", "error", "-y", *cmd, os.path.join(work, name)])
+        if k1 > 0:
+            piece("a.mp4", ["-i", path, "-an", "-c:v", "copy", "-frames:v", str(k1)])
+        if fs > k1:
+            piece("b.mp4", ["-ss", f"{k1 / fps:.6f}", "-i", path, "-an", "-frames:v", str(fs - k1), *enc])
+        if k2 > fe:
+            piece("c.mp4", ["-ss", f"{fe / fps:.6f}", "-i", path, "-an", "-frames:v", str(k2 - fe), *enc])
+        if k2 < total:
+            piece("d.mp4", ["-ss", f"{k2 / fps:.6f}", "-i", path, "-an", "-c:v", "copy"])
+        segs = [s for s in ((0.0, start), (end, dur)) if s[1] - s[0] > 0.02]
+        chain = ""
+        for i, (a, b) in enumerate(segs):
+            fades = ([f"afade=t=out:st={b - a - 0.01:.3f}:d=0.01"] if i < len(segs) - 1 else []) + \
+                    (["afade=t=in:d=0.01"] if i > 0 else [])
+            chain += (f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS"
+                      f"{''.join(',' + x for x in fades)}[a{i}];")
+        chain += "".join(f"[a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=0:a=1[a]"
+        audio = os.path.join(work, "audio.m4a")
+        jobs.append(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-filter_complex", chain, "-map", "[a]",
+                     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", audio])
+        with ThreadPoolExecutor(len(jobs)) as ex:
+            results = list(ex.map(lambda c: subprocess.run(c, capture_output=True, text=True), jobs))
+        for r in results:
+            if r.returncode:
+                raise RuntimeError((r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+        listing = os.path.join(work, "list.txt")
+        with open(listing, "w") as f:
+            f.writelines(f"file '{os.path.join(work, p)}'\n" for p in pieces)
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing, "-i", audio,
+                            "-map", "0:v", "-map", "1:a", "-c", "copy", out], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError((r.stderr.strip().splitlines() or ["joining failed"])[-1])
+        return (fs - k1) + (k2 - fe)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def history_state(file):
@@ -2368,7 +2441,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
         retime, narr, pz, cz = cut_rules(start, end)
         return self.apply_take_edit(db, row, src, chain, kind, [round(start, 3), round(end, 3)], retime,
-                                    narr=narr, pz=pz, cz=cz)
+                                    narr=narr, pz=pz, cz=cz, seam=(start, end) if kind == "cut" else None)
 
     def cut_restore(self):
         # {id}: put a cut's removed stretch back at its seam, at any time, from
@@ -2661,44 +2734,67 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             offset, said = max(0.0, n["go"] - n["t0"]), min(clip, stopped - n["go"])
             if said < 0.3:
                 return self.send_json(400, {"error": "stopped too soon: nothing was recorded"})
-            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{offset:.3f}", "-t", f"{said:.3f}",
-                                "-i", n["wav"], "-af", NARRATE_AF, "-ar", "48000", "-ac", "1", voice],
-                               capture_output=True, text=True)
-            if r.returncode:
-                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["narration failed"])[-1]})
-            m = subprocess.run(["ffmpeg", "-v", "info", "-i", voice, "-af", "loudnorm=print_format=json",
-                                "-f", "null", "-"], capture_output=True, text=True).stderr
-            ln = json.loads(m[m.rindex("{"):m.rindex("}") + 1])
-            loud = float("-inf") if "inf" in ln["input_i"] else float(ln["input_i"])
-            print(f"narrate: take {n['id']} offset={offset:.3f}s said={said:.2f}s of {clip:.2f}s "
-                  f"measured {ln['input_i']} LUFS, peak {ln['input_tp']} dBTP", flush=True)
-            if loud < NARRATE_FLOOR:
-                return self.send_json(400, {"error": "no speech was heard, so the take is unchanged"})
-            gain = -16.0 - loud
             db = sqlite3.connect(DB)
             db.row_factory = sqlite3.Row
             row = db.execute("SELECT * FROM takes WHERE id = ?", (n["id"],)).fetchone()
             src = os.path.join(ROOT, row["file"]) if row else ""
             if not os.path.isfile(src):
                 return self.send_json(409, {"error": "the take is gone"})
-            dur = float(probe(src, "format=duration") or 0)
             start, end = n["start"], n["end"]
+            # Keep the audio being replaced, so this narration can be removed
+            # later (/narrate/remove) whatever else has been done to the take:
+            # saved alongside the voice's processing, not after it. Each step's
+            # time is logged (narrate: ... steps), to see what a narration's
+            # stop is made of.
+            os.makedirs(NARRATED, exist_ok=True)
+            kept = f"{row['file'][:-4]}-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+            steps, t = {}, time.time()
+            kept_job = ThreadPoolExecutor(1)
+            kept_run = kept_job.submit(subprocess.run, [
+                "ffmpeg", "-v", "error", "-y", "-i", src, "-vn", "-af",
+                f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
+                "-ar", "48000", "-ac", "2", os.path.join(NARRATED, kept)], capture_output=True, text=True)
+            kept_job.shutdown(wait=False)
+
+            def drop_kept():
+                kept_run.result()
+                if os.path.exists(os.path.join(NARRATED, kept)):
+                    os.remove(os.path.join(NARRATED, kept))
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{offset:.3f}", "-t", f"{said:.3f}",
+                                "-i", n["wav"], "-af", NARRATE_AF, "-ar", "48000", "-ac", "1", voice],
+                               capture_output=True, text=True)
+            steps["voice"], t = time.time() - t, time.time()
+            if r.returncode:
+                drop_kept()
+                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["narration failed"])[-1]})
+            m = subprocess.run(["ffmpeg", "-v", "info", "-i", voice, "-af", "loudnorm=print_format=json",
+                                "-f", "null", "-"], capture_output=True, text=True).stderr
+            steps["loudness"], t = time.time() - t, time.time()
+            ln = json.loads(m[m.rindex("{"):m.rindex("}") + 1])
+            loud = float("-inf") if "inf" in ln["input_i"] else float(ln["input_i"])
+            print(f"narrate: take {n['id']} offset={offset:.3f}s said={said:.2f}s of {clip:.2f}s "
+                  f"measured {ln['input_i']} LUFS, peak {ln['input_tp']} dBTP", flush=True)
+            if loud < NARRATE_FLOOR:
+                drop_kept()
+                return self.send_json(400, {"error": "no speech was heard, so the take is unchanged"})
+            gain = -16.0 - loud
+            dur = float(probe(src, "format=duration") or 0)
             chain = self.replace_audio_chain(
                 start, end, dur, f"volume={gain:.2f}dB,alimiter=limit=0.841:attack=5:release=80:level=false,"
                                  f"afade=t=in:d=0.01,afade=t=out:st={said - 0.01:.3f}:d=0.01")
-            # Keep the audio being replaced, so this narration can be removed
-            # later (/narrate/remove) whatever else has been done to the take.
-            os.makedirs(NARRATED, exist_ok=True)
-            kept = f"{row['file'][:-4]}-{time.strftime('%Y%m%d-%H%M%S')}.wav"
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vn", "-af",
-                            f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
-                            "-ar", "48000", "-ac", "2", os.path.join(NARRATED, kept)], check=True)
+            if kept_run.result().returncode:
+                drop_kept()
+                return self.send_json(500, {"error": "couldn't keep the audio being replaced"})
+            steps["kept (waited)"], t = time.time() - t, time.time()
             # Narrating over an earlier narration's stretch takes that one's
             # row: its kept audio would wipe this narration too.
             done = self.apply_take_edit(
                 db, row, src, chain, "narrate", [round(start, 3), round(end, 3)],
                 lambda t_in, t_out: (t_in, t_out), extra=[voice], copy_video=True,
                 narr=lambda a, b: None if start < b - NARR_EDGE and end > a + NARR_EDGE else (a, b))
+            steps["remix"] = time.time() - t
+            print(f"narrate: take {n['id']} stop steps: "
+                  + ", ".join(f"{k} {v:.2f}s" for k, v in steps.items()), flush=True)
             if not done:
                 os.remove(os.path.join(NARRATED, kept))
             if done:
@@ -2769,7 +2865,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  "end": round(end, 2), "duration": done[0], "undo": done[1]})
 
     def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False, narr=None,
-                        pz=None, cz=None):
+                        pz=None, cz=None, seam=None):
         # The part a cut, a pause, a narration and its removal share. Runs the ffmpeg filter
         # `chain` (ending in [v] and [a]) on the take's MP4 and its clean copy, into
         # hidden temp files first, so a failure changes nothing. `extra` are
@@ -2782,9 +2878,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # sending an error.
         clean = os.path.join(ROOT, ".clean", row["file"])
         targets = [src] + ([clean] if os.path.isfile(clean) else [])
-        tmps = []
-        for path in targets:
+
+        # One file's edit, into its temp file. The take and its clean copy
+        # are done at once (they were one after the other, each a full
+        # re-encode: ~7 s for a 43 s scene). A cut (seam: (start, end)) tries
+        # seam_cut first and falls back to the chain if it can't.
+        def edit_one(path):
             tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.{kind}.mp4")
+            if seam:
+                try:
+                    return tmp, None, f"seam-only, {seam_cut(path, seam[0], seam[1], tmp)} frames re-encoded"
+                except Exception as e:
+                    print(f"edit: seam-only {kind} of {os.path.basename(path)} failed ({e}); full re-encode",
+                          flush=True)
             # extra: further inputs, the same for both files, or a function
             # giving each file its own (a restored cut reads the scene's and
             # the clean copy's own before-cut files).
@@ -2795,13 +2901,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 *video, "-map", "[a]",
                                 "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", tmp],
                                capture_output=True, text=True)
-            tmps.append(tmp)
-            if r.returncode:
-                for t in tmps:
-                    if os.path.exists(t):
-                        os.remove(t)
-                self.send_json(500, {"error": (r.stderr.strip().splitlines() or [f"{kind} failed"])[-1]})
-                return None
+            err = (r.stderr.strip().splitlines() or [f"{kind} failed"])[-1] if r.returncode else None
+            return tmp, err, "video copied" if copy_video else "full re-encode"
+
+        encode_t = time.time()
+        with ThreadPoolExecutor(len(targets)) as pool:
+            results = list(pool.map(edit_one, targets))
+        encode_t = time.time() - encode_t
+        tmps = [t for t, _, _ in results]
+        failed = [e for _, e, _ in results if e]
+        if failed:
+            for t in tmps:
+                if os.path.exists(t):
+                    os.remove(t)
+            self.send_json(500, {"error": failed[0]})
+            return None
+        print(f"edit: {kind} take {row['id']} {len(targets)} file{'s' if len(targets) > 1 else ''} in "
+              f"{encode_t:.1f}s ({'; '.join(sorted(set(m for _, _, m in results)))})", flush=True)
         trash = os.path.join(ROOT, ".trash")
         os.makedirs(trash, exist_ok=True)
         # A new edit ends the chance to redo (discard_undone).
