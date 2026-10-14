@@ -1097,8 +1097,10 @@
               enabled="{!!$item.note &amp;&amp; dictating !== noteKey($item)}"
               onClick="clearNote($item)" />
           </HStack>
-          <!-- An export that needs no editing can be leveled directly. -->
-          <HStack width="100px" horizontalAlignment="end">
+          <!-- An export that needs no editing can be leveled directly. Leveling
+               is hidden for now (2026-10-14): remove its when="{false}"s here
+               and below to bring it back. -->
+          <HStack when="{false}" width="100px" horizontalAlignment="end">
             <Button label="Level" variant="outlined" size="sm"
               enabled="{!levelExport.inProgress &amp;&amp; !$item.writing}"
               tooltip="Cut rumble and even out loudness (level_edit.py) into leveled-…mp4"
@@ -1116,17 +1118,17 @@
         </HStack>
         </VStack>
       </Items>
-      <HStack verticalAlignment="center" when="{levelExport.inProgress}">
+      <HStack verticalAlignment="center" when="{false &amp;&amp; levelExport.inProgress}">
         <Spinner />
         <Text value="Leveling…" />
       </HStack>
-      <H2>Leveled exports</H2>
-      <Text variant="secondary" when="{exports.value &amp;&amp; exports.value.leveled.length === 0}"
+      <H2 when="{false}">Leveled exports</H2>
+      <Text variant="secondary" when="{false &amp;&amp; exports.value &amp;&amp; exports.value.leveled.length === 0}"
         value="Click Level on an export." />
       <!-- A leveled row's second line is aligned to its top: the loudness
            report under the note makes the note's column taller than the
            buttons beside it. -->
-      <Items data="{exports.value ? exports.value.leveled : []}">
+      <Items when="{false}" data="{exports.value ? exports.value.leveled : []}">
         <VStack gap="$space-1" paddingBottom="$space-3">
         <HStack verticalAlignment="center">
           <Text value="{$item.created.substring(5, 16)}" width="110px" />
