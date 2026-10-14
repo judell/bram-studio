@@ -1101,10 +1101,13 @@ def history_state(file):
 
 
 def trace_on():
-    # Whether XMLUI's trace capture is on (config.json's appGlobals.xsVerbose).
+    # Whether XMLUI's trace capture is on (config.json's xmluiConfig.xsVerbose;
+    # appGlobals.xsVerbose, its deprecated place, still counts if present).
     try:
         with open(CONFIG) as f:
-            return json.load(f).get("appGlobals", {}).get("xsVerbose") is True
+            config = json.load(f)
+        on = config.get("xmluiConfig", {}).get("xsVerbose")
+        return (on if on is not None else config.get("appGlobals", {}).get("xsVerbose")) is True
     except (OSError, ValueError):
         return False
 
@@ -3608,7 +3611,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def set_trace(self):
         # POST /trace {on}: turn XMLUI's trace capture (the Inspector's
-        # data) on or off by rewriting config.json's appGlobals.xsVerbose.
+        # data) on or off by rewriting config.json's xmluiConfig.xsVerbose
+        # (https://www.xmlui.org/docs/xmlui-config: framework settings under
+        # appGlobals are being deprecated, so a copy left there is removed).
         # The engine reads it only at startup, so the page reloads after.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if not isinstance(body.get("on"), bool):
@@ -3616,7 +3621,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             with open(CONFIG) as f:
                 config = json.load(f)
-            config.setdefault("appGlobals", {})["xsVerbose"] = body["on"]
+            config.setdefault("xmluiConfig", {})["xsVerbose"] = body["on"]
+            config.get("appGlobals", {}).pop("xsVerbose", None)
             tmp = CONFIG + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(config, f, indent=2)

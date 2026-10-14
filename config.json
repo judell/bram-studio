@@ -4,8 +4,8 @@
     "themes/studio.json"
   ],
   "defaultTheme": "studio",
-  "appGlobals": {
+  "xmluiConfig": {
     "xsVerbose": true,
-    "xsVerboseLogMax": 5000
+    "xsVerboseLogMax": 50000
   }
 }
