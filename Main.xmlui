@@ -804,8 +804,9 @@
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
              3 s callout of its name at the top right, an ordinary item to
              edit on the Annotate tab, burned in by Export. The button
-             previews (dryRun) and the dialog confirms. -->
-        <Button label="Scene callouts" variant="outlined" size="sm"
+             previews (dryRun) and the dialog confirms. Hidden for now
+             (2026-10-14): remove when="{false}" to bring it back. -->
+        <Button when="{false}" label="Scene callouts" variant="outlined" size="sm"
           tooltip="Add a 3 s callout of each scene's name at its top right, to edit before you Export"
           enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="
