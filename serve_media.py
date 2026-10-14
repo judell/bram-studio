@@ -1008,58 +1008,114 @@ def file_stat(path):
 
 
 def seam_cut(path, start, end, out):
-    # Cut start..end out of a take's file (a cut: cut_stretch), re-encoding
-    # only the video around the seam: the frames before the keyframe at or
-    # before the cut, and from the first keyframe at or after it, are stream-
-    # copied by exact frame count; only the frames between those keyframes
-    # and the cut are re-encoded (overlay.ENC, the takes' settings), and the
-    # pieces are joined by stream copy. The audio is cut as cut_stretch's
-    # chain cuts it (10 ms fades at the join) and re-encoded whole (~1 s for
-    # a 47 s scene). Frames are kept as trim keeps them: t < start, t >= end.
-    # A full re-encode of each file was ~3.5-5 s; this was 1.1-3.0 s on the
-    # same cuts, with the same frame count, durations within a frame, a clean
-    # decode, and every frame 43-53 dB PSNR from the full re-encode
-    # (prototype, 2026-10-13). Returns the number of frames re-encoded;
-    # raises on anything unexpected, and the caller falls back to the chain.
-    rate = probe(path, "stream=r_frame_rate", "v:0")
-    num, den = (int(x) for x in rate.split("/"))
-    fps = num / den
-    packets = [l.split(",") for l in probe(path, "packet=pts_time,flags", "v:0").splitlines() if l]
-    total = len(packets)
-    keys = sorted(round(float(p[0]) * fps) for p in packets if len(p) > 1 and "K" in p[1])
-    if not keys or keys[0] != 0:
-        raise ValueError("the first frame isn't a keyframe")
-    fs, fe = math.ceil(start * fps - 1e-6), math.ceil(end * fps - 1e-6)
-    if not 0 <= fs < fe <= total:
-        raise ValueError(f"frames {fs}-{fe} of {total}")
-    k1 = max(k for k in keys if k <= fs)
-    k2 = next((k for k in keys if k >= fe), total)
-    dur = float(probe(path, "format=duration") or 0)
+    # Cut start..end out of a take's file (a cut, or removing a pause:
+    # cut_stretch): seam_splice of what's left on either side. Frames are
+    # kept as trim keeps them: t < start, t >= end. A full re-encode of each
+    # file was ~3.5-5 s; this was 1.1-3.0 s on the same cuts, with the same
+    # frame count, durations within a frame, a clean decode, and every frame
+    # 43-53 dB PSNR from the full re-encode (prototype, 2026-10-13).
+    return seam_splice([("span", path, 0.0, start), ("span", path, end, None)], out)
+
+
+def seam_splice(pieces, out):
+    # Join pieces into one take file, re-encoding the video only around the
+    # seams. A piece is ("span", file, t0, t1): that file's frames with
+    # t0 <= t < t1 (t1 None: to its end); or ("hold", file, t, secs): the
+    # frame at t (its last frame before t; the first frame for t < 0.02)
+    # held for secs. Within a span, whole keyframe groups are stream-copied
+    # by exact frame count, and only the frames from the span's start to its
+    # first keyframe, and from its last keyframe to its end, are re-encoded
+    # (overlay.ENC, the takes' settings); a hold is encoded as its own short
+    # piece. The pieces are joined by stream copy. The audio is re-encoded
+    # whole: each span's audio, 10 ms fades at the joins, silence for a
+    # hold, as the full chains make it. All files are the take's own (the
+    # scene and its before-edit copies), so their codec settings match.
+    # Returns the number of frames re-encoded; raises on anything
+    # unexpected, and the caller falls back to the full chain.
+    info = {}
+
+    def file_info(path):
+        if path not in info:
+            rate = probe(path, "stream=r_frame_rate", "v:0")
+            num, den = (int(x) for x in rate.split("/"))
+            packets = [l.split(",") for l in probe(path, "packet=pts_time,flags", "v:0").splitlines() if l]
+            fps = num / den
+            keys = sorted(round(float(p[0]) * fps) for p in packets if len(p) > 1 and "K" in p[1])
+            if not keys or keys[0] != 0:
+                raise ValueError(f"{os.path.basename(path)}: the first frame isn't a keyframe")
+            info[path] = {"rate": rate, "fps": fps, "total": len(packets), "keys": keys,
+                          "dur": float(probe(path, "format=duration") or 0)}
+        return info[path]
+
+    rates = {file_info(p[1])["rate"] for p in pieces}
+    if len(rates) != 1:
+        raise ValueError(f"frame rates differ: {sorted(rates)}")
+    rate = rates.pop()
+    frame = lambda f, t: math.ceil(t * f["fps"] - 1e-6)
     work = tempfile.mkdtemp(prefix="seam-")
     try:
         enc = [*overlay.ENC, "-r", rate]
-        pieces, jobs = [], []
-        def piece(name, cmd):
-            pieces.append(name)
+        names, jobs, reencoded = [], [], 0
+
+        def piece(cmd):
+            name = f"p{len(names):02d}.mp4"
+            names.append(name)
             jobs.append(["ffmpeg", "-v", "error", "-y", *cmd, os.path.join(work, name)])
-        if k1 > 0:
-            piece("a.mp4", ["-i", path, "-an", "-c:v", "copy", "-frames:v", str(k1)])
-        if fs > k1:
-            piece("b.mp4", ["-ss", f"{k1 / fps:.6f}", "-i", path, "-an", "-frames:v", str(fs - k1), *enc])
-        if k2 > fe:
-            piece("c.mp4", ["-ss", f"{fe / fps:.6f}", "-i", path, "-an", "-frames:v", str(k2 - fe), *enc])
-        if k2 < total:
-            piece("d.mp4", ["-ss", f"{k2 / fps:.6f}", "-i", path, "-an", "-c:v", "copy"])
-        segs = [s for s in ((0.0, start), (end, dur)) if s[1] - s[0] > 0.02]
+
+        for kind, path, t, x in pieces:
+            f = file_info(path)
+            fps = f["fps"]
+            if kind == "hold":
+                n = round(x * fps)
+                held = 0 if t < 0.02 else min(frame(f, t), f["total"]) - 1
+                if n < 1 or held < 0:
+                    raise ValueError(f"hold of {n} frames at frame {held}")
+                piece(["-ss", f"{held / fps:.6f}", "-i", path, "-an",
+                       "-vf", f"trim=end_frame=1,tpad=stop_mode=clone:stop={n - 1}", "-frames:v", str(n), *enc])
+                reencoded += n
+                continue
+            fs = frame(f, t)
+            fe = f["total"] if x is None else min(frame(f, x), f["total"])
+            if not 0 <= fs < fe:
+                continue  # an empty span (a pause at the very start or end)
+            bounds = [k for k in f["keys"] if fs <= k <= fe] + ([fe] if fe == f["total"] else [])
+            c0, c1 = (min(bounds), max(bounds)) if bounds else (fe, fe)
+            if c1 <= c0:  # no whole keyframe group inside: re-encode the span
+                c0 = c1 = fe
+            if c0 > fs:
+                piece(["-ss", f"{fs / fps:.6f}", "-i", path, "-an", "-frames:v", str(c0 - fs), *enc])
+                reencoded += c0 - fs
+            if c1 > c0:
+                piece(["-ss", f"{c0 / fps:.6f}", "-i", path, "-an", "-c:v", "copy", "-frames:v", str(c1 - c0)])
+            if fe > c1:
+                piece(["-ss", f"{c1 / fps:.6f}", "-i", path, "-an", "-frames:v", str(fe - c1), *enc])
+                reencoded += fe - c1
+
+        # The audio: as the full chains make it.
+        files = list(dict.fromkeys(p[1] for p in pieces))
+        fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+        segs = []
+        for kind, path, t, x in pieces:
+            if kind == "hold":
+                segs.append(("hold", f"anullsrc=r=48000:cl=stereo,atrim=duration={x:.3f},{fmt}"))
+                continue
+            end = file_info(path)["dur"] if x is None else x
+            if end - t > 0.02:
+                segs.append(("span", f"[{files.index(path)}:a]atrim=start={t:.3f}:end={end:.3f},"
+                                     f"asetpts=PTS-STARTPTS,{fmt}", end - t))
         chain = ""
-        for i, (a, b) in enumerate(segs):
-            fades = ([f"afade=t=out:st={b - a - 0.01:.3f}:d=0.01"] if i < len(segs) - 1 else []) + \
-                    (["afade=t=in:d=0.01"] if i > 0 else [])
-            chain += (f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS"
-                      f"{''.join(',' + x for x in fades)}[a{i}];")
+        for i, seg in enumerate(segs):
+            fades = []
+            if seg[0] == "span":
+                if i < len(segs) - 1:
+                    fades.append(f"afade=t=out:st={max(0, seg[2] - 0.01):.3f}:d=0.01")
+                if i > 0:
+                    fades.append("afade=t=in:d=0.01")
+            chain += f"{seg[1]}{''.join(',' + x for x in fades)}[a{i}];"
         chain += "".join(f"[a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=0:a=1[a]"
         audio = os.path.join(work, "audio.m4a")
-        jobs.append(["ffmpeg", "-v", "error", "-y", "-i", path, "-vn", "-filter_complex", chain, "-map", "[a]",
+        jobs.append(["ffmpeg", "-v", "error", "-y", *[a for p in files for a in ("-i", p)], "-vn",
+                     "-filter_complex", chain, "-map", "[a]",
                      "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", audio])
         with ThreadPoolExecutor(len(jobs)) as ex:
             results = list(ex.map(lambda c: subprocess.run(c, capture_output=True, text=True), jobs))
@@ -1068,12 +1124,12 @@ def seam_cut(path, start, end, out):
                 raise RuntimeError((r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
         listing = os.path.join(work, "list.txt")
         with open(listing, "w") as f:
-            f.writelines(f"file '{os.path.join(work, p)}'\n" for p in pieces)
+            f.writelines(f"file '{os.path.join(work, n)}'\n" for n in names)
         r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing, "-i", audio,
                             "-map", "0:v", "-map", "1:a", "-c", "copy", out], capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError((r.stderr.strip().splitlines() or ["joining failed"])[-1])
-        return (fs - k1) + (k2 - fe)
+        return reencoded
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -2469,7 +2525,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         chain += "".join(f"[v{i}][a{i}]" for i in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[v][a]"
         retime, narr, pz, cz = cut_rules(start, end)
         return self.apply_take_edit(db, row, src, chain, kind, [round(start, 3), round(end, 3)], retime,
-                                    narr=narr, pz=pz, cz=cz, seam=(start, end) if kind == "cut" else None)
+                                    narr=narr, pz=pz, cz=cz,
+                                    seam=lambda path, tmp: seam_cut(path, start, end, tmp))
 
     def cut_restore(self):
         # {id}: put a cut's removed stretch back at its seam, at any time, from
@@ -2534,8 +2591,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def cz(at):
             return at + secs if at > q + NARR_EDGE else at
 
+        # Seam-only: the scene up to the seam, the stretch from that file's
+        # own before-cut copy, the rest.
+        def seam(path, tmp):
+            return seam_splice([("span", path, 0.0, q), ("span", before[path], a, a + secs),
+                                ("span", path, q, None)], tmp)
+
         done = self.apply_take_edit(db, row, src, chain, "uncut", [round(q, 3), round(secs, 3)], retime,
-                                    extra=lambda path: [before[path]], narr=narr, pz=pz, cz=cz)
+                                    extra=lambda path: [before[path]], narr=narr, pz=pz, cz=cz, seam=seam)
         if done:
             db.execute("DELETE FROM cuts WHERE id = ?", (c["id"],))
             db.commit()
@@ -2640,8 +2703,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # A pause at or before a seam moves it later.
             return c_at + secs if c_at >= at - NARR_EDGE else c_at
 
+        # Seam-only: the scene up to `at`, its frame there held, the rest.
+        def seam(path, tmp):
+            return seam_splice([("span", path, 0.0, at), ("hold", path, at, secs), ("span", path, at, None)], tmp)
+
         done = self.apply_take_edit(db, row, src, chain, "pause", [round(at, 3), round(secs, 3)], retime,
-                                    narr=narr, pz=pz, cz=cz)
+                                    narr=narr, pz=pz, cz=cz, seam=seam)
         if done and not db.execute("SELECT 1 FROM pauses WHERE take_id = ? AND at < ? AND at + seconds > ?",
                                    (row["id"], at - NARR_EDGE, at + NARR_EDGE)).fetchone():
             # Its own row, unless it only lengthened a pause already there.
@@ -2909,13 +2976,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # One file's edit, into its temp file. The take and its clean copy
         # are done at once (they were one after the other, each a full
-        # re-encode: ~7 s for a 43 s scene). A cut (seam: (start, end)) tries
-        # seam_cut first and falls back to the chain if it can't.
+        # re-encode: ~7 s for a 43 s scene). An edit given seam (a function of
+        # the file and its temp file: a cut, a pause, removing one, restoring
+        # a cut) tries it first, re-encoding only around the seams, and falls
+        # back to the chain if it can't.
         def edit_one(path):
             tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)[:-4]}.{kind}.mp4")
             if seam:
                 try:
-                    return tmp, None, f"seam-only, {seam_cut(path, seam[0], seam[1], tmp)} frames re-encoded"
+                    return tmp, None, f"seam-only, {seam(path, tmp)} frames re-encoded"
                 except Exception as e:
                     print(f"edit: seam-only {kind} of {os.path.basename(path)} failed ({e}); full re-encode",
                           flush=True)
