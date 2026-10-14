@@ -285,7 +285,7 @@
     // last copy was, and making one (set_safekeeping and copy_project in
     // serve_media.py). The copy runs while you wait; copyingProject shows it.
     function safekeepingNote(s) {
-      if (!s.location) return 'No safekeeping location yet.';
+      if (!s.location) return 'No safekeeping location yet: set one here, or a default on the Settings page.';
       if (!s.exists) return 'The location isn\'t there now: ' + s.location;
       if (!s.last) return 'Not copied yet.';
       return 'Last copied ' + s.last.at.substring(5) + ': ' + s.last.files + ' files, '
@@ -536,6 +536,7 @@
     <NavLink label="Scenes" to="/" />
     <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
+    <NavLink label="Settings" to="/settings" />
   </NavPanel>
   <Pages fallbackPath="/">
     <!-- Projects: a screencast each, a folder under projects/ (studio_paths.py).
@@ -685,7 +686,10 @@
                onDidChange, as the Exports notes are (noteBuffer). -->
           <HStack verticalAlignment="center">
             <Text value="Safekeeping" width="170px" />
-            <Text when="{!safeEditing($item, editingSafe)}" value="{$item.safekeeping.location}" width="*" />
+            <!-- A location from the Settings page's default says so; Change
+                 gives the project its own, which then overrides the default. -->
+            <Text when="{!safeEditing($item, editingSafe)}" width="*"
+              value="{$item.safekeeping.location + ($item.safekeeping.default ? ' (the default, from Settings)' : '')}" />
             <TextBox when="{safeEditing($item, editingSafe)}" width="*" initialValue="{$item.safekeeping.location}"
               placeholder="A folder for copies, such as ~/Library/CloudStorage/OneDrive-Personal"
               onDidChange="(v) => setSafeDraft($item.slug, v)" />
@@ -1243,6 +1247,10 @@
           <Text value="{$item}" />
         </Items>
       </VStack>
+    </Page>
+    <!-- Studio's settings: components/Settings.xmlui. -->
+    <Page url="/settings">
+      <Settings />
     </Page>
   </Pages>
 </App>

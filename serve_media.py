@@ -576,18 +576,85 @@ def same_file(a, b):
     return sa.st_size == sb.st_size and abs(sa.st_mtime - sb.st_mtime) < 0.001
 
 
+# Studio's own settings (the Settings page): projects/.studio-settings.json,
+# with this machine's projects (projects/ is git-ignored). The first is
+# defaultSafekeeping, the safekeeping folder of any project without its own.
+SETTINGS = os.path.join(studio_paths.PROJECTS, ".studio-settings.json")
+
+
+def read_settings():
+    try:
+        with open(SETTINGS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_settings(settings):
+    tmp = SETTINGS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(settings, f, indent=1)
+    os.replace(tmp, SETTINGS)
+
+
+def safekeeping_location(info):
+    # (folder, whether it's the default): the project's own location, else
+    # the Settings page's defaultSafekeeping. Copies go to <folder>/<slug>.
+    own = info.get("safekeeping") or ""
+    if own:
+        return own, False
+    default = read_settings().get("defaultSafekeeping") or ""
+    return default, bool(default)
+
+
+def check_safekeeping_folder(loc, create):
+    # A safekeeping folder as typed: ~ expanded, made absolute. Returns
+    # (folder, error, missing). Not inside Studio's projects folder, where a
+    # copy would be counted as stray. A missing folder isn't an error: with
+    # create it's made (only its last part, so a mistyped parent is refused
+    # rather than made into a new tree); without, missing says so, so the
+    # page can ask.
+    loc = os.path.abspath(os.path.expanduser(loc))
+    projects = os.path.realpath(studio_paths.PROJECTS)
+    inside = lambda p: os.path.realpath(p) == projects or os.path.realpath(p).startswith(projects + os.sep)
+    if inside(loc):
+        return loc, "Safekeeping can't be inside Studio's projects folder", False
+    if not os.path.isdir(loc):
+        parent = os.path.dirname(loc)
+        if not os.path.isdir(parent):
+            return loc, f"There is no folder at {parent} to make it in", False
+        if not create:
+            return loc, None, True
+        try:
+            os.mkdir(loc)
+        except OSError as e:
+            return loc, f"Couldn't make {loc}: {e}", False
+        print(f"safekeeping: made {loc}", flush=True)
+    if inside(loc):
+        return loc, "Safekeeping can't be inside Studio's projects folder", False
+    if not os.access(loc, os.W_OK):
+        return loc, f"Studio can't write to {loc}", False
+    return loc, None, False
+
+
 def safekeeping_state(folder, info, usage):
     # What the Projects page shows: the location, the last copy, and whether
     # the project has changed since (a kept file newer than the copy, or
     # one not copied yet).
-    last, loc = info.get("last_copy"), info.get("safekeeping") or ""
+    last = info.get("last_copy")
+    loc, is_default = safekeeping_location(info)
+    # A copy made to another location (the default changed since) isn't this
+    # location's copy: shown as not copied yet.
+    if last and last.get("to") and loc and last["to"] != os.path.join(loc, os.path.basename(folder)):
+        last = None
     changed = None
     if last:
         at = last.get("at_s", 0)
         changed = any(os.path.getmtime(p) > at for p, _ in keep_files(folder, usage)) or \
             os.path.getmtime(os.path.join(folder, "studio.db")) > at
     copy_path = os.path.join(loc, os.path.basename(folder)) if loc else ""
-    return {"location": loc, "exists": bool(loc) and os.path.isdir(loc), "last": last, "changed_since": changed,
+    return {"location": loc, "default": is_default, "exists": bool(loc) and os.path.isdir(loc), "last": last,
+            "changed_since": changed,
             "copy_path": copy_path, "copy_exists": bool(copy_path) and os.path.isdir(copy_path)}
 
 
@@ -1706,6 +1773,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/trace":
             return self.send_json(200, {"on": trace_on()})
+        if self.path == "/settings":
+            return self.send_json(200, read_settings())
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
         if self.path == "/sources":
@@ -1788,6 +1857,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.delete_stray()
         if self.path == "/projects/clean":
             return self.clean_project()
+        if self.path == "/settings":
+            return self.save_settings()
         if self.path == "/projects/safekeeping":
             return self.set_safekeeping()
         if self.path == "/projects/copy":
@@ -3499,6 +3570,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         return slug, folder
 
+    def save_settings(self):
+        # {defaultSafekeeping, create}: the Settings page's Save. The folder
+        # is checked as a project's own location is (check_safekeeping_folder);
+        # missing answers {missing, defaultSafekeeping} without saving, and
+        # create: true then makes it. "" forgets the default. Answers the
+        # settings as saved.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        settings = read_settings()
+        if "defaultSafekeeping" in body:
+            loc = str(body.get("defaultSafekeeping") or "").strip()
+            if loc:
+                loc, err, missing = check_safekeeping_folder(loc, body.get("create"))
+                if err:
+                    return self.send_json(400, {"error": err})
+                if missing:
+                    return self.send_json(200, {**settings, "defaultSafekeeping": loc, "missing": True})
+            settings["defaultSafekeeping"] = loc
+        try:
+            write_settings(settings)
+        except OSError as e:
+            return self.send_json(500, {"error": f"Couldn't save the settings: {e}"})
+        print(f"settings: {settings}", flush=True)
+        self.send_json(200, settings)
+
     def set_safekeeping(self):
         # {slug, location, create}: where this project's safekeeping copies
         # go, saved in its project.json. A folder, written to as
@@ -3513,28 +3608,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not found:
             return
         slug, folder = found
-        loc = os.path.expanduser(str(body.get("location") or "").strip())
+        loc = str(body.get("location") or "").strip()
         if loc:
-            loc = os.path.abspath(loc)
-            real, projects = os.path.realpath(loc), os.path.realpath(studio_paths.PROJECTS)
-            if real == projects or real.startswith(projects + os.sep):
-                return self.send_json(400, {"error": "Safekeeping can't be inside Studio's projects folder"})
-            if not os.path.isdir(loc):
-                parent = os.path.dirname(loc)
-                if not os.path.isdir(parent):
-                    return self.send_json(400, {"error": f"There is no folder at {parent} to make it in"})
-                if not body.get("create"):
-                    return self.send_json(200, {"slug": slug, "location": loc, "missing": True})
-                try:
-                    os.mkdir(loc)
-                except OSError as e:
-                    return self.send_json(400, {"error": f"Couldn't make {loc}: {e}"})
-                print(f"safekeeping: made {loc} for {slug}", flush=True)
-            real = os.path.realpath(loc)
-            if real == projects or real.startswith(projects + os.sep):
-                return self.send_json(400, {"error": "Safekeeping can't be inside Studio's projects folder"})
-            if not os.access(loc, os.W_OK):
-                return self.send_json(400, {"error": f"Studio can't write to {loc}"})
+            loc, err, missing = check_safekeeping_folder(loc, body.get("create"))
+            if err:
+                return self.send_json(400, {"error": err})
+            if missing:
+                return self.send_json(200, {"slug": slug, "location": loc, "missing": True})
         info = read_project(folder)
         if loc != info.get("safekeeping"):
             # The last copy was to the old location (its copies stay there,
@@ -3593,7 +3673,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         slug, folder = found
         info = read_project(folder)
-        loc = info.get("safekeeping")
+        loc, _ = safekeeping_location(info)
         dest = os.path.join(loc, slug) if loc else ""
         if not dest or not os.path.isdir(dest):
             return self.send_json(404, {"error": "There is no safekeeping copy to clear"})
@@ -3624,9 +3704,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         slug, folder = found
         info = read_project(folder)
-        loc = info.get("safekeeping")
+        loc, _ = safekeeping_location(info)
         if not loc:
-            return self.send_json(409, {"error": "Set a safekeeping location first"})
+            return self.send_json(409, {"error": "Set a safekeeping location first (here, or a default on the Settings page)"})
         if not os.path.isdir(loc):
             return self.send_json(409, {"error": f"The safekeeping location isn't there: {loc}"})
         why = self.busy() if folder == studio_paths.PROJECT else None

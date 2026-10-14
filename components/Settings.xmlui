@@ -1,0 +1,58 @@
+<!-- Studio's settings, saved by serve_media.py's /settings in
+     projects/.studio-settings.json, with this machine's projects (projects/
+     is git-ignored). Laid out as Bram's Settings page is
+     (~/bram/app/tools/components/Settings.xmlui): a heading, where settings
+     are saved, then one group per area, each with an ⓘ that explains it.
+
+     Safekeeping: the default folder for copies of any project without its
+     own location (the Projects page). A copy goes to folder/project, so
+     one folder holds every project. A folder that isn't there yet is offered
+     to be made, as on the Projects page (the server asks for create: true). -->
+<Component name="Settings">
+  <DataSource id="settings" url="http://127.0.0.1:8765/settings" />
+  <script>
+    function saveDefault(location, create) {
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
+                                    body: { defaultSafekeeping: location, create: !!create } });
+        if (r.missing) {
+          const yes = confirm('Make the folder?', 'There is no folder at ' + r.defaultSafekeeping
+            + ' yet. Make it, and send copies there?', 'Make it', 'Cancel');
+          if (yes) saveDefault(location, true);
+          return;
+        }
+        toast.success(r.defaultSafekeeping
+          ? 'Projects without their own location will copy into ' + r.defaultSafekeeping + ', one subfolder each.'
+          : 'No default safekeeping folder now.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      settings.refetch();
+    }
+  </script>
+  <VStack padding="$space-6" gap="$space-5">
+    <H2>Settings</H2>
+    <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
+    <VStack gap="$space-3" when="{settings.loaded}">
+      <HStack verticalAlignment="center" gap="$space-1">
+        <Button icon="info" size="xs" variant="ghost" tooltip="About Safekeeping" onClick="safeInfo.open()" />
+        <H3>Safekeeping</H3>
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Default folder" width="170px" />
+        <TextBox id="defaultBox" width="*" initialValue="{settings.value ? (settings.value.defaultSafekeeping || '') : ''}"
+          placeholder="A folder for copies, such as ~/OneDrive/BramStudio" />
+        <Button label="Save" variant="outlined" size="sm" onClick="saveDefault(defaultBox.value.trim())" />
+      </HStack>
+      <Text variant="secondary"
+        value="{settings.value &amp;&amp; settings.value.defaultSafekeeping
+          ? 'Projects without their own location copy into ' + settings.value.defaultSafekeeping + ', one subfolder each.'
+          : 'No default yet: each project needs its own location, on the Projects page.'}" />
+    </VStack>
+    <ModalDialog id="safeInfo" title="Safekeeping">
+      <Text value="Safekeeping copies a project (its takes, re-mix ingredients, exports and logs, with its database) to a folder you choose, such as one OneDrive keeps in the cloud. Copy to safekeeping is on the Projects page." />
+      <Text value="The default folder here is for every project that has no location of its own. Each project goes into its own subfolder, named after it: ~/OneDrive/BramStudio/issue-433, and so on." />
+      <Text value="A project's own location (Change, on the Projects page) overrides the default. Clearing it falls back to the default." />
+    </ModalDialog>
+  </VStack>
+</Component>
