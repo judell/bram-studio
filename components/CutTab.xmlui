@@ -37,6 +37,7 @@
   var.lastCut="{[0, 1]}"
   var.cutSeed="{[0, 1]}"
   var.cutAdding="{false}"
+  var.goneId="{null}"
   var.cutSel="{null}"
   var.cutSelAt="{null}">
 
@@ -172,7 +173,13 @@
         when="{($props.narrs || []).some((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04)}"
         value="{'This cut goes through the narration at ' + ($props.narrs || []).filter((n) => lastCut[0] &lt; n.t_out - 0.04 &amp;&amp; lastCut[1] > n.t_in + 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
     </VStack>
-    <Items data="{$props.cuts || []}">
+    <!-- goneId: the cut (restored) whose removal was asked for. Its row is hidden and
+       the other ✕ buttons are off until $props.cuts changes (the list reloaded)
+       or SceneEditor calls cancelRemoval (the server refused). Without it the
+       row stayed clickable for seconds after its removal, and a second ✕ got
+       "no … with id" (trace 2026-10-14). -->
+    <ChangeListener listenTo="{$props.cuts}" onDidChange="goneId = null" />
+    <Items data="{($props.cuts || []).filter((c) => c.id !== goneId)}">
       <HStack verticalAlignment="center"
         var.sel="{cutSel === $item.id || (cutSel === null &amp;&amp; cutSelAt !== null &amp;&amp; Math.abs($item.at - cutSelAt) &lt; 0.06)}">
         <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
@@ -189,9 +196,10 @@
         <Button when="{sel}" icon="close" size="xs" variant="ghost"
           aria-label="Restore this cut"
           tooltip="Put the removed stretch back at this seam (Undo takes it out again)"
-          enabled="{!$props.cutting &amp;&amp; !$props.pausing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{goneId === null &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
           handlerTimeoutMs:onClick="0"
           onClick="
+            goneId = $item.id;
             cutSel = null;
             cutSelAt = null;
             emitEvent('restore', { id: $item.id, at: $item.at });
@@ -199,4 +207,5 @@
       </HStack>
     </Items>
   </VStack>
+  <method name="cancelRemoval">() => { goneId = null; }</method>
 </Component>

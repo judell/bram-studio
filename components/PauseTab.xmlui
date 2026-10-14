@@ -27,6 +27,7 @@
   var.time="{0}"
   var.pauseSecs="{readLocalStorage('studio.pauseSeconds', 2)}"
   var.pauseAdding="{false}"
+  var.goneId="{null}"
   var.pauseSel="{null}"
   var.pauseSelAt="{null}">
 
@@ -88,7 +89,13 @@
         when="{($props.narrs || []).some((n) => time > n.t_in + 0.04 &amp;&amp; time &lt; n.t_out - 0.04)}"
         value="{'This pause falls inside the narration at ' + ($props.narrs || []).filter((n) => time > n.t_in + 0.04 &amp;&amp; time &lt; n.t_out - 0.04).map((n) => n.t_in.toFixed(1) + '–' + n.t_out.toFixed(1) + ' s').join(' and ') + '. Afterwards its ✕ can no longer remove it; only Undo can.'}" />
     </VStack>
-    <Items data="{$props.pauses || []}">
+    <!-- goneId: the pause whose removal was asked for. Its row is hidden and
+       the other ✕ buttons are off until $props.pauses changes (the list reloaded)
+       or SceneEditor calls cancelRemoval (the server refused). Without it the
+       row stayed clickable for seconds after its removal, and a second ✕ got
+       "no … with id" (trace 2026-10-14). -->
+    <ChangeListener listenTo="{$props.pauses}" onDidChange="goneId = null" />
+    <Items data="{($props.pauses || []).filter((p) => p.id !== goneId)}">
       <HStack verticalAlignment="center"
         var.sel="{pauseSel === $item.id || (pauseSel === null &amp;&amp; pauseSelAt !== null &amp;&amp; Math.abs($item.at - pauseSelAt) &lt; 0.06)}">
         <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
@@ -105,9 +112,10 @@
         <Button when="{sel}" icon="close" size="xs" variant="ghost"
           aria-label="Remove this pause"
           tooltip="Remove this pause: its held frame and silence come out of the scene (Undo puts it back)"
-          enabled="{!$props.pausing &amp;&amp; !$props.cutting &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{goneId === null &amp;&amp; !$props.pausing &amp;&amp; !$props.cutting &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
           handlerTimeoutMs:onClick="0"
           onClick="
+            goneId = $item.id;
             pauseSel = null;
             pauseSelAt = null;
             emitEvent('removePause', { id: $item.id, at: $item.at });
@@ -115,4 +123,5 @@
       </HStack>
     </Items>
   </VStack>
+  <method name="cancelRemoval">() => { goneId = null; }</method>
 </Component>

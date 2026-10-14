@@ -31,6 +31,7 @@
   var.narrClip="{[0, 1]}"
   var.narrSeed="{[0, 1]}"
   var.narrAdding="{false}"
+  var.goneId="{null}"
   var.narrSel="{null}"
   var.narrSelAt="{null}">
 
@@ -118,7 +119,13 @@
         <Spinner when="{$props.narrBusy || $props.starting}" />
       </HStack>
     </VStack>
-    <Items data="{$props.narrs || []}">
+    <!-- goneId: the narration whose removal was asked for. Its row is hidden and
+       the other ✕ buttons are off until $props.narrs changes (the list reloaded)
+       or SceneEditor calls cancelRemoval (the server refused). Without it the
+       row stayed clickable for seconds after its removal, and a second ✕ got
+       "no … with id" (trace 2026-10-14). -->
+    <ChangeListener listenTo="{$props.narrs}" onDidChange="goneId = null" />
+    <Items data="{($props.narrs || []).filter((n) => n.id !== goneId)}">
       <HStack verticalAlignment="center"
         var.sel="{narrSel === $item.id || (narrSel === null &amp;&amp; narrSelAt !== null &amp;&amp; Math.abs($item.t_in - narrSelAt) &lt; 0.06)}">
         <Button size="xs" variant="{sel ? 'solid' : 'ghost'}"
@@ -144,9 +151,10 @@
         <Button when="{sel}" icon="close" size="xs" variant="ghost"
           aria-label="Remove this narration"
           tooltip="Remove this narration: the audio that was there before comes back (Undo restores the narration)"
-          enabled="{!$props.removing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
+          enabled="{goneId === null &amp;&amp; !$props.removing &amp;&amp; !$props.narrating &amp;&amp; !$props.narrBusy}"
           handlerTimeoutMs:onClick="0"
           onClick="
+            goneId = $item.id;
             narrSel = null;
             narrSelAt = null;
             emitEvent('removeNarr', { id: $item.id, at: $item.t_in });
@@ -154,4 +162,5 @@
       </HStack>
     </Items>
   </VStack>
+  <method name="cancelRemoval">() => { goneId = null; }</method>
 </Component>

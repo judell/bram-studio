@@ -144,6 +144,7 @@
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: r.id } });
       } catch (e) {
+        cutTab.cancelRemoval();
         toast.error(e.message);
       }
       afterEdit(r.at);
@@ -161,6 +162,7 @@
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/pauses/remove', method: 'post', invalidates: [], body: { id: r.id } });
       } catch (e) {
+        pauseTab.cancelRemoval();
         toast.error(e.message);
       }
       afterEdit(r.at);
@@ -196,10 +198,16 @@
       // invalidates: [] as addCallout's: the lists it changes are refetched
       // by name below; the default refetched every DataSource, /projects too
       // (https://www.xmlui.org/docs/howto/control-cache-invalidation).
-      const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [],
-                                  body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
-                                          t_in: t, t_out: out, tail: 'none', shape: shape } });
-      item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
+      // Refused (409) while a video edit of the scene runs: its timeline is
+      // about to change, so the item would land in the wrong place.
+      try {
+        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [],
+                                    body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
+                                            t_in: t, t_out: out, tail: 'none', shape: shape } });
+        item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
+      } catch (e) {
+        toast.error(e.message);
+      }
       refreshItemLists();
     }
     // The current item's In or Out as the rules allow, for v (nudged, or
@@ -265,6 +273,7 @@
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/delete', method: 'post', invalidates: [], body: { id: id } });
       } catch (e) {
+        annotTab.cancelRemoval();
         toast.error(e.message);
       }
       refreshItemLists();
@@ -333,7 +342,7 @@
     body="{{ sql: 'SELECT id, at, seconds FROM cuts WHERE take_id = ? ORDER BY at', params: [editTake] }}" />
   <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
     body="{{ id: $param }}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
+    errorNotificationMessage="{$error.message}" onError="narrTab.cancelRemoval()" />
   <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
        its clean copy, callouts shifted). No onSuccess (xmlui-org/xmlui#3924).
        cutSeq goes into the take player's src so it reloads the changed video.
@@ -442,8 +451,12 @@
         const box = free ? { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } : { x1: Math.min(e.x1, e.x2), y1: Math.min(e.y1, e.y2), x2: Math.max(e.x1, e.x2), y2: Math.max(e.y1, e.y2) };
         // invalidates: [], as in addAnnotation: the default refetched
         // every DataSource and took a drawn shape ~3 s (trace, 2026-10-13).
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
-        item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
+        try {
+          const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
+          item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
+        } catch (err) {
+          toast.error(err.message);
+        }
         refreshItemLists();
         editTabs.setActiveTabIndex(0);
       }">

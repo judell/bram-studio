@@ -50,6 +50,7 @@ page refetches then instead of polling.
 """
 import collections
 import hashlib
+import io
 import math
 import http.server
 import json
@@ -936,6 +937,39 @@ def cut_drops(db, take_id, start, end):
                       if cz(c["at"]) is None]}
 TRASH = os.path.join(ROOT, ".trash")
 EDIT_LOCK = threading.Lock()  # one undo, redo or history read at a time
+# The takes with a video edit, an undo or a redo under way. One at a time per
+# take: two at once would each read the same file, and the later swap would
+# overwrite the earlier edit, leaving its retimed items and undo record
+# behind. A second gets 409, which the page shows as a toast.
+TAKES_EDITING = set()
+TAKES_EDITING_LOCK = threading.Lock()
+
+
+def claim_take(take_id):
+    with TAKES_EDITING_LOCK:
+        if take_id in TAKES_EDITING:
+            return False
+        TAKES_EDITING.add(take_id)
+        return True
+
+
+def release_take(take_id):
+    with TAKES_EDITING_LOCK:
+        TAKES_EDITING.discard(take_id)
+
+
+BUSY_TAKE = "another edit of this scene is still running"
+
+
+def take_editing(take_id):
+    # Whether a video edit, undo or redo of the take is under way. Item writes
+    # and starting a narration check it but don't claim the take: they are
+    # quick, and two nudges in a row must not refuse each other. An item added
+    # or changed mid-edit was made on the timeline before the edit, and would
+    # be retimed or not by the edit depending on when it landed (trace
+    # 2026-10-14: a pointer added during a pause insert was shifted by it).
+    with TAKES_EDITING_LOCK:
+        return take_id in TAKES_EDITING
 
 
 # A take's edit history (the History tab): every edit leaves a sidecar in
@@ -2068,6 +2102,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if err:
             return self.send_json(400, {"error": err})
         take_id, text, box, t_in, t_out, tail, shape = fields
+        if take_editing(take_id):
+            return self.send_json(409, {"error": BUSY_TAKE})
         kind = "shape" if shape else "callout"
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
@@ -2230,6 +2266,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             (body.get("id"),)).fetchone()
         if not before:
             return self.send_json(404, {"error": "no such callout"})
+        if take_editing(before["take_id"]):
+            return self.send_json(409, {"error": BUSY_TAKE})
         before = dict(before)
         db.execute("DELETE FROM overlays WHERE id = ?", (body.get("id"),))
         db.commit()
@@ -2735,6 +2773,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         row = db.execute("SELECT * FROM takes WHERE id = ?", (body.get("id"),)).fetchone()
         if not row:
             return self.send_json(404, {"error": f"no take with id {body.get('id')}"})
+        if take_editing(row["id"]):
+            return self.send_json(409, {"error": BUSY_TAKE})
         src = os.path.join(ROOT, row["file"])
         if not os.path.isfile(src):
             return self.send_json(404, {"error": f"{row['file']} is missing"})
@@ -2959,8 +2999,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, {"id": row["id"], "name": row["name"], "edit": "unnarrate", "start": round(start, 2),
                                  "end": round(end, 2), "duration": done[0], "undo": done[1]})
 
-    def apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False, narr=None,
-                        pz=None, cz=None, seam=None):
+    def apply_take_edit(self, db, row, src, *args, **kwargs):
+        # One edit per take at a time (claim_take); a second gets 409.
+        if not claim_take(row["id"]):
+            self.send_json(409, {"error": BUSY_TAKE})
+            return None
+        try:
+            return self._apply_take_edit(db, row, src, *args, **kwargs)
+        finally:
+            release_take(row["id"])
+
+    def _apply_take_edit(self, db, row, src, chain, kind, record, retime, extra=(), copy_video=False, narr=None,
+                         pz=None, cz=None, seam=None):
         # The part a cut, a pause, a narration and its removal share. Runs the ffmpeg filter
         # `chain` (ending in [v] and [a]) on the take's MP4 and its clean copy, into
         # hidden temp files first, so a failure changes nothing. `extra` are
@@ -3198,6 +3248,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 put("cuts", c)
 
     def undo_take(self):
+        # One edit per take at a time (claim_take): the body is read here for
+        # the take's id, then handed on unread to _undo_take.
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            take_id = (json.loads(raw or b"{}") or {}).get("id")
+        except ValueError:
+            take_id = None
+        if take_id is not None and not claim_take(take_id):
+            return self.send_json(409, {"error": BUSY_TAKE})
+        self.rfile = io.BytesIO(raw)
+        try:
+            return self._undo_take()
+        finally:
+            if take_id is not None:
+                release_take(take_id)
+
+    def _undo_take(self):
         # POST /takes/undo {id}: take back the take's current edit. The take
         # as it is now (its files, to media/.trash/ as <stem>-after-…; its
         # row, items and narrations, into the sidecar's "undone" mark) is kept
@@ -3251,6 +3318,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"id": row["id"], "undone": edit_what(name, saved)})
 
     def redo_take(self):
+        # One edit per take at a time (claim_take): the body is read here for
+        # the take's id, then handed on unread to _redo_take.
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            take_id = (json.loads(raw or b"{}") or {}).get("id")
+        except ValueError:
+            take_id = None
+        if take_id is not None and not claim_take(take_id):
+            return self.send_json(409, {"error": BUSY_TAKE})
+        self.rfile = io.BytesIO(raw)
+        try:
+            return self._redo_take()
+        finally:
+            if take_id is not None:
+                release_take(take_id)
+
+    def _redo_take(self):
         # POST /takes/redo {id}: put back the edit just above the cursor: the
         # files from before it return to media/.trash/ and the take as it was
         # after the edit, kept by undo_take, comes back.

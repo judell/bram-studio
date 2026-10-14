@@ -24,13 +24,14 @@
      stopPlay(), remove().
      Methods: refresh() (the list), find(id) (a row, for the canvas's
      picks; https://www.xmlui.org/docs/howto/expose-a-method-from-a-component). -->
-<Component name="AnnotateTab">
+<Component name="AnnotateTab" var.goneId="{null}">
 
   <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
        a take (overlay.py). -->
   <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [$props.take, &quot;callout&quot;, &quot;shape&quot;] }}" />
 
+  <method name="cancelRemoval">() => { goneId = null; }</method>
   <method name="refresh">
     () => { callouts.refetch(); }
   </method>
@@ -50,7 +51,13 @@
           onClick="emitEvent('tool', $item[0])" />
       </Items>
     </HStack>
-    <Items data="{callouts.value || []}">
+    <!-- goneId: the item whose removal was asked for. Its row is hidden and
+       the other ✕ buttons are off until callouts.value changes (the list reloaded)
+       or SceneEditor calls cancelRemoval (the server refused). Without it the
+       row stayed clickable for seconds after its removal, and a second ✕ got
+       "no … with id" (trace 2026-10-14). -->
+    <ChangeListener listenTo="{callouts.value}" onDidChange="goneId = null" />
+    <Items data="{(callouts.value || []).filter((c) => c.id !== goneId)}">
       <HStack verticalAlignment="center">
         <Button size="xs" variant="{$item.id === $props.item.id ? 'solid' : 'ghost'}"
           label="{($item.shape ? ({ rect: 'Box', ellipse: 'Oval', arrow: 'Arrow', line: 'Line', pointer: 'Pointer' })[$item.shape] : $item.text || '(empty callout)') + ' · ' + $item.t_in.toFixed(2) + '–' + $item.t_out.toFixed(2) + ' s'}"
@@ -89,7 +96,8 @@
             onClick="$props.audition &amp;&amp; $props.audition.kind === 'item' ? emitEvent('stopPlay') : emitEvent('play')" />
           <Button icon="close" size="xs" variant="ghost"
             aria-label="Remove this item" tooltip="Remove this item from the scene"
-            onClick="emitEvent('remove')" />
+            enabled="{goneId === null}"
+            onClick="goneId = $item.id; emitEvent('remove')" />
         </HStack>
       </HStack>
     </Items>
