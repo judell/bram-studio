@@ -8,10 +8,9 @@
      clip muted, without the player's own controls, while the mic records
      (the editor's startNarration; its Timer stops it at the clip's end), or
      Stop does earlier, and the scene's audio there is replaced (Undo takes
-     it back). While narrating, the clip's start and end show with a
-     ProgressBar between them
-     (https://www.xmlui.org/docs/reference/components/ProgressBar) and Stop
-     counts down, since the player's own controls are hidden. Once it lands
+     it back). While narrating, a countdown (NarrCountdown) shows the
+     clip's start and end, a ProgressBar between them and the seconds left,
+     since the player's own controls are hidden. Once it lands
      (the editor calls landed(t)), the adding row closes and the new
      narration is selected (narrSelAt: its start, until the list has its
      row). A narration's row selects it (and moves the playhead to its
@@ -21,7 +20,7 @@
      and its outro (https://github.com/judell/av av.js).
 
      Props: take, duration, audition, narrs (the list), narrating (the clip being
-     recorded, or null), narrBusy, dictating, cutting, pausing, removing.
+     recorded, or null), narrBusy, starting (the mic is opening), dictating, cutting, pausing, removing.
      Events: seek(t), hush(), play({start, stop, kind}), stopPlay(),
      needTime(tag) (answered with atPlayhead(tag, t)), narrate(clip),
      stopNarrate(), removeNarr({id, at}).
@@ -29,7 +28,6 @@
      playhead, live while narrating). -->
 <Component name="NarrateTab"
   var.dur="{$props.duration || 0}"
-  var.time="{0}"
   var.narrClip="{[0, 1]}"
   var.narrSeed="{[0, 1]}"
   var.narrAdding="{false}"
@@ -54,11 +52,11 @@
   <method name="landed">
     (t) => { narrAdding = false; narrSel = null; narrSelAt = t; }
   </method>
-  <!-- The playhead, pushed by the editor (on load, seek and pause; every
-       tick while a narration records), so a seek re-renders this tab, not
-       the editor. -->
+  <!-- The playhead, every 40 ms while a narration records: passed straight
+       to the countdown (NarrCountdown), so a tick re-renders only that, not
+       this tab. -->
   <method name="setTime">
-    (t) => { time = t; }
+    (t) => { countdown.setTime(t); }
   </method>
   <method name="close">
     () => { narrAdding = false; }
@@ -100,26 +98,24 @@
         <TimeEdge what="End" text="{narrClip[1].toFixed(2) + ' s'}" enabled="{!$props.narrBusy}"
           onNudge="(d) => { setNarr('end', narrClip[1] + d); }" onToPlayhead="emitEvent('needTime', 'end')" />
       </HStack>
-      <HStack when="{!!$props.narrating}" verticalAlignment="center">
-        <Text value="{$props.narrating ? $props.narrating[0].toFixed(2) + ' s' : ''}" />
-        <ProgressBar width="*"
-          value="{$props.narrating ? Math.max(0, Math.min(1, (time - $props.narrating[0]) / ($props.narrating[1] - $props.narrating[0]))) : 0}" />
-        <Text value="{$props.narrating ? $props.narrating[1].toFixed(2) + ' s' : ''}" />
-      </HStack>
+      <NarrCountdown id="countdown" when="{!!$props.narrating}" clip="{$props.narrating}"
+        onStop="emitEvent('stopNarrate')" />
       <HStack verticalAlignment="center">
         <Button label="{$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? 'Stop' : 'Play'}" size="xs" variant="outlined"
           tooltip="Play the marked stretch as it sounds now, to hear what you would narrate over"
           enabled="{!$props.narrating &amp;&amp; !$props.narrBusy}"
           onClick="$props.audition &amp;&amp; $props.audition.kind === 'narr-preview' ? emitEvent('stopPlay') : emitEvent('play', { start: narrClip[0], stop: narrClip[1], kind: 'narr-preview' })" />
-        <Button label="{$props.narrating ? '⏹ Stop recording · ' + Math.max(0, $props.narrating[1] - time).toFixed(1) + ' s left' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
+        <!-- From the click until the mic is live (starting) the button says
+             so, disabled, so there's no doubt it was pressed. -->
+        <Button when="{!$props.narrating}" label="{$props.starting ? 'Starting the mic…' : '🎤 Narrate ' + (narrClip[1] - narrClip[0]).toFixed(2) + 's'}"
           size="xs" themeColor="attention"
           tooltip="{$props.narrating ? 'Stop now: what you said so far replaces the audio, and the rest of the clip is silent' : 'Play this stretch muted and record the microphone over it, replacing its audio (Undo takes it back)'}"
-          enabled="{!$props.narrBusy &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing}"
+          enabled="{!$props.narrBusy &amp;&amp; !$props.starting &amp;&amp; !$props.dictating &amp;&amp; !$props.cutting &amp;&amp; !$props.pausing}"
           handlerTimeoutMs:onClick="0"
           onClick="$props.narrating ? emitEvent('stopNarrate') : emitEvent('narrate', narrClip);" />
         <Button label="Cancel" size="xs" variant="ghost" when="{!$props.narrating}" enabled="{!$props.narrBusy}"
           onClick="emitEvent('hush'); narrAdding = false;" />
-        <Spinner when="{$props.narrBusy}" />
+        <Spinner when="{$props.narrBusy || $props.starting}" />
       </HStack>
     </VStack>
     <Items data="{$props.narrs || []}">

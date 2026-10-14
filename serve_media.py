@@ -2556,7 +2556,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Answers once samples are flowing; the page then starts the (muted)
         # player and posts /narrate/go, and /narrate/stop when the clip ends.
         # One at a time, and never while a note is dictated or a voice test
-        # runs.
+        # runs. The start line logs how long the mic took to go live (from
+        # this request to the recorder's first samples), the ffprobe before
+        # it, and whether the recorder was rebuilt: the countdown waits on
+        # all of it (2026-10-13: ~1.9 s, then the page's own ~1.4 s).
+        arrived = time.time()
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         db = sqlite3.connect(DB)
         db.row_factory = sqlite3.Row
@@ -2570,11 +2574,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             start, end = float(body.get("start")), float(body.get("end"))
         except (TypeError, ValueError):
             return self.send_json(400, {"error": "start and end must be numbers"})
+        probe_t = time.time()
         dur = float(probe(src, "format=duration") or 0)
+        probe_t = time.time() - probe_t
         start, end = max(0.0, start), min(dur, end)
         if end - start < 0.5:
             return self.send_json(400, {"error": "the clip to narrate over must be at least 0.5 s"})
+        built = False
         if not os.path.exists(NATIVE_BIN) or os.path.getmtime(NATIVE_BIN) < os.path.getmtime(NATIVE_SRC):
+            built = True
             os.makedirs(os.path.dirname(NATIVE_BIN), exist_ok=True)
             r = subprocess.run(["swiftc", "-O", "-o", NATIVE_BIN, NATIVE_SRC], capture_output=True, text=True)
             if r.returncode:
@@ -2611,7 +2619,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(500, {"error": f"couldn't open the microphone: {err}"})
             narration["current"] = n
         threading.Thread(target=watch_narration, args=(n,), daemon=True).start()
-        print(f"narrate: start take {n['id']} {start:.2f}-{end:.2f}s", flush=True)
+        print(f"narrate: start take {n['id']} {start:.2f}-{end:.2f}s, mic live after {n['t0'] - arrived:.2f}s "
+              f"(ffprobe {probe_t:.2f}s, recorder built: {'yes' if built else 'no'})", flush=True)
         self.send_json(200, {"narrating": n["id"], "start": round(start, 2), "end": round(end, 2)})
 
     def narrate_go(self):

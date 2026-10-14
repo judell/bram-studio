@@ -29,6 +29,7 @@
   var.cutSeq="{0}"
   var.narrating="{null}"
   var.narrBusy="{false}"
+  var.narrStarting="{false}"
   var.resumeAt="{null}"
   var.lastLevels="{null}"
   var.item="{null}">
@@ -51,29 +52,40 @@
     // hides its controls and runs the Timer that calls stopNarration at the
     // clip's end. /narrate/stop writes the take (both files), so narrBusy
     // shows a spinner until it answers.
+    // narrStarting: from the click until the mic is live (or fails), so the
+    // button says so at once; /narrate/start answers only when samples flow
+    // (~1.9 s, 2026-10-13), and without it the button looked unchanged.
     function startNarration(clip) {
+      narrStarting = true;
       try {
         audition = null;
         narrTab.setTime(clip[0]);
         takePlayer.pause();
         takePlayer.seek(clip[0]);
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post',
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post', invalidates: [],
                           body: { id: editTake, start: clip[0], end: clip[1] } });
         narrating = clip;
+        narrStarting = false;
         takePlayer.play();
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/go', method: 'post' });
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/go', method: 'post', invalidates: [] });
       } catch (e) {
         narrating = null;
+        narrStarting = false;
         toast.error(e.message);
       }
     }
+    // The /narrate/* calls pass invalidates: [], as the editor's other
+    // calls do: by default a call refetches every DataSource in the app,
+    // /projects, /exports and /devices included, and after each /narrate/stop
+    // the log showed that burst (2026-10-13; what's needed is refetched by
+    // name; https://www.xmlui.org/docs/howto/control-cache-invalidation).
     function stopNarration() {
       const clip = narrating;
       takePlayer.pause();
       narrating = null;
       narrBusy = true;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post' });
+        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post', invalidates: [] });
         // Done: the adding row closes and the new narration is selected in
         // the list (by its start, until the list has its row). A refused
         // narration (nothing said) keeps the adding row open, to retry.
@@ -524,7 +536,7 @@
     <TabItem label="Narrate">
       <NarrateTab id="narrTab" take="{editTake}" duration="{editDur}" audition="{audition ? { kind: audition.kind, start: audition.start, stop: audition.stop } : null}"
         narrs="{narrs.value || []}"
-        narrating="{narrating}" narrBusy="{narrBusy}" dictating="{!!$props.dictating}"
+        narrating="{narrating}" narrBusy="{narrBusy}" starting="{narrStarting}" dictating="{!!$props.dictating}"
         cutting="{cutTake.inProgress}" pausing="{pauseTake.inProgress}" removing="{removeNarration.inProgress}"
         onSeek="(t) => tabSeek(t)" onHush="audition = null"
         onPlay="(a) => playAudition(a.start, a.stop, a.kind)" onStopPlay="stopAudition()"
