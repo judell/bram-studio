@@ -6,6 +6,6 @@
   "defaultTheme": "studio",
   "appGlobals": {
     "xsVerbose": true,
-    "xsVerboseLogMax": 200
+    "xsVerboseLogMax": 5000
   }
 }
