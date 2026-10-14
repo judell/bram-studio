@@ -755,10 +755,30 @@ def fingerprints():
             return os.stat(path).st_mtime_ns
         except OSError:
             return None
-    return {"takes": mtime(DB),
+    return {"takes": takes_fingerprint(),
             "sources": (mtime(SOURCES), mtime(DESKTOP)),
             "exports": exports_fingerprint(),
             "projects": projects_fingerprint(mtime)}
+
+
+# The columns of the takes the page's scene list shows (Main.xmlui's takes
+# query), plus their order. Only a change to these is "takes changed": the
+# editor's own writes to studio.db (callouts, narrations, undo records)
+# refresh what they touch from their handlers, and announcing them made the
+# page refetch its lists and redraw itself six times per edit (~1 s of a
+# 2.1 s nudge; render trace, xmlui-org/xmlui#3942).
+TAKES_LISTED = ("SELECT id, name, created_at, duration_s, url, file, source, src_end, warning, position"
+                " FROM takes ORDER BY id")
+
+
+def takes_fingerprint():
+    if not os.path.isfile(DB):
+        return None
+    db = sqlite3.connect(f"file:{urllib.parse.quote(DB)}?mode=ro", uri=True)
+    try:
+        return hashlib.sha1(repr(db.execute(TAKES_LISTED).fetchall()).encode()).hexdigest()
+    finally:
+        db.close()
 
 
 def projects_fingerprint(mtime):
@@ -767,17 +787,22 @@ def projects_fingerprint(mtime):
     # and each project's folder and top-level folders. A file or folder
     # dropped in from outside, a project added or removed, or a new order
     # changes one of them; changes inside the open project's database and
-    # exports arrive as "takes" and "exports" too.
+    # exports arrive as "takes" and "exports" too. So the open project's
+    # studio.db, and its folder (whose time changes with SQLite's journal
+    # file on every write), aren't watched here.
     found = [mtime(studio_paths.PROJECTS), mtime(ORDER)]
     try:
         slugs = sorted(s for s in os.listdir(studio_paths.PROJECTS) if not s.startswith("."))
     except OSError:
         slugs = []
+    open_db = os.path.realpath(DB)
     for slug in slugs:
         base = os.path.join(studio_paths.PROJECTS, slug)
-        found += [mtime(os.path.join(base, *p)) for p in
-                  ((), ("project.json",), ("studio.db",), ("media",), ("media", "exports"), ("media", ".trash"),
-                   ("media", ".clean"), ("work",), ("work", "sessions"), ("work", "takes"))]
+        parts = [("project.json",), ("media",), ("media", "exports"), ("media", ".trash"),
+                 ("media", ".clean"), ("work",), ("work", "sessions"), ("work", "takes")]
+        if os.path.realpath(os.path.join(base, "studio.db")) != open_db:
+            parts += [(), ("studio.db",)]
+        found += [mtime(os.path.join(base, *p)) for p in parts]
     return found
 
 
