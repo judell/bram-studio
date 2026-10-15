@@ -51,6 +51,13 @@ exports) and `work/` (recording sessions and render ingredients). `projects/.ope
 the open one. Source movies (`sources/`) and the Audio page's test recordings are shared
 by all projects. `studio_paths.py` is the one place that knows these paths.
 
+Each take's sound is also kept losslessly, in `media/.audio/<take>.flac`. Every cut,
+pause, narration and their removals build the new sound from it and encode it to AAC once,
+so a take that has been edited many times sounds as good as one edited once. Before this,
+each edit re-encoded the last AAC file, and a scene's earliest narration grew scratchy over
+two dozen edits. Only the current lossless copy is kept: after Undo or Redo (or a take file
+replaced some other way), the next edit makes a new one from the take as it then is.
+
 A fresh checkout has no projects: the first time `serve_media.py` starts, it creates
 **My project** and opens it. With projects but none marked open, it opens the most
 recently changed one.
