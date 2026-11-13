@@ -5,7 +5,8 @@
     eval "$(python3 studio_paths.py)"   # the same names, for a shell script
 
 A project's own things live in its folder, projects/<slug>/ (gitignored):
-project.json (its name), studio.db (takes, callouts and shapes, narrations),
+project.json (its name, its genre, screencast or podcast, chosen once, and
+the source movies it is made from), studio.db (takes, callouts and shapes, narrations),
 media/ (takes, clean copies, undo history, exports) and work/ (sessions and
 render ingredients). projects/.open holds the open project's slug.
 STUDIO_PROJECT, a folder, overrides it. With neither, the project is the repo

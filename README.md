@@ -91,8 +91,9 @@ voice recorder uses AVFoundation).
 
 ## Where things are kept
 
-Each screencast is a project, a folder under `projects/` (not committed): its
-`studio.db` (takes, callouts and shapes, narrations), `media/` (takes, undo history,
+Each screencast or podcast is a project, a folder under `projects/` (not committed): its
+`project.json` (its name, its genre, chosen once when it is made, and the source movies it
+is made from) and `studio.db` (takes, callouts and shapes, narrations), `media/` (takes, undo history,
 exports) and `work/` (recording sessions and render ingredients). `projects/.open` names
 the open one. Source movies (`sources/`) and the Audio page's test recordings are shared
 by all projects. `studio_paths.py` is the one place that knows these paths.
@@ -109,7 +110,7 @@ A fresh checkout has no projects: the first time `serve_media.py` starts, it cre
 recently changed one.
 
 The **Projects** page lists them (drag a project by its grip to reorder the list), with
-**Open** to switch, **New project** to start an empty one, and **Delete** to move a project's
+**Open** to switch, **New project** to start an empty one (a genre and a source movie to begin with), and **Delete** to move a project's
 whole folder to the Trash (drag it back into `projects/` to restore it; the open project can't
 be deleted). The open project's name shows in the header. Switching starts
 `serve_media.py` over on that project, so it waits until no take, narration, render or

@@ -752,7 +752,8 @@ def project_info(slug):
                          "days": days, "warning": warning, "loses": c["loses"]}
                         for label, days, warning in CLEAN.get(c["key"], [])
                         if clean_paths(folder, c["key"], days, full)]
-    return {"slug": slug, "name": name, "takes": takes, "seconds": round(seconds, 1), "changed": changed,
+    return {"slug": slug, "name": name, "genre": info.get("genre", ""), "sources": info.get("sources", []),
+            "takes": takes, "seconds": round(seconds, 1), "changed": changed,
             "open": folder == studio_paths.PROJECT, "safekeeping": safekeeping_state(folder, info, full), **usage}
 
 
@@ -799,21 +800,77 @@ def list_projects():
         p["id"] = p["slug"]  # what the page's drag list keys rows by
     current = next((p for p in projects if p["open"]), None)
     shared = [{**s, "slug": ""} for s in shared_stray()]
+    # The open project's own genre and sources, read from its project.json: it
+    # needn't be in the list (STUDIO_PROJECT can point outside projects/).
+    mine = read_project(studio_paths.PROJECT) or {}
     return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
+            "genre": mine.get("genre", ""), "sources": mine.get("sources", []),
             "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects),
             "folder": studio_paths.PROJECTS}
 
 
-def create_project_folder(folder, name):
+GENRES = ("screencast", "podcast")
+
+
+def create_project_folder(folder, name, genre="screencast", sources=()):
     # A new, empty project (studio_paths.py): media/, work/, project.json and
     # a studio.db from schema.sql. Shared by New project and the startup
-    # default (ensure_open_project).
+    # default (ensure_open_project). The genre is chosen here, once; no route
+    # changes it later.
     os.makedirs(os.path.join(folder, "media"))
     os.makedirs(os.path.join(folder, "work"))
     with open(os.path.join(folder, "project.json"), "w") as f:
-        json.dump({"name": name}, f, indent=1)
+        json.dump({"name": name, "genre": genre, "sources": list(sources)}, f, indent=1)
     with sqlite3.connect(os.path.join(folder, "studio.db")) as db:
         db.executescript(open(os.path.join(HERE, "schema.sql")).read())
+
+
+def migrate_genres(folders):
+    # Projects made before genre and sources were recorded in project.json:
+    # work both out from the database, once (write_project saves them, so the
+    # next start finds nothing missing). Sources are the files its takes and
+    # transcripts came from, in first-use order. A project with transcripts
+    # and no takes is a podcast; anything else is a screencast. A folder
+    # with no project.json isn't a project and is left alone.
+    for folder in folders:
+        info = read_project(folder)
+        if info is None or ("genre" in info and "sources" in info):
+            continue
+        used, takes, transcripts = [], 0, 0
+        try:
+            db = sqlite3.connect(f"file:{urllib.parse.quote(os.path.join(folder, 'studio.db'))}?mode=ro", uri=True)
+        except sqlite3.Error:
+            db = None
+        if db:
+            try:
+                # transcripts doesn't exist in a database older than the Podcast page.
+                for table in ("takes", "transcripts"):
+                    try:
+                        rows = [r[0] for r in db.execute(f"SELECT source FROM {table} ORDER BY rowid") if r[0]]
+                    except sqlite3.Error:
+                        rows = []
+                    if table == "takes":
+                        takes = len(rows)
+                    else:
+                        transcripts = len(rows)
+                    for r in rows:
+                        if os.path.basename(r) not in used:
+                            used.append(os.path.basename(r))
+            finally:
+                db.close()
+        info.setdefault("genre", "podcast" if transcripts and not takes else "screencast")
+        info.setdefault("sources", used)
+        write_project(folder, info)
+        print(f"startup: {info['name']!r} is a {info['genre']} on {info['sources']}", flush=True)
+
+
+def migrate_all_genres():
+    try:
+        slugs = [s for s in os.listdir(studio_paths.PROJECTS) if not s.startswith(".")]
+    except OSError:
+        slugs = []
+    # The repo itself is the project when there is no projects/ (studio_paths.py).
+    migrate_genres([os.path.join(studio_paths.PROJECTS, s) for s in sorted(slugs)] + [studio_paths.REPO])
 
 
 DEFAULT_PROJECT = "My project"
@@ -2888,6 +2945,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.rename_project()
         if self.path == "/projects/new":
             return self.new_project()
+        if self.path == "/projects/sources/add":
+            return self.add_project_source()
         if self.path == "/projects/stray/delete":
             return self.delete_stray()
         if self.path == "/projects/clean":
@@ -5315,10 +5374,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"slug": slug, "name": name})
 
     def new_project(self):
-        # {name}: a new, empty project folder (studio_paths.py), then open it.
-        # The folder is named from the name: lowercase, dashes for the rest.
+        # {name, genre, source}: a new, empty project folder (studio_paths.py),
+        # then open it. The folder is named from the name: lowercase, dashes
+        # for the rest.
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         name = str(body.get("name") or "").strip()
+        genre, source = body.get("genre"), body.get("source")
+        if genre not in GENRES:
+            return self.send_json(400, {"error": f"genre must be one of {', '.join(GENRES)}"})
+        if source not in sources():
+            return self.send_json(400, {"error": f"{source!r} isn't one of the source movies"})
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
         if not slug:
             return self.send_json(400, {"error": "Give the project a name with a letter or digit in it"})
@@ -5328,8 +5393,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         why = self.busy()
         if why:
             return self.send_json(409, {"error": f"Can't open a new project now: {why}"})
-        create_project_folder(folder, name)
+        create_project_folder(folder, name, genre, [source])
         self.open_project(slug)
+
+    def add_project_source(self):
+        # {source}: add a source movie to the open project's list, once.
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        source = body.get("source")
+        if source not in sources():
+            return self.send_json(400, {"error": f"{source!r} isn't one of the source movies"})
+        info = read_project(studio_paths.PROJECT)
+        if info is None:
+            return self.send_json(409, {"error": "The open project has no project.json"})
+        if source not in info.setdefault("sources", []):
+            info["sources"].append(source)
+            write_project(studio_paths.PROJECT, info)
+            notify("projects")
+        self.send_json(200, {"sources": info["sources"]})
 
     def set_trace(self):
         # POST /trace {on}: turn XMLUI's trace capture (the Inspector's
@@ -5399,6 +5479,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 ensure_open_project()
+migrate_all_genres()
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
