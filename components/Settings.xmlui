@@ -16,6 +16,17 @@
        this page; projects names it. The speakers event (an agent's change,
        or another page's) refetches the list. -->
   <DataSource id="openProject" url="http://127.0.0.1:8765/projects" />
+  <!-- XMLUI's trace capture (the Inspector's data), moved here from the
+       header. config.json's xmluiConfig.xsVerbose turns it on; it's off by
+       default, since capture costs time in every handler. serve_media.py's
+       /trace rewrites config.json, and since the engine reads it only at
+       startup, the page reloads (location.reload() as in
+       https://www.xmlui.org/docs/globals#resetlocalstorage). xmluiConfig isn't
+       visible to markup (https://www.xmlui.org/docs/xmlui-config), so the
+       button reads the setting from GET /trace. The Inspector itself is the
+       studio's own xs-diff.html and the xmlui-parser.es.js it imports
+       (vendor/). -->
+  <DataSource id="traceState" url="http://127.0.0.1:8765/trace" />
   <DataSource id="speakers" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, color FROM speakers ORDER BY position, id', params: [] }}" />
   <EventSource url="http://127.0.0.1:8765/events"
@@ -67,6 +78,12 @@
   <VStack padding="$space-6" gap="$space-5">
     <H2>Settings</H2>
     <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
+    <!-- What the header used to carry: the open project's exports, and the
+         Projects page (rename, delete, disk use, safekeeping, order). -->
+    <HStack verticalAlignment="center">
+      <Link to="/exports" label="Exports" />
+      <Link to="/projects" label="Manage projects" />
+    </HStack>
     <!-- Speakers in the open project: add, rename (the pencil; the row keeps
          its own draft), delete (its words and segments go back to no
          speaker). Talk time per speaker isn't shown: it counted whisper's
@@ -192,6 +209,21 @@
               ? 'Projects without their own location copy into ' + settings.value.defaultSafekeeping + ', one subfolder each.'
               : 'No default yet: each project needs its own location, on the Projects page.'}" />
         </VStack>
+      </ExpandableItem>
+    </Theme>
+    <Theme paddingLeft-summary-ExpandableItem="0">
+      <ExpandableItem initiallyExpanded="{false}" iconPosition="start" summary="Diagnostics · XMLUI trace and Inspector">
+        <HStack verticalAlignment="center">
+          <Button size="xs" variant="outlined" label="{traceState.value?.on ? 'Trace on' : 'Trace off'}"
+            tooltip="{traceState.value?.on ? 'Trace capture is on (Inspector can export). Click to turn it off and reload.' : 'Trace capture is off (faster). Click to turn it on and reload.'}"
+            onClick="
+              Actions.callApi({ url: 'http://127.0.0.1:8765/trace', method: 'post', invalidates: [],
+                                body: { on: !traceState.value?.on } });
+              location.reload();
+            " />
+          <Inspector src="/vendor/xs-diff.html"
+            tooltip="{traceState.value?.on ? 'Inspector: XMLUI trace' : 'Inspector: trace capture is off, so there is nothing to export (turn it on with Trace off)'}" />
+        </HStack>
       </ExpandableItem>
     </Theme>
     <ModalDialog id="speakersInfo" title="Speakers">

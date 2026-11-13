@@ -5,7 +5,7 @@
   ],
   "defaultTheme": "studio",
   "xmluiConfig": {
-    "xsVerbose": true,
+    "xsVerbose": false,
     "xsVerboseLogMax": 50000
   }
 }

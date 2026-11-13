@@ -1,7 +1,8 @@
-<App name="Bram Studio" layout="vertical-sticky" var.podcastSource="" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
-  <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
-       main area, nav always visible. themes/studio.json keeps the nav from
-       collapsing into a drawer on a narrow window, as Bram's theme does. -->
+<App name="Bram Studio" layout="vertical-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
+  <!-- A header band over the main area and no nav: the open project decides
+       what's on screen. Its genre (project.json's genre, served by /projects)
+       picks the editor at /; everything else is behind the header's settings
+       icon. -->
   <!-- Takes live in the open project's studio.db (see schema.sql and
        studio_paths.py). serve_media.py answers the project's queries
        read-only at its own /query, since it is what knows which project is
@@ -15,13 +16,10 @@
     pollIntervalInSeconds="60" />
   <!-- A scene appears here when Make scene's clip (/takes/clip) registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
-  <!-- The Podcast source's transcript status, for the header line. The same
-       query as the page's own, so the two share one fetch. -->
-  <DataSource id="podcastTranscript" when="{!!podcastSource}" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
-    body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [podcastSource] }}" />
-  <!-- The project folders and which one is open ({open, name, projects};
-       list_projects() in serve_media.py), for the Projects page and the name
-       at the top of the nav panel. -->
+  <!-- The project folders and which one is open ({open, name, genre, sources,
+       projects}; list_projects() in serve_media.py): the header's picker, the
+       editor the open project's genre opens in, and the sources its tools
+       choose among. -->
   <DataSource id="projects" url="http://127.0.0.1:8765/projects" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
        changed ({changed: 'takes'|'sources'|'exports'|'projects'})
@@ -500,97 +498,56 @@
     onSuccess="voiceTests.refetch()"
     errorNotificationMessage="{$error.message}" />
 
-  <!-- New project, from the header: a name, then Create makes the project
-         and opens it (switchProject, as the Projects page's New project). -->
+  <!-- New project, from the header: a name, its genre (fixed for good: what
+         you're making, which sets the editor it opens in) and a first source;
+         Create makes the project and opens it (switchProject). -->
   <ModalDialog id="newProjectDialog" title="New project">
     <TextBox id="newProjectDialogName" placeholder="Name" width="100%" />
+    <Select id="newProjectGenre" placeholder="Genre" width="100%">
+      <Option value="screencast" label="Screencast" />
+      <Option value="podcast" label="Podcast" />
+    </Select>
+    <Select id="newProjectSource" data="{sources}" valueField="name" labelField="name"
+      placeholder="First source" width="100%" />
     <HStack>
-      <Button label="Create" enabled="{!!(newProjectDialogName.value || '').trim() &amp;&amp; !opening}"
+      <Button label="Create"
+        enabled="{!!(newProjectDialogName.value || '').trim() &amp;&amp; !!newProjectGenre.value &amp;&amp; !!newProjectSource.value &amp;&amp; !opening}"
         onClick="
           const name = newProjectDialogName.value.trim();
-          if (switchProject('new', { name }, name)) { newProjectDialogName.setValue(''); newProjectDialog.close(); }
+          if (switchProject('new', { name, genre: newProjectGenre.value, source: newProjectSource.value }, name)) {
+            newProjectDialogName.setValue('');
+            newProjectDialog.close();
+          }
         " />
       <Button label="Cancel" variant="ghost" onClick="newProjectDialog.close()" />
     </HStack>
   </ModalDialog>
   <AppHeader>
+    <!-- Clean and minimal: the title (back to the open project's editor),
+         the project picker, New project and a settings icon. Everything else
+         (Exports, Manage projects, Audio, trace and Inspector) is on the
+         Settings page, which belongs to the open project. -->
     <HStack verticalAlignment="center" width="100%">
-      <H3>Bram Studio</H3>
-      <!-- The open project, so it is always clear which one a recording
-           will land in. It is here, not in the nav panel: the panel's logo
-           slot doesn't wrap, and clipped a long name at both ends. -->
-      <!-- The open project, as a picker on every page: choosing one opens it,
-           as the Projects page's Open does (switchProject). New project and
-           Manage (the Projects page, out of the nav) are at the right. -->
-      <Select when="{!!projects.value}" width="220px"
-        data="{(projects.value ? projects.value.projects : []).map((p) => ({ label: p.name, value: p.slug }))}"
+      <Link to="/"><H3>Bram Studio</H3></Link>
+      <!-- The open project, as a picker on every page, each labeled with its
+           genre: choosing one opens it (switchProject). -->
+      <Select when="{!!projects.value}" width="420px"
+        data="{(projects.value ? projects.value.projects : []).map((p) => ({ label: p.name + (p.genre ? ' · ' + p.genre : ''), value: p.slug }))}"
         initialValue="{projects.value ? projects.value.open : ''}" enabled="{!opening}"
         onDidChange="(v) => {
           const p = (projects.value.projects || []).find((x) => x.slug === v);
           if (p &amp;&amp; v !== projects.value.open) switchProject('open', { slug: v }, p.name);
         }" />
-      <!-- On the Scenes page, its source picker lives here, in the header
-           that never scrolls; scenesSource keeps the choice across visits to
-           other pages (the picker is only mounted on /). Everything on the
-           page reads it as sourceChoice.value, as before. -->
-      <Select when="{$pathname === '/'}" id="sourceChoice" data="{sources}" valueField="name" labelField="name"
-        placeholder="Choose a source" width="260px" initialValue="{scenesSource}"
-        onDidChange="(v) => { scenesSource = v || ''; audition = null; playing = ''; scene = null; }" />
-      <!-- On the Podcast page, its source and transcript line live here, in
-           the header that never scrolls ($pathname, as in
-           https://www.xmlui.org/docs/context-variables#pathname). The source
-           is the app's (podcastSource), passed to the page, so it is kept
-           across visits to other pages. -->
-      <Select when="{$pathname === '/podcast'}" id="podcastSourcePick" data="{sources}"
-        valueField="name" labelField="name" placeholder="Choose a source" width="260px"
-        initialValue="{podcastSource}" onDidChange="(v) => podcastSource = v || ''" />
-      <Text variant="secondary" when="{$pathname === '/podcast' &amp;&amp; !!podcastSource &amp;&amp; podcastTranscript.value &amp;&amp; podcastTranscript.value.length > 0}"
-        value="{podcastTranscript.value &amp;&amp; podcastTranscript.value[0]
-          ? (podcastTranscript.value[0].status === 'done'
-              ? 'Transcribed ' + podcastTranscript.value[0].finished_at + ' with ' + podcastTranscript.value[0].model
-              : 'Transcript ' + podcastTranscript.value[0].status)
-          : ''}" />
+      <Spinner when="{!!opening}" />
       <SpaceFiller />
       <Button label="New project" variant="outlined" size="sm" enabled="{!opening}"
         onClick="newProjectDialog.open()" />
-      <!-- Exports belong to the screencast editor: reached from it, not
-           from the nav. -->
-      <Link when="{$pathname === '/'}" to="/exports" label="Exports" />
-      <Link when="{$pathname === '/exports'}" to="/" label="Screencast" />
-      <Link to="/projects" label="Manage" />
-      <!-- XMLUI trace viewer. The studio carries its own xs-diff.html and the
-           xmlui-parser.es.js it imports (vendor/), as it carries its own engine;
-           config.json's xmluiConfig.xsVerbose turns capture on. Capture costs
-           time in every handler, so the button beside it turns it off and on:
-           serve_media.py's /trace rewrites config.json, and since the engine
-           reads it only at startup, the page reloads (location.reload() as in
-           https://www.xmlui.org/docs/globals#resetlocalstorage). xmluiConfig
-           isn't visible to markup (https://www.xmlui.org/docs/xmlui-config),
-           so the button reads the setting from GET /trace (traceState). -->
-      <DataSource id="traceState" url="http://127.0.0.1:8765/trace" />
-      <Button size="xs" variant="ghost" label="{traceState.value?.on ? 'Trace on' : 'Trace off'}"
-        tooltip="{traceState.value?.on ? 'Trace capture is on (Inspector can export). Click to turn it off and reload.' : 'Trace capture is off (faster). Click to turn it on and reload.'}"
-        onClick="
-          Actions.callApi({ url: 'http://127.0.0.1:8765/trace', method: 'post', invalidates: [],
-                            body: { on: !traceState.value?.on } });
-          location.reload();
-        " />
-      <Inspector src="/vendor/xs-diff.html"
-        tooltip="{traceState.value?.on ? 'Inspector: XMLUI trace' : 'Inspector: trace capture is off, so there is nothing to export (turn it on with Trace off)'}" />
+      <!-- Settings, and back: away from the editor the same icon returns to it. -->
+      <Button icon="cog" variant="ghost" size="sm"
+        tooltip="{$pathname === '/' ? 'Settings' : 'Back to the project'}"
+        onClick="navigate($pathname === '/' ? '/settings' : '/')" />
     </HStack>
   </AppHeader>
-  <NavPanel>
-    <property name="logoTemplate">
-      <Fragment/>
-    </property>
-    <property name="footerTemplate">
-      <Fragment/>
-    </property>
-    <NavLink label="Screencast" to="/" />
-    <NavLink label="Podcast" to="/podcast" />
-    <NavLink label="Audio" to="/bench" />
-    <NavLink label="Settings" to="/settings" />
-  </NavPanel>
   <Pages fallbackPath="/">
     <!-- Projects: a screencast each, a folder under projects/ (studio_paths.py).
          Open switches Studio to one; Create makes an empty one and opens it.
@@ -840,20 +797,15 @@
         <Spinner />
         <Text value="{'Opening ' + opening + '…'}" />
       </HStack>
-      <H2>New project</H2>
-      <HStack verticalAlignment="center">
-        <TextBox id="newProjectName" placeholder="Name" width="260px" />
-        <Button label="Create"
-          enabled="{!!newProjectName.value &amp;&amp; !!newProjectName.value.trim() &amp;&amp; !opening}"
-          tooltip="Make an empty project with this name and open it"
-          onClick="
-            if (switchProject('new', { name: newProjectName.value.trim() }, newProjectName.value.trim())) newProjectName.setValue('');
-          " />
-      </HStack>
     </Page>
     <Page url="/">
-      <!-- The source picker (sourceChoice) is in the app header, as the
-           Podcast page's is. -->
+      <!-- The open project's editor, by its genre (fixed when the project was
+           made): a podcast opens the Podcast editor on the project's sources,
+           anything else the screencast (scenes) editor. Nothing shows until
+           /projects has answered, so the wrong editor never flashes. -->
+      <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
+        sources="{projects.value ? (projects.value.sources || []) : []}" />
+      <Fragment when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}">
       <HStack verticalAlignment="center">
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
              3 s callout of its name at the top right, an ordinary item to
@@ -915,9 +867,37 @@
            Collapsed behind "Make a scene", since an agent may have drafted
            the scenes already
            (https://www.xmlui.org/docs/reference/components/ExpandableItem). -->
-      <ExpandableItem when="{!!sourceChoice.value &amp;&amp; !playing}" summary="Make a scene"
+      <ExpandableItem when="{!playing}" summary="Make a scene"
         iconPosition="start" fullWidthSummary="true">
         <VStack>
+        <!-- Which of the project's sources to cut from (project.json's
+             sources, via /projects); scenesSource remembers the choice while
+             the page is open, and the first source is the default. Add a
+             source puts another shared video (sources/ or the Desktop) in
+             the project (/projects/sources/add) and chooses it. -->
+        <HStack verticalAlignment="center">
+          <Select id="sourceChoice" width="300px" placeholder="Choose a source"
+            data="{(projects.value ? (projects.value.sources || []) : []).map((n) => ({ name: n }))}"
+            valueField="name" labelField="name"
+            initialValue="{projects.value &amp;&amp; (projects.value.sources || []).includes(scenesSource) ? scenesSource : (projects.value &amp;&amp; projects.value.sources ? projects.value.sources[0] : '')}"
+            onDidChange="(v) => { scenesSource = v || ''; audition = null; scene = null; }" />
+          <Select id="addSourcePick" width="300px" placeholder="Add a source…"
+            data="{(sources.value || []).filter((x) => !(projects.value &amp;&amp; (projects.value.sources || []).includes(x.name)))}"
+            valueField="name" labelField="name"
+            onDidChange="(v) => {
+              if (!v) return;
+              try {
+                Actions.callApi({ url: 'http://127.0.0.1:8765/projects/sources/add', method: 'post', invalidates: [], body: { source: v } });
+                projects.refetch();
+                scenesSource = v;
+                sourceChoice.setValue(v);
+              } catch (e) {
+                toast.error(e.message);
+              }
+              addSourcePick.setValue('');
+            }" />
+        </HStack>
+        <VStack when="{!!sourceChoice.value}">
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; nextClipFrom(lastSceneEnd(sourceChoice.value)); }" />
@@ -966,6 +946,7 @@
             " />
           <Spinner when="{clipBusy}" />
         </HStack>
+        </VStack>
         </VStack>
       </ExpandableItem>
       <!-- At page level, so it runs for the capture view and the take editor
@@ -1091,6 +1072,7 @@
             " />
         </HStack>
       </DndItems>
+      </Fragment>
     </Page>
     <!-- Exports, a page of its own between Takes and Audio (it was a
          collapsible panel on the Takes page until 2026-10-01). The finishing
@@ -1222,90 +1204,94 @@
       </Items>
       </Theme>
     </Page>
-    <Page url="/bench">
-      <H2>Audio recording test</H2>
-      <HStack verticalAlignment="center">
-        <Select id="mic" data="{devices}" valueField="name" labelField="name"
-          initialValue="MacBook Air Microphone" width="260px" />
-        <Select id="recorderChoice" initialValue="ffmpeg-raw" width="300px">
-          <Option value="ffmpeg-raw" label="ffmpeg raw (today's session.sh)" />
-          <Option value="ffmpeg-async" label="ffmpeg + gap fill" />
-          <Option value="native" label="native macOS (no ffmpeg)" />
-        </Select>
-        <Button label="Test (10s)" enabled="{!voiceTest.inProgress}"
-          onClick="
-            toast('Recording 10s: read the sentence below now');
-            voiceTest.execute({ mic: mic.value, recorder: recorderChoice.value });
-          " />
-      </HStack>
-      <Text>
-        Read aloud: "She sells sea shells by the seashore, and the quick brown fox
-        jumps past six sharp scissors."
-      </Text>
-      <Table data="{voiceTests}">
-        <!-- Never show "No data available" (it flashes while data loads). -->
-        <property name="noDataTemplate">
-          <Fragment/>
-        </property>
-        <Column header="Tested" bindTo="created_at" width="190px" />
-        <Column header="Mic" bindTo="mic" />
-        <Column header="Recorder" bindTo="recorder" />
-        <Column header="Expected s" bindTo="expected_s" />
-        <Column header="Captured s" bindTo="captured_s" />
-        <Column header="Short %" bindTo="short_pct" />
-        <Column header="Clicks" bindTo="clicks" />
-        <Column header="Peak dB" bindTo="peak_db" />
-        <Column header="RMS dB" bindTo="rms_db" />
-        <Column header="Play">
-          <HStack>
-            <Link to="{$item.raw_url}" target="_blank" label="raw" />
-            <Link to="{$item.leveled_url}" target="_blank" label="leveled" />
-          </HStack>
-        </Column>
-      </Table>
-
-      <!-- Audio playback test: MediaPlayer's kind="audio" (xmlui-org/xmlui#3913)
-           on any take or source. An audio element plays an MP4's audio track,
-           so no separate audio files are needed. -->
-      <VStack var.audioLog="{[]}" var.audioDuration="">
-        <H2>Audio playback test</H2>
-        <HStack verticalAlignment="center">
-          <Select id="audioChoice" placeholder="Play from…" width="480px"
-            data="{[
-              ...(takes.value || []).map(t => ({ label: 'Scene: ' + t.name.slice(0, 60), value: t.url })),
-              ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
-            ]}"
-            onDidChange="audioLog = []; audioDuration = ''">
-            <!-- A take's name is long enough to wrap, and a Select's wrapped
-                 value centers by default (its face is a button). The
-                 template's width and textAlign make it wrap from the left
-                 (https://www.xmlui.org/docs/howto/customize-a-selects-selected-value). -->
-            <property name="valueTemplate">
-              <Text width="100%" textAlign="start" value="{$item.label}" />
-            </property>
-          </Select>
-          <Button label="Clear log" variant="outlined" onClick="audioLog = []" />
-        </HStack>
-        <MediaPlayer kind="audio" when="{audioChoice.value}" src="{audioChoice.value}"
-          onLoadedMetadata="(e) => audioDuration = e.duration.toFixed(2) + ' s'"
-          onPlay="(e) => audioLog = [...audioLog, 'play at ' + e.currentTime.toFixed(2) + ' s']"
-          onPause="(e) => audioLog = [...audioLog, 'pause at ' + e.currentTime.toFixed(2) + ' s']"
-          onSeeked="(e) => audioLog = [...audioLog, 'seeked at ' + e.currentTime.toFixed(2) + ' s']"
-          onEnded="(e) => audioLog = [...audioLog, 'ended at ' + e.currentTime.toFixed(2) + ' s']" />
-        <Text when="{audioChoice.value}" value="Duration: {audioDuration || '(loading)'}" />
-        <Items data="{audioLog}">
-          <Text value="{$item}" />
-        </Items>
-      </VStack>
-    </Page>
-    <!-- Studio's settings: components/Settings.xmlui. -->
+    <!-- Studio's settings (components/Settings.xmlui: Exports, Manage
+         projects, speakers, podcast editing, safekeeping, trace), then the
+         Audio bench, kept here because it reads the app's lists (devices,
+         voiceTests, takes, sources), which a component can't see. -->
     <Page url="/settings">
       <Settings />
-    </Page>
-    <!-- Editing a recorded conversation; for now, who speaks when, in a
-         source (components/Podcast.xmlui). -->
-    <Page url="/podcast">
-      <Podcast source="{podcastSource}" />
+      <VStack paddingHorizontal="$space-6" paddingBottom="$space-6">
+        <Theme paddingLeft-summary-ExpandableItem="0">
+          <ExpandableItem initiallyExpanded="{false}" iconPosition="start" summary="Audio · recording and playback tests">
+            <VStack gap="$space-3">
+            <H3>Recording test</H3>
+            <HStack verticalAlignment="center">
+              <Select id="mic" data="{devices}" valueField="name" labelField="name"
+                initialValue="MacBook Air Microphone" width="260px" />
+              <Select id="recorderChoice" initialValue="ffmpeg-raw" width="300px">
+                <Option value="ffmpeg-raw" label="ffmpeg raw (today's session.sh)" />
+                <Option value="ffmpeg-async" label="ffmpeg + gap fill" />
+                <Option value="native" label="native macOS (no ffmpeg)" />
+              </Select>
+              <Button label="Test (10s)" enabled="{!voiceTest.inProgress}"
+                onClick="
+                  toast('Recording 10s: read the sentence below now');
+                  voiceTest.execute({ mic: mic.value, recorder: recorderChoice.value });
+                " />
+            </HStack>
+            <Text>
+              Read aloud: "She sells sea shells by the seashore, and the quick brown fox
+              jumps past six sharp scissors."
+            </Text>
+            <Table data="{voiceTests}">
+              <!-- Never show "No data available" (it flashes while data loads). -->
+              <property name="noDataTemplate">
+                <Fragment/>
+              </property>
+              <Column header="Tested" bindTo="created_at" width="190px" />
+              <Column header="Mic" bindTo="mic" />
+              <Column header="Recorder" bindTo="recorder" />
+              <Column header="Expected s" bindTo="expected_s" />
+              <Column header="Captured s" bindTo="captured_s" />
+              <Column header="Short %" bindTo="short_pct" />
+              <Column header="Clicks" bindTo="clicks" />
+              <Column header="Peak dB" bindTo="peak_db" />
+              <Column header="RMS dB" bindTo="rms_db" />
+              <Column header="Play">
+                <HStack>
+                  <Link to="{$item.raw_url}" target="_blank" label="raw" />
+                  <Link to="{$item.leveled_url}" target="_blank" label="leveled" />
+                </HStack>
+              </Column>
+            </Table>
+
+            <!-- Audio playback test: MediaPlayer's kind="audio" (xmlui-org/xmlui#3913)
+                 on any take or source. An audio element plays an MP4's audio track,
+                 so no separate audio files are needed. -->
+            <VStack var.audioLog="{[]}" var.audioDuration="">
+              <H3>Playback test</H3>
+              <HStack verticalAlignment="center">
+                <Select id="audioChoice" placeholder="Play from…" width="480px"
+                  data="{[
+                    ...(takes.value || []).map(t => ({ label: 'Scene: ' + t.name.slice(0, 60), value: t.url })),
+                    ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
+                  ]}"
+                  onDidChange="audioLog = []; audioDuration = ''">
+                  <!-- A take's name is long enough to wrap, and a Select's wrapped
+                       value centers by default (its face is a button). The
+                       template's width and textAlign make it wrap from the left
+                       (https://www.xmlui.org/docs/howto/customize-a-selects-selected-value). -->
+                  <property name="valueTemplate">
+                    <Text width="100%" textAlign="start" value="{$item.label}" />
+                  </property>
+                </Select>
+                <Button label="Clear log" variant="outlined" onClick="audioLog = []" />
+              </HStack>
+              <MediaPlayer kind="audio" when="{audioChoice.value}" src="{audioChoice.value}"
+                onLoadedMetadata="(e) => audioDuration = e.duration.toFixed(2) + ' s'"
+                onPlay="(e) => audioLog = [...audioLog, 'play at ' + e.currentTime.toFixed(2) + ' s']"
+                onPause="(e) => audioLog = [...audioLog, 'pause at ' + e.currentTime.toFixed(2) + ' s']"
+                onSeeked="(e) => audioLog = [...audioLog, 'seeked at ' + e.currentTime.toFixed(2) + ' s']"
+                onEnded="(e) => audioLog = [...audioLog, 'ended at ' + e.currentTime.toFixed(2) + ' s']" />
+              <Text when="{audioChoice.value}" value="Duration: {audioDuration || '(loading)'}" />
+              <Items data="{audioLog}">
+                <Text value="{$item}" />
+              </Items>
+            </VStack>
+            </VStack>
+          </ExpandableItem>
+        </Theme>
+      </VStack>
     </Page>
   </Pages>
 </App>

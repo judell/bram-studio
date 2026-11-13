@@ -1,5 +1,8 @@
-<!-- The Podcast page: where a recorded conversation is edited and its
-     companion composed. Pick a source, transcribe it (serve_media.py's
+<!-- The Podcast editor, what a podcast project opens in (Main.xmlui's page
+     at /): where a recorded conversation is edited and its companion
+     composed. Its source is the project's (project.json's sources, passed
+     as the sources prop): the first one, with a picker only when the project
+     has several. Transcribe it (serve_media.py's
      /transcripts/start runs whisper-cli with the names you give it), then
      edit it on the Edit text tab. A source is transcribed once: Transcribe
      is offered only while it has no finished transcript. The project's
@@ -18,7 +21,7 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="{$props.source || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
+  var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
   var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -190,11 +193,13 @@
   </script>
 
   <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 100px)">
-    <!-- The source is chosen in the app header (Main.xmlui's
-         podcastSource), with the transcript line beside it; source follows
-         it here. -->
-    <ChangeListener listenTo="{$props.source}"
-      onDidChange="source = $props.source || ''; currentId = null; progress = null;" />
+    <!-- The project's sources can change (another project opened, a source
+         added): keep the chosen one if it's still there, else the first. -->
+    <ChangeListener listenTo="{$props.sources}"
+      onDidChange="
+        const list = $props.sources || [];
+        if (!list.includes(source)) { source = list[0] || ''; currentId = null; progress = null; }
+      " />
 
     <!-- Transcribing, offered only for a source with no transcript (or a
          failed one): the names go to whisper as its prompt, which is what
@@ -217,13 +222,25 @@
          the page doesn't: it sizes itself to the window (the root VStack's
          height: the window less Studio's header and the page padding, ~100
          px), and the splitter takes the height left (height="*" in a parent
-         of fixed height). The source picker is in the app header. XMLUI's scrollWholePage is
+         of fixed height). XMLUI's scrollWholePage is
          App-wide only; binding it to $pathname so only Podcast stopped
          scrolling didn't take (2026-11-13). The tabs hold only their
          controls; which list the right side shows follows the tab (view). -->
     <Splitter when="{!!source}" orientation="horizontal" height="*"
       initialPrimarySize="40%" minPrimarySize="20%" maxPrimarySize="-320px">
       <VStack height="100%" overflowY="auto" gap="$space-4" paddingRight="$space-4">
+        <!-- Which recording, only when the project has more than one; then
+             when and how it was transcribed. -->
+        <Select when="{($props.sources || []).length > 1}" width="100%"
+          data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
+          initialValue="{source}"
+          onDidChange="(v) => { if (v &amp;&amp; v !== source) { source = v; currentId = null; progress = null; } }" />
+        <Text variant="secondary" when="{transcript.value &amp;&amp; transcript.value.length > 0}"
+          value="{transcript.value &amp;&amp; transcript.value[0]
+            ? (transcript.value[0].status === 'done'
+                ? 'Transcribed ' + transcript.value[0].finished_at + ' with ' + transcript.value[0].model
+                : 'Transcript ' + transcript.value[0].status)
+            : ''}" />
         <MediaPlayer id="speakerPlayer" width="100%"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
