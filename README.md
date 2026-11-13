@@ -43,7 +43,8 @@ voice recorder uses AVFoundation).
   **Transcribe** it, with the names of who's in it (whisper.cpp's `whisper-cli`; the
   `ggml-large-v3-turbo` model when it's in `~/.local/share/whisper-models/`, else
   `small.en`). The prompt asks whisper to keep "um", "uh" and repeats, so they can be cut.
-  Build the list of speakers with the dropdown under the source. **Edit text** shows the
+  The project's speakers are kept on the Settings page (**Speakers in** the open
+  project: add, rename, delete). **Edit text** shows the
   transcript as plain text with no time codes, a paragraph at a time: delete whatever you
   want gone, and the paragraph saves when you click outside it. Deleted words are cut; a
   word changed in place is a correction (its time stays); cut words pasted back are

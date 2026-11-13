@@ -1,8 +1,10 @@
 <!-- Studio's settings, saved by serve_media.py's /settings in
      projects/.studio-settings.json, with this machine's projects (projects/
-     is git-ignored). Laid out as Bram's Settings page is
-     (~/bram/app/tools/components/Settings.xmlui): a heading, where settings
-     are saved, then one group per area, each with an ⓘ that explains it.
+     is git-ignored). A heading, where settings are saved, then one group per
+     area, each collapsed to its name and a two-to-three-word phrase, with an
+     ⓘ inside that explains it. The expanders' summaries sit flush left as
+     Bram's Advanced one does (~/bram/app/tools/components/Settings.xmlui,
+     Theme paddingLeft-summary-ExpandableItem="0").
 
      Safekeeping: the default folder for copies of any project without its
      own location (the Projects page). A copy goes to folder/project, so
@@ -10,6 +12,14 @@
      to be made, as on the Projects page (the server asks for create: true). -->
 <Component name="Settings">
   <DataSource id="settings" url="http://127.0.0.1:8765/settings" />
+  <!-- Speakers belong to the open project (its studio.db), unlike the rest of
+       this page; projects names it. The speakers event (an agent's change,
+       or another page's) refetches the list. -->
+  <DataSource id="openProject" url="http://127.0.0.1:8765/projects" />
+  <DataSource id="speakers" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT id, name, color FROM speakers ORDER BY position, id', params: [] }}" />
+  <EventSource url="http://127.0.0.1:8765/events"
+    onMessage="(m) => { if (m.changed === 'speakers') speakers.refetch(); }" />
   <script>
     function saveDefault(location, create) {
       try {
@@ -29,6 +39,16 @@
       }
       settings.refetch();
     }
+    function speakerOp(op, body) {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/speakers/' + op, method: 'post', invalidates: [], body });
+        speakers.refetch();
+        return true;
+      } catch (e) {
+        toast.error(e.message);
+        return false;
+      }
+    }
     function savePodcast() {
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
@@ -45,68 +65,113 @@
   <VStack padding="$space-6" gap="$space-5">
     <H2>Settings</H2>
     <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
-    <VStack gap="$space-3" when="{settings.loaded}">
-      <HStack verticalAlignment="center" gap="$space-1">
-        <Button icon="info" size="xs" variant="ghost" tooltip="About Safekeeping" onClick="safeInfo.open()" />
-        <H3>Safekeeping</H3>
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Default folder" width="170px" />
-        <TextBox id="defaultBox" width="*" initialValue="{settings.value ? (settings.value.defaultSafekeeping || '') : ''}"
-          placeholder="A folder for copies, such as ~/OneDrive/BramStudio" />
-        <Button label="Save" variant="outlined" size="sm" onClick="saveDefault(defaultBox.value.trim())" />
-      </HStack>
-      <Text variant="secondary"
-        value="{settings.value &amp;&amp; settings.value.defaultSafekeeping
-          ? 'Projects without their own location copy into ' + settings.value.defaultSafekeeping + ', one subfolder each.'
-          : 'No default yet: each project needs its own location, on the Projects page.'}" />
-    </VStack>
+    <!-- Speakers in the open project: add, rename (the pencil; the row keeps
+         its own draft), delete (its words and segments go back to no
+         speaker). Talk time per speaker isn't shown: it counted whisper's
+         segments, and speaker tagging (podcast-speakers-voiceprints) will
+         count tagged words. -->
+    <Theme paddingLeft-summary-ExpandableItem="0">
+      <ExpandableItem initiallyExpanded="{false}" iconPosition="start" summary="{'Speakers in ' + (openProject.value ? openProject.value.name : 'this project') + ' · who is talking'}">
+        <VStack gap="$space-3">
+          <HStack>
+            <Button icon="info" size="xs" variant="ghost" label="About speakers" onClick="speakersInfo.open()" />
+          </HStack>
+          <Text variant="secondary" when="{speakers.loaded &amp;&amp; (speakers.value || []).length === 0}"
+            value="No speakers yet." />
+          <Items data="{speakers}">
+            <HStack verticalAlignment="center" var.editing="{false}" var.draft="{$item.name}">
+              <Text value="●" color="{$item.color}" />
+              <Text when="{!editing}" width="250px" variant="strong" value="{$item.name}" />
+              <TextBox when="{editing}" width="250px" initialValue="{$item.name}" onDidChange="(v) => draft = v" />
+              <Button when="{!editing}" size="xs" variant="ghost" icon="pencil" tooltip="Rename"
+                onClick="draft = $item.name; editing = true" />
+              <Button when="{editing}" size="xs" label="Save"
+                onClick="if (speakerOp('rename', { id: $item.id, name: draft })) editing = false" />
+              <Button when="{editing}" size="xs" variant="ghost" label="Cancel" onClick="editing = false" />
+              <Button when="{!editing}" size="xs" variant="ghost" icon="trash" tooltip="Delete this speaker"
+                onClick="if (confirm('Delete ' + $item.name + '?', 'Whatever is tagged with this speaker goes back to no speaker.', 'Delete', 'Cancel')) speakerOp('delete', { id: $item.id })" />
+            </HStack>
+          </Items>
+          <HStack verticalAlignment="center">
+            <TextBox id="newSpeaker" width="250px" placeholder="A speaker's name" />
+            <Button size="sm" variant="outlined" label="Add" enabled="{!!(newSpeaker.value || '').trim()}"
+              onClick="if (speakerOp('add', { name: newSpeaker.value })) newSpeaker.setValue('')" />
+          </HStack>
+        </VStack>
+      </ExpandableItem>
+    </Theme>
     <!-- Podcast editing: the Podcast page's durations and sizes
          (serve_media.py's PODCAST_SETTINGS: default, minimum, maximum), so
          none is fixed in code. Saved together; the server checks the range. -->
-    <VStack gap="$space-3" when="{settings.loaded}">
-      <HStack verticalAlignment="center" gap="$space-1">
-        <Button icon="info" size="xs" variant="ghost" tooltip="About Podcast editing" onClick="podcastInfo.open()" />
-        <H3>Podcast editing</H3>
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Pause between words (ms)" width="250px" />
-        <NumberBox id="pauseBox" width="140px" integersOnly="true" minValue="20" maxValue="500" step="10"
-          initialValue="{settings.value.podcast.pauseMs}" />
-        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.pauseMs}" />
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Fade at each cut (ms)" width="250px" />
-        <NumberBox id="fadeBox" width="140px" integersOnly="true" minValue="0" maxValue="100" step="5"
-          initialValue="{settings.value.podcast.fadeMs}" />
-        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.fadeMs}" />
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Paragraph break after a pause of (s)" width="250px" />
-        <NumberBox id="paraPauseBox" width="140px" minValue="0.1" maxValue="5" step="0.1"
-          initialValue="{settings.value.podcast.paragraphPauseS}" />
-        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphPauseS}" />
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Longest paragraph (words)" width="250px" />
-        <NumberBox id="paraWordsBox" width="140px" integersOnly="true" minValue="20" maxValue="1000" step="10"
-          initialValue="{settings.value.podcast.paragraphWords}" />
-        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
-      </HStack>
-      <HStack verticalAlignment="center">
-        <Text value="Fillers (Elide tics cuts these)" width="250px" />
-        <TextBox id="fillersBox" width="*" initialValue="{settings.value.podcast.fillers}" />
-      </HStack>
-      <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.fillers}" />
-      <HStack verticalAlignment="center">
-        <Text value="Repeats to keep (not stutters)" width="250px" />
-        <TextBox id="keepBox" width="*" initialValue="{settings.value.podcast.repeatsToKeep}" />
-      </HStack>
-      <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.repeatsToKeep}" />
-      <HStack>
-        <Button label="Save" variant="outlined" size="sm" onClick="savePodcast()" />
-      </HStack>
-    </VStack>
+    <Theme paddingLeft-summary-ExpandableItem="0">
+      <ExpandableItem initiallyExpanded="{false}" iconPosition="start" summary="Podcast editing · pauses, fades, tics" when="{settings.loaded}">
+        <VStack gap="$space-3">
+          <HStack>
+            <Button icon="info" size="xs" variant="ghost" label="About podcast editing" onClick="podcastInfo.open()" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Pause between words (ms)" width="250px" />
+            <NumberBox id="pauseBox" width="140px" integersOnly="true" minValue="20" maxValue="500" step="10"
+              initialValue="{settings.value.podcast.pauseMs}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.pauseMs}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Fade at each cut (ms)" width="250px" />
+            <NumberBox id="fadeBox" width="140px" integersOnly="true" minValue="0" maxValue="100" step="5"
+              initialValue="{settings.value.podcast.fadeMs}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.fadeMs}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Paragraph break after a pause of (s)" width="250px" />
+            <NumberBox id="paraPauseBox" width="140px" minValue="0.1" maxValue="5" step="0.1"
+              initialValue="{settings.value.podcast.paragraphPauseS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphPauseS}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Longest paragraph (words)" width="250px" />
+            <NumberBox id="paraWordsBox" width="140px" integersOnly="true" minValue="20" maxValue="1000" step="10"
+              initialValue="{settings.value.podcast.paragraphWords}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Fillers (Elide tics cuts these)" width="250px" />
+            <TextBox id="fillersBox" width="*" initialValue="{settings.value.podcast.fillers}" />
+          </HStack>
+          <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.fillers}" />
+          <HStack verticalAlignment="center">
+            <Text value="Repeats to keep (not stutters)" width="250px" />
+            <TextBox id="keepBox" width="*" initialValue="{settings.value.podcast.repeatsToKeep}" />
+          </HStack>
+          <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.repeatsToKeep}" />
+          <HStack>
+            <Button label="Save" variant="outlined" size="sm" onClick="savePodcast()" />
+          </HStack>
+        </VStack>
+      </ExpandableItem>
+    </Theme>
+    <Theme paddingLeft-summary-ExpandableItem="0">
+      <ExpandableItem initiallyExpanded="{false}" iconPosition="start" summary="Safekeeping · default copy folder" when="{settings.loaded}">
+        <VStack gap="$space-3">
+          <HStack>
+            <Button icon="info" size="xs" variant="ghost" label="About safekeeping" onClick="safeInfo.open()" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Default folder" width="170px" />
+            <TextBox id="defaultBox" width="*" initialValue="{settings.value ? (settings.value.defaultSafekeeping || '') : ''}"
+              placeholder="A folder for copies, such as ~/OneDrive/BramStudio" />
+            <Button label="Save" variant="outlined" size="sm" onClick="saveDefault(defaultBox.value.trim())" />
+          </HStack>
+          <Text variant="secondary"
+            value="{settings.value &amp;&amp; settings.value.defaultSafekeeping
+              ? 'Projects without their own location copy into ' + settings.value.defaultSafekeeping + ', one subfolder each.'
+              : 'No default yet: each project needs its own location, on the Projects page.'}" />
+        </VStack>
+      </ExpandableItem>
+    </Theme>
+    <ModalDialog id="speakersInfo" title="Speakers">
+      <Text value="The people in this project's recordings, for tagging who says what on the Podcast page. Unlike the rest of Settings, which is this machine's, speakers belong to the open project: opening another project shows its own." />
+      <Text value="Deleting a speaker leaves the words tagged with them untagged; the words themselves stay." />
+    </ModalDialog>
     <ModalDialog id="podcastInfo" title="Podcast editing">
       <Text value="Pause between words: how long quiet must last to count as a pause. A cut is placed in the pause between the last word kept and the first word cut. Shorter dips happen inside words (the stop in 'be-tween'), so a value too small can put a cut inside a word; too large, and quick speech has no pause to cut in." />
       <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
