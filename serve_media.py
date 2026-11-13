@@ -53,6 +53,13 @@ and {"transcribing": source, done_s, duration_s} on /events while it runs);
 POST /speakers/add {name}, /speakers/rename {id, name}, /speakers/delete {id};
 POST /segments/speaker {speaker_id, ids | source, t0, t1} labels segments.
 Each announces {"changed": "transcripts"|"speakers"} on /events.
+Editing by text: GET /transcripts/text?source= is the kept words as text;
+POST /transcripts/edit {source, text} saves an edited copy (deleted words are
+cut, words changed one for one are corrections), /transcripts/undo {source}
+takes the last change back, /transcripts/restore {source, ids} puts cut words
+back; GET /transcripts/cuts?source= is the edit list, cut spans snapped to
+quiet and the kept intervals on the edited timeline. Each change announces
+{"changed": "words"}.
 """
 import collections
 import hashlib
@@ -1782,6 +1789,7 @@ SPEAKER_COLORS = ("#2a78d6", "#d6602a", "#2a9d5c", "#9b4dca", "#c9a227", "#d63a6
 SEGMENT_LINE = re.compile(r"^\[(\d+):(\d+):([\d.]+) --> ")
 transcribing = {}  # source -> {"done_s", "duration_s"} while whisper-cli runs; one at a time
 TRANSCRIBE_LOCK = threading.Lock()
+TEXT_LOCK = threading.Lock()  # one text edit (save, undo, restore) at a time
 
 
 def transcribe_model():
@@ -1837,7 +1845,9 @@ def run_transcript(source, path, prompt, model):
         with sqlite3.connect(DB) as db:
             db.execute("DELETE FROM segments WHERE source = ?", (source,))
             db.executemany("INSERT INTO segments (source, t0, t1, text) VALUES (?, ?, ?, ?)", rows)
-        print(f"transcribe done source={source} segments={len(rows)} secs={time.time() - t_start:.1f}", flush=True)
+            n_words = build_words(db, source)
+        print(f"transcribe done source={source} segments={len(rows)} words={n_words} "
+              f"secs={time.time() - t_start:.1f}", flush=True)
         finish("done")
     except Exception as e:
         print(f"transcribe failed source={source} error={e}", flush=True)
@@ -1846,6 +1856,266 @@ def run_transcript(source, path, prompt, model):
 
 def datetime_now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Editing a podcast by editing its text (the Podcast page's Edit text tab).
+# A transcript's words, built from whisper's tokens (transcript.json), carry
+# their source times; editing the text marks words cut, corrects how they
+# read, or restores them, and never moves a time. The cut list (text_cuts)
+# turns the cut words into source spans whose edges sit in the quiet between
+# words, which is the edit list a later step renders.
+WORDS_SQL = """CREATE TABLE IF NOT EXISTS words (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  i INTEGER NOT NULL,
+  t0 REAL NOT NULL,
+  t1 REAL NOT NULL,
+  text TEXT NOT NULL,
+  shown TEXT,
+  kept INTEGER NOT NULL DEFAULT 1,
+  cut_reason TEXT,
+  speaker_id INTEGER
+)"""
+TRANSCRIPT_EDITS_SQL = """CREATE TABLE IF NOT EXISTS transcript_edits (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  changes TEXT NOT NULL
+)"""
+# Paragraphs in the editable text, for reading only (saving ignores them): a
+# new one after a sentence that ends in a pause over PARAGRAPH_GAP, or after
+# any sentence once a paragraph passes PARAGRAPH_WORDS. On AIW, pauses alone
+# gave 11 paragraphs at 1.5 s and still one of 845 words at 0.5 s.
+PARAGRAPH_GAP = 0.5
+PARAGRAPH_WORDS = 120
+SNAP_WINDOW = 0.25  # a cut edge moves at most this far to reach quiet
+WORD_KEY = re.compile(r"[^\w']+")
+
+
+def transcript_folder(source):
+    return os.path.join(WORK, "transcripts", os.path.splitext(source)[0])
+
+
+def build_words(db, source):
+    # whisper's tokens joined into words: a token starting with a space
+    # starts a word, any other (a word's tail, punctuation) joins the one
+    # before; [_BEG_]-style markers are skipped. Replaces the source's words
+    # and its edit history.
+    path = os.path.join(transcript_folder(source), "transcript.json")
+    words = []
+    for seg in json.load(open(path))["transcription"]:
+        for tok in seg.get("tokens", []):
+            text = tok["text"]
+            if text.startswith("[_") or not text.strip():
+                continue
+            t0, t1 = tok["offsets"]["from"] / 1000, tok["offsets"]["to"] / 1000
+            if words and not text.startswith(" "):
+                words[-1][1] = t1
+                words[-1][2] += text
+            else:
+                words.append([t0, t1, text.strip()])
+    db.execute("DELETE FROM words WHERE source = ?", (source,))
+    db.execute("DELETE FROM transcript_edits WHERE source = ?", (source,))
+    db.executemany("INSERT INTO words (source, i, t0, t1, text) VALUES (?, ?, ?, ?, ?)",
+                   [(source, i, w[0], max(w[0], w[1]), w[2]) for i, w in enumerate(words)])
+    return len(words)
+
+
+def ensure_words(db, source):
+    # Words for a transcript made before the words table existed.
+    if db.execute("SELECT 1 FROM words WHERE source = ? LIMIT 1", (source,)).fetchone():
+        return True
+    if not os.path.isfile(os.path.join(transcript_folder(source), "transcript.json")):
+        return False
+    n = build_words(db, source)
+    db.commit()
+    print(f"words built source={source} words={n}", flush=True)
+    return True
+
+
+def word_key(text):
+    return WORD_KEY.sub("", text.lower())
+
+
+def kept_text(db, source):
+    # The kept words as running text, in paragraphs (PARAGRAPH_GAP).
+    out, prev, run = [], None, 0
+    for t0, t1, text in db.execute(
+            "SELECT t0, t1, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 ORDER BY i", (source,)):
+        if prev is not None:
+            ends = out[-1][-1:] in ".?!"
+            if ends and (t0 - prev > PARAGRAPH_GAP or run >= PARAGRAPH_WORDS):
+                out.append("\n\n")
+                run = 0
+            else:
+                out.append(" ")
+        out.append(text)
+        prev, run = t1, run + 1
+    return "".join(out)
+
+
+def text_summary(db, source):
+    kept, kept_s, cut, cut_s = db.execute(
+        "SELECT sum(kept), sum(CASE WHEN kept THEN t1 - t0 ELSE 0 END), sum(1 - kept), "
+        "sum(CASE WHEN kept THEN 0 ELSE t1 - t0 END) FROM words WHERE source = ?", (source,)).fetchone()
+    edits = db.execute("SELECT count(*) FROM transcript_edits WHERE source = ?", (source,)).fetchone()[0]
+    return {"text": kept_text(db, source), "keptWords": kept or 0, "cutWords": cut or 0,
+            "canUndo": edits > 0}
+
+
+def apply_text_edit(db, source, text):
+    # Diff the edited text against the kept words, word by word, on their
+    # letters (so punctuation alone never makes a cut):
+    # - deleted words are cut;
+    # - words replaced one for one are corrections: shown changes, time stays;
+    # - inserted words that match cut words between the same kept neighbors
+    #   are restored; other inserted words have no audio and are ignored.
+    import difflib
+    kept = db.execute("SELECT id, i, coalesce(shown, text), text FROM words "
+                      "WHERE source = ? AND kept = 1 ORDER BY i", (source,)).fetchall()
+    new = text.split()
+    a, b = [word_key(w[2]) for w in kept], [word_key(w) for w in new]
+    changes = {"cut": [], "restored": [], "corrected": []}
+    ignored = 0
+
+    def correct(word, typed):
+        if typed != word[2]:
+            changes["corrected"].append([word[0], word[2] if word[2] != word[3] else None,
+                                         None if typed == word[3] else typed])
+
+    def restore(at, typed):
+        # Cut words between kept[at - 1] and kept[at], matched to typed words.
+        nonlocal ignored
+        lo = kept[at - 1][1] if at > 0 else -1
+        hi = kept[at][1] if at < len(kept) else 1 << 30
+        gone = db.execute("SELECT id, text FROM words WHERE source = ? AND kept = 0 AND i > ? AND i < ? ORDER BY i",
+                          (source, lo, hi)).fetchall()
+        m = difflib.SequenceMatcher(None, [word_key(g[1]) for g in gone], [word_key(t) for t in typed], autojunk=False)
+        matched = 0
+        for blk in m.get_matching_blocks():
+            changes["restored"] += [g[0] for g in gone[blk.a:blk.a + blk.size]]
+            matched += blk.size
+        ignored += len(typed) - matched
+
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            for k in range(i2 - i1):
+                correct(kept[i1 + k], new[j1 + k])
+        elif op == "delete":
+            changes["cut"] += [w[0] for w in kept[i1:i2]]
+        elif op == "replace" and i2 - i1 == j2 - j1:
+            for k in range(i2 - i1):
+                correct(kept[i1 + k], new[j1 + k])
+        elif op == "replace":
+            changes["cut"] += [w[0] for w in kept[i1:i2]]
+            restore(i1, new[j1:j2])
+        else:  # insert
+            restore(i1, new[j1:j2])
+    record_text_change(db, source, changes)
+    return {"cut": len(changes["cut"]), "restored": len(changes["restored"]),
+            "corrected": len(changes["corrected"]), "ignored": ignored}
+
+
+def record_text_change(db, source, changes, reason="edit"):
+    # Apply {cut, restored, corrected: [[id, old shown, new shown]]} and keep
+    # it as one Undo step. Nothing to do records nothing.
+    if not any(changes.values()):
+        return False
+    # What each restored word was cut as, so Undo cuts it back the same way.
+    changes["restoredWas"] = {str(i): r for i, r in db.execute(
+        f"SELECT id, coalesce(cut_reason, 'edit') FROM words WHERE id IN ({','.join('?' * len(changes['restored']))})",
+        changes["restored"])} if changes["restored"] else {}
+    db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?", [(reason, i) for i in changes["cut"]])
+    db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in changes["restored"]])
+    db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in changes["corrected"]])
+    db.execute("INSERT INTO transcript_edits (source, created_at, changes) VALUES (?, ?, ?)",
+               (source, datetime_now(), json.dumps({**changes, "reason": reason})))
+    return True
+
+
+def undo_text_edit(db, source):
+    row = db.execute("SELECT id, changes FROM transcript_edits WHERE source = ? ORDER BY id DESC LIMIT 1",
+                     (source,)).fetchone()
+    if not row:
+        return None
+    ch = json.loads(row[1])
+    db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["cut"]])
+    was = ch.get("restoredWas", {})
+    db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
+                   [(was.get(str(i), "edit"), i) for i in ch["restored"]])
+    db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(old, i) for i, old, _ in ch["corrected"]])
+    db.execute("DELETE FROM transcript_edits WHERE id = ?", (row[0],))
+    return ch
+
+
+def silences(source):
+    # Quiet stretches in the transcript's 16 kHz audio, [start, end] seconds,
+    # measured once (ffmpeg silencedetect) and kept beside the transcript.
+    folder = transcript_folder(source)
+    cache = os.path.join(folder, "silences.json")
+    wav = os.path.join(folder, "audio-16k.wav")
+    if os.path.isfile(cache) and os.path.getmtime(cache) >= os.path.getmtime(wav):
+        return json.load(open(cache))
+    out = subprocess.run(["ffmpeg", "-nostdin", "-i", wav, "-af", "silencedetect=noise=-35dB:d=0.08",
+                          "-f", "null", "-"], capture_output=True, text=True).stderr
+    found, start = [], None
+    for m in re.finditer(r"silence_(start|end): ([\d.]+)", out):
+        if m.group(1) == "start":
+            start = float(m.group(2))
+        elif start is not None:
+            found.append([start, float(m.group(2))])
+            start = None
+    json.dump(found, open(cache, "w"))
+    return found
+
+
+def snap(t, quiet, lo, hi):
+    # The middle of the quiet stretch nearest t (within SNAP_WINDOW), so a cut
+    # keeps half of each pause around it: one natural pause at the join. Kept
+    # inside [lo, hi], the neighboring kept words' edges.
+    best = None
+    for s, e in quiet:
+        if e < t - SNAP_WINDOW or s > t + SNAP_WINDOW:
+            continue
+        mid = (s + e) / 2
+        if best is None or abs(mid - t) < abs(best - t):
+            best = mid
+    return min(max(best if best is not None else t, lo), hi)
+
+
+def text_cuts(db, source, duration):
+    # The cut words as source spans: a run of cut words with no kept word
+    # between them is one span; each edge snapped to quiet. Then what is kept,
+    # as source intervals with where each starts on the edited timeline.
+    rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), kept, cut_reason FROM words "
+                      "WHERE source = ? ORDER BY i", (source,)).fetchall()
+    quiet = silences(source)
+    spans, k = [], 0
+    while k < len(rows):
+        if rows[k][5]:
+            k += 1
+            continue
+        j = k
+        while j + 1 < len(rows) and not rows[j + 1][5]:
+            j += 1
+        lo = rows[k - 1][3] if k > 0 else 0.0
+        hi = rows[j + 1][2] if j + 1 < len(rows) else duration
+        a = 0.0 if k == 0 else snap(rows[k][2], quiet, lo, rows[k][2])
+        b = duration if j + 1 == len(rows) else snap(rows[j][3], quiet, rows[j][3], hi)
+        reasons = sorted({r[6] or "edit" for r in rows[k:j + 1]})
+        spans.append({"ids": [r[0] for r in rows[k:j + 1]], "text": " ".join(r[4] for r in rows[k:j + 1]),
+                      "t0": round(a, 3), "t1": round(b, 3), "reason": "+".join(reasons)})
+        k = j + 1
+    kept, at, out = [], 0.0, 0.0
+    for s in spans:
+        if s["t0"] > at:
+            kept.append({"src0": round(at, 3), "src1": s["t0"], "out0": round(out, 3)})
+            out += s["t0"] - at
+        at = max(at, s["t1"])
+    if at < duration:
+        kept.append({"src0": round(at, 3), "src1": round(duration, 3), "out0": round(out, 3)})
+        out += duration - at
+    return {"spans": spans, "kept": kept, "keptSecs": round(out, 3), "cutSecs": round(duration - out, 3)}
 
 
 def add_speaker(db, name):
@@ -1969,6 +2239,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.stream_events()
         if self.path.startswith("/transcripts/status"):
             return self.transcript_status()
+        if self.path.startswith("/transcripts/text"):
+            return self.transcript_text()
+        if self.path.startswith("/transcripts/cuts"):
+            return self.transcript_cuts()
         super().do_GET()
 
     def stream_events(self):
@@ -2115,7 +2389,63 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.edit_speaker(self.path.rsplit("/", 1)[1])
         if self.path == "/segments/speaker":
             return self.label_segments()
+        if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/restore"):
+            return self.edit_text(self.path.rsplit("/", 1)[1])
         self.send_json(404, {"error": "not found"})
+
+    def query_source(self):
+        return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("source", [""])[0]
+
+    def transcript_text(self):
+        # GET /transcripts/text?source=: the kept words as editable text.
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            self.send_json(200, text_summary(db, source))
+
+    def transcript_cuts(self):
+        # GET /transcripts/cuts?source=: the edit list (text_cuts).
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+        with TEXT_LOCK:
+            if not row or not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            self.send_json(200, text_cuts(db, source, row[0] or 0))
+
+    def edit_text(self, op):
+        # edit {source, text}: save the edited text (apply_text_edit);
+        # undo {source}: take back the last change; restore {source, ids}:
+        # put cut words back (a Cuts row's Restore). Each answers with the new
+        # text, so the page can show it.
+        body = self.json_body()
+        source = body.get("source") or ""
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            if op == "edit":
+                if not isinstance(body.get("text"), str):
+                    return self.send_json(400, {"error": "expected {source, text}"})
+                result = apply_text_edit(db, source, body["text"])
+            elif op == "undo":
+                ch = undo_text_edit(db, source)
+                result = {"undone": bool(ch), "cut": len(ch["restored"]) if ch else 0,
+                          "restored": len(ch["cut"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0}
+            else:
+                ids = [int(i) for i in body.get("ids") or []]
+                cut = [r[0] for r in db.execute(
+                    f"SELECT id FROM words WHERE source = ? AND kept = 0 AND id IN ({','.join('?' * len(ids))})",
+                    [source, *ids])] if ids else []
+                record_text_change(db, source, {"cut": [], "restored": cut, "corrected": []})
+                result = {"restored": len(cut)}
+            db.commit()
+            print(f"text {op} source={source} {json.dumps(result)}", flush=True)
+            result.update(text_summary(db, source))
+        notify("words")
+        self.send_json(200, result)
 
     def json_body(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
@@ -2139,6 +2469,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if labeled and not body.get("replace"):
             return self.send_json(409, {"labeled": labeled,
                                         "error": f"{labeled} segments have speakers; transcribing again loses them"})
+        # A new transcript has new words, so it would discard text editing
+        # (cuts, corrections, the undo history): refused unless replace.
+        edited = db.execute("SELECT count(*) FROM words WHERE source = ? AND (kept = 0 OR shown IS NOT NULL)",
+                            (source,)).fetchone()[0]
+        if edited and not body.get("replace"):
+            return self.send_json(409, {"edited": edited,
+                                        "error": f"{edited} words are cut or corrected; transcribing again loses that editing"})
         with TRANSCRIBE_LOCK:
             if transcribing:
                 return self.send_json(409, {"error": f"already transcribing {next(iter(transcribing))}"})
@@ -4266,6 +4603,8 @@ with sqlite3.connect(DB) as _db:
     _db.execute(TRANSCRIPTS_SQL)
     _db.execute(SEGMENTS_SQL)
     _db.execute(SPEAKERS_SQL)
+    _db.execute(WORDS_SQL)
+    _db.execute(TRANSCRIPT_EDITS_SQL)
     # A transcript still 'running' was cut off by the server stopping.
     _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()

@@ -19,7 +19,7 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="" var.currentId="{null}" var.progress="{null}"
+  var.source="" var.currentId="{null}" var.progress="{null}" var.savedText=""
   var.renaming="{null}" var.renameDraft="">
 
   <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
@@ -33,11 +33,20 @@
   <DataSource id="unlabeled" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT count(*) AS n, coalesce(sum(t1 - t0), 0) AS secs FROM segments WHERE source = ? AND speaker_id IS NULL', params: [source] }}" />
 
+  <!-- The text to edit and the cut list (serve_media.py's /transcripts/text
+       and /transcripts/cuts). -->
+  <DataSource id="textDoc" when="{!!source}"
+    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source)}"
+    onLoaded="(d, isRefetch) => { if (!isRefetch) showText(d.text); }" />
+  <DataSource id="cutList" when="{!!source}"
+    url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source)}" />
+
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
-      else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); roster.refetch(); unlabeled.refetch(); }
+      else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); roster.refetch(); unlabeled.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); roster.refetch(); unlabeled.refetch(); }
+      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); }
     }" />
 
   <script>
@@ -75,6 +84,38 @@
         toast.error(e.message);
         return false;
       }
+    }
+    // The edit box shows the server's text; savedText is what it last showed,
+    // so Save is on only when there is something to save.
+    function showText(text) {
+      savedText = text || '';
+      editBox.setValue(savedText);
+    }
+    function unsavedOk() {
+      return editBox.value === savedText
+        || confirm('Discard unsaved edits?', 'The text has changes that are not saved.', 'Discard', 'Cancel');
+    }
+    function textChange(path, body) {
+      try {
+        const r = post(path, Object.assign({ source }, body));
+        showText(r.text);
+        const said = [r.cut ? r.cut + ' words cut' : '', r.restored ? r.restored + ' restored' : '',
+                      r.corrected ? r.corrected + ' corrected' : '',
+                      r.ignored ? r.ignored + ' typed words ignored (no audio for them)' : ''].filter((x) => x).join(', ');
+        toast.success(said || 'No changes');
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function saveText() { textChange('/transcripts/edit', { text: editBox.value }); }
+    function undoText() { if (unsavedOk()) textChange('/transcripts/undo', {}); }
+    function restoreCut(ids) { if (unsavedOk()) textChange('/transcripts/restore', { ids }); }
+    function editLine() {
+      const d = textDoc.value, c = cutList.value;
+      if (!d) return '';
+      return d.keptWords + ' words kept' + (c ? ', ' + stamp(c.keptSecs) + ' long' : '')
+        + (d.cutWords ? '; ' + d.cutWords + ' cut' + (c ? ' (' + stamp(c.cutSecs) + ')' : '') : '')
+        + (editBox.value !== savedText ? ' · unsaved changes' : '');
     }
     function playFrom(t) {
       speakerPlayer.seek(t);
@@ -161,18 +202,50 @@
       </VStack>
 
       <VStack width="*" gap="$space-2">
-        <H3>Transcript</H3>
-        <List id="transcriptList" data="{segments}" height="70vh"
-          dataRefreshMode="preserve-state">
-          <HStack verticalAlignment="start" gap="$space-2"
-            backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
-            <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
-              onClick="playFrom($item.t0)" />
-            <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
-              value="{$item.name || '—'}" />
-            <Text width="*" value="{$item.text}" />
-          </HStack>
-        </List>
+        <!-- Edit text: the podcast edited as its text, no time codes. Delete
+             any stretches, as many as you like, then Save: the server diffs
+             the text word by word (deleted words are cut, words changed one
+             for one are corrections, cut words pasted back are restored).
+             The box is set from the server only when the text first loads
+             and after Save, Undo or Restore, so a refetch never overwrites
+             typing. Cuts lists what is cut, each with Restore. Tabs keep both
+             mounted, so the box is there when the text loads. -->
+        <Tabs keepMounted="true">
+          <TabItem label="Edit text">
+            <VStack gap="$space-2">
+              <HStack verticalAlignment="center">
+                <Button size="sm" label="Save" enabled="{editBox.value !== savedText}" onClick="saveText()" />
+                <Button size="sm" variant="outlined" label="Undo"
+                  enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
+                <Text variant="secondary" value="{editLine()}" />
+              </HStack>
+              <TextArea id="editBox" rows="28" />
+              <ExpandableItem iconPosition="start" fullWidthSummary="true"
+                summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
+                <Items data="{cutList.value ? cutList.value.spans : []}">
+                  <HStack verticalAlignment="start">
+                    <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
+                    <Text width="*" maxLines="2" value="{$item.text}" />
+                    <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
+                  </HStack>
+                </Items>
+              </ExpandableItem>
+            </VStack>
+          </TabItem>
+          <TabItem label="Transcript">
+            <List id="transcriptList" data="{segments}" height="70vh"
+              dataRefreshMode="preserve-state">
+              <HStack verticalAlignment="start" gap="$space-2"
+                backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
+                <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
+                  onClick="playFrom($item.t0)" />
+                <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
+                  value="{$item.name || '—'}" />
+                <Text width="*" value="{$item.text}" />
+              </HStack>
+            </List>
+          </TabItem>
+        </Tabs>
       </VStack>
     </HStack>
   </VStack>

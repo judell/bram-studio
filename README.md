@@ -39,6 +39,17 @@ voice recorder uses AVFoundation).
   history, so Undo takes them back. Boxes, ovals, arrows, lines and pointers work the
   same way.
 - **Scenes and export:** drag scenes into order, then **Export** joins them into one video.
+- **Podcast (editing a recorded conversation by its text):** choose a source and
+  **Transcribe** it, with the names of who's in it (whisper.cpp's `whisper-cli`; the
+  `ggml-large-v3-turbo` model when it's in `~/.local/share/whisper-models/`, else
+  `small.en`). The prompt asks whisper to keep "um", "uh" and repeats, so they can be cut.
+  Build the list of speakers with the dropdown under the source. **Edit text** shows the
+  transcript as plain text with no time codes: delete whatever you want gone, any number
+  of separate stretches, and **Save**. Deleted words are cut; a word changed in place is a
+  correction (its time stays); cut words pasted back are restored. **Undo** takes back the
+  last save, and **Cuts** lists each cut with **Restore**. Every word keeps its source
+  time, so the cuts become an edit list (`GET /transcripts/cuts`) whose edges sit in the
+  quiet between words. Rendering that list into the edited podcast is a later step.
 - **After editing elsewhere:** if you cut the export in another editor, run
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
   the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.

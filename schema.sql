@@ -71,3 +71,26 @@ CREATE TABLE IF NOT EXISTS speakers (
   color TEXT NOT NULL,
   position INTEGER
 );
+
+-- Editing by text (the Podcast page's Edit text tab; serve_media.py creates
+-- these at startup too). A transcript's words, from whisper's tokens, with
+-- their source times; editing the text cuts, corrects or restores words and
+-- never moves a time. Each save, undo-able, is a transcript_edits row.
+CREATE TABLE IF NOT EXISTS words (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  i INTEGER NOT NULL,  -- position in the source
+  t0 REAL NOT NULL,
+  t1 REAL NOT NULL,
+  text TEXT NOT NULL,  -- as whisper wrote it
+  shown TEXT,  -- a correction, or NULL
+  kept INTEGER NOT NULL DEFAULT 1,
+  cut_reason TEXT,  -- 'edit' (deleted in the text) or 'tic'
+  speaker_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS transcript_edits (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  changes TEXT NOT NULL  -- JSON {cut, restored, corrected, restoredWas, reason}
+);
