@@ -53,7 +53,15 @@ voice recorder uses AVFoundation).
   words and never move. **Undo** takes back the last save, and **Cuts** lists each cut
   with **Restore**. Each paragraph has its own **Elide N tics**, which cuts its fillers
   ("um", "uh") and stutters ("and, and") as one step, and **Restore tics**, which puts
-  them back. "you know", "like" and "I mean" are left to you. **Settings › Podcast editing** holds the durations involved, each
+  them back. "you know", "like" and "I mean" are left to you.
+  **Tag speakers** (a switch on the Edit text tab) turns each paragraph into
+  clickable words: click where someone starts, then where they stop, and the stretch is
+  tagged as the speaker chosen in **Tag as**. Once a speaker has enough tagged speech
+  (10 s by default), **Match voices** gives every untagged word to the speaker whose
+  voice it matches (`voiceprint.py`: NeMo TitaNet-small speaker embeddings under
+  sherpa-onnx, about 40 s for an hour). Bold words are tagged, plain ones matched,
+  italic ones matched but unsure; matching never overwrites a tag. Needs the model:
+  `curl -L -o ~/.local/share/speech-models/nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx` **Settings › Podcast editing** holds the durations involved, each
   with a default: the shortest pause that separates words (80 ms), the fade at each cut
   (10 ms), when a paragraph breaks (after a 0.5 s pause, or past 120 words), and the
   word lists Elide tics uses (fillers; repeats said on purpose, like "yeah, yeah"). Every word keeps its source

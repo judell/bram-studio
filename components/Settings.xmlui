@@ -54,7 +54,9 @@
         Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
                           body: { podcast: { pauseMs: pauseBox.value, fadeMs: fadeBox.value,
                                              paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value,
-                                             fillers: fillersBox.value, repeatsToKeep: keepBox.value } } });
+                                             fillers: fillersBox.value, repeatsToKeep: keepBox.value,
+                                             vpWindowS: vpWindowBox.value, vpStepS: vpStepBox.value,
+                                             vpMinTurnS: vpTurnBox.value, vpMinTaggedS: vpTaggedBox.value } } });
         toast.success('Podcast editing settings saved.');
       } catch (e) {
         toast.error(e.message);
@@ -133,6 +135,30 @@
               initialValue="{settings.value.podcast.paragraphWords}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
           </HStack>
+          <HStack when="{false}" verticalAlignment="center">
+            <Text value="Voiceprint length (s)" width="250px" />
+            <NumberBox id="vpWindowBox" width="140px" minValue="0.5" maxValue="5" step="0.5"
+              initialValue="{settings.value.podcast.vpWindowS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpWindowS}" />
+          </HStack>
+          <HStack when="{false}" verticalAlignment="center">
+            <Text value="Voiceprint every (s)" width="250px" />
+            <NumberBox id="vpStepBox" width="140px" minValue="0.1" maxValue="2" step="0.1"
+              initialValue="{settings.value.podcast.vpStepS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpStepS}" />
+          </HStack>
+          <HStack when="{false}" verticalAlignment="center">
+            <Text value="Shortest turn (s)" width="250px" />
+            <NumberBox id="vpTurnBox" width="140px" minValue="0" maxValue="10" step="0.5"
+              initialValue="{settings.value.podcast.vpMinTurnS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpMinTurnS}" />
+          </HStack>
+          <HStack when="{false}" verticalAlignment="center">
+            <Text value="Tagged speech needed per speaker (s)" width="250px" />
+            <NumberBox id="vpTaggedBox" width="140px" minValue="2" maxValue="120" step="1"
+              initialValue="{settings.value.podcast.vpMinTaggedS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpMinTaggedS}" />
+          </HStack>
           <HStack verticalAlignment="center">
             <Text value="Fillers (Elide tics cuts these)" width="250px" />
             <TextBox id="fillersBox" width="*" initialValue="{settings.value.podcast.fillers}" />
@@ -177,6 +203,7 @@
       <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
       <Text value="Paragraph breaks: a sentence that ends in a pause at least this long ends a paragraph, and so does any sentence once a paragraph is this long. Changing either re-splits the paragraphs on the Edit text tab; your cuts and corrections are kept (they belong to words, not paragraphs)." />
       <Text value="Changing the pause or the fade re-renders a paragraph's audio the next time you play it." />
+      <Text when="{false}" value="Voiceprints (Tag speakers, Match voices on the Podcast page): each voiceprint is taken from this length of audio, one every so often along the recording; a run of words shorter than the shortest turn joins its neighbors; a speaker needs this much tagged speech before their voice is matched." />
       <Text value="Fillers and Repeats to keep: words separated by commas, matched ignoring case and punctuation. Elide tics (Edit text tab) cuts every filler still kept, and every word said twice in a row, keeping the second, unless it's a repeat to keep or a number. Run it again after changing the lists: it only cuts what's still kept." />
     </ModalDialog>
     <ModalDialog id="safeInfo" title="Safekeeping">

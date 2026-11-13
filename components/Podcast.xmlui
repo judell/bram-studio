@@ -18,7 +18,8 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}">
+  var.source="" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
+  var.tagMode="{false}" var.matchProgress="{null}">
 
   <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -34,7 +35,11 @@
   <!-- The paragraphs to edit, each with a version (key) that changes when an
        edit touches it (/transcripts/paras). -->
   <DataSource id="paras" when="{!!source}"
-    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source)}" />
+    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '')}" />
+  <!-- Each speaker's tagged and matched speech, and whether it has enough
+       tagged to be matched (/speakers/stats; the need is a Setting). -->
+  <DataSource id="speakerStats" when="{!!source}"
+    url="{'http://127.0.0.1:8765/speakers/stats?source=' + encodeURIComponent(source)}" />
   <DataSource id="cutList" when="{!!source}"
     url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source)}" />
 
@@ -42,8 +47,12 @@
     onMessage="(m) => {
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); textDoc.refetch(); cutList.refetch(); }
-      else if (m.changed === 'speakers') { segments.refetch(); }
-      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); }
+      else if (m.changed === 'speakers') { segments.refetch(); speakerStats.refetch(); paras.refetch(); }
+      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); }
+      else if (m.matching) {
+        if (m.matching === source) matchProgress = m.finished ? null : m;
+        if (m.error) toast.error('Matching voices: ' + m.error);
+      }
       else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
@@ -111,6 +120,38 @@
     // A paragraph's Elide / Restore tics, called from inside the list with
     // everything it needs (xmlui-org/xmlui#3940: no component variables in here).
     function paraTics(path, body) { textChange(path, body); }
+    // Tagging: the words from one click to the next go to the speaker in
+    // the "Tag as" list ("(no speaker)" clears them). Called from inside the
+    // list with everything it needs (#3940).
+    function tagRange(src, fromId, toId, speakerId) {
+      try {
+        post('/words/speaker', { source: src, from_id: fromId, to_id: toId, speaker_id: speakerId });
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function startMatch() {
+      try {
+        post('/speakers/propagate', { source });
+        matchProgress = { done: 0, total: 0 };
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    // A word inside the row's selection (word ids rise with position).
+    function inRange(id, a, b) {
+      if (a === null) return false;
+      const lo = b === null ? a : Math.min(a, b), hi = b === null ? a : Math.max(a, b);
+      return id >= lo && id <= hi;
+    }
+    function taggedLine() {
+      const st = speakerStats.value;
+      if (!st || !st.speakers.length) return 'No speakers yet: add them in Settings › Speakers.';
+      return 'Tagged: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
+    }
+    function readyCount() {
+      return ((speakerStats.value && speakerStats.value.speakers) || []).filter((s) => s.ready).length;
+    }
     function playUrl(item) {
       return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
         + '&para=' + item.para + '&v=' + item.v;
@@ -233,6 +274,30 @@
                   </HStack>
                   <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
                   <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
+                  <!-- Tag speakers: each paragraph's words become clickable;
+                       click where a speaker starts, then where they stop, to
+                       tag the stretch as the speaker chosen here. Tagged
+                       stretches are the voiceprints' examples; Match voices
+                       carries them to the rest (voiceprint.py). -->
+                  <Switch label="Tag speakers" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
+                  <VStack when="{tagMode}" gap="$space-2">
+                    <HStack verticalAlignment="center" wrapContent="true">
+                      <!-- Match voices (voiceprint.py) is hidden for now
+                           (2026-11-13): slower and more than tagging needs
+                           yet. Remove when="{false}" here and on its
+                           progress to bring it back. -->
+                      <Button when="{false}" size="sm" variant="outlined" label="Match voices"
+                        enabled="{readyCount() > 0 &amp;&amp; !matchProgress}"
+                        tooltip="Give every word you haven't tagged to the speaker whose voice it matches"
+                        onClick="startMatch()" />
+                      <Spinner when="{false &amp;&amp; !!matchProgress}" />
+                      <Text variant="secondary" when="{false &amp;&amp; !!matchProgress}"
+                        value="{'Matching voices' + (matchProgress &amp;&amp; matchProgress.total ? ': ' + Math.round(100 * matchProgress.done / matchProgress.total) + '%' : '…')}" />
+                      <Text variant="secondary" value="{taggedLine()}" />
+                    </HStack>
+                    <Text variant="secondary"
+                      value="Click the first word of a stretch, then the last, then who said it." />
+                  </VStack>
                   <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
                     value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
                              textDoc.value.redoLabel ? 'Redo would ' + textDoc.value.redoLabel : ''].filter((x) => x).join(' · ')}" />
@@ -245,8 +310,44 @@
                      2026-11-13: editingPara and paraDraft read back null in
                      the same handler that set them; xmlui-org/xmlui#3940
                      reaches further than its workaround). -->
-                <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}">
-                  <TextArea autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+                <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}">
+                  <!-- Tag mode: the paragraph as clickable words, each in its
+                       speaker's color. A first click starts a selection
+                       (anchor), a second ends it (focus); then "Who said it?"
+                       under the paragraph tags it. Selection is the row's own,
+                       like draft. Each click is logged (podcast-page: word). -->
+                  <HStack when="{tagMode}" wrapContent="true" gap="$space-1">
+                    <Items data="{$item.wl || []}">
+                      <Link noIndicator
+                        onClick="
+                          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                            body: { ev: 'word', id: $item.id, anchor, focus } });
+                          if (anchor === null || focus !== null) { anchor = $item.id; focus = null; }
+                          else { focus = $item.id; }
+                        ">
+                        <Text value="{$item.w}" color="{$item.c || '$textColor-primary'}"
+                          fontWeight="{$item.h === 'tag' ? 'bold' : 'normal'}"
+                          fontStyle="{$item.u ? 'italic' : 'normal'}"
+                          backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
+                      </Link>
+                    </Items>
+                  </HStack>
+                  <HStack when="{tagMode &amp;&amp; anchor !== null}" verticalAlignment="center" wrapContent="true">
+                    <Text variant="secondary" value="{focus === null ? 'Now click the last word.' : 'Who said it?'}" />
+                    <Items data="{$item.speakers || []}">
+                      <Button size="xs" variant="outlined" label="{$item.name}" enabled="{focus !== null}"
+                        onClick="
+                          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                            body: { ev: 'tag', speaker: $item.id, anchor, focus } });
+                          tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
+                        " />
+                    </Items>
+                    <Button size="xs" variant="ghost" label="Clear" enabled="{focus !== null}"
+                      tooltip="Take the speaker off these words"
+                      onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
+                    <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
+                  </HStack>
+                  <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
                     onGotFocus="
                       Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                                         body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });

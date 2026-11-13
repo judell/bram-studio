@@ -87,7 +87,9 @@ CREATE TABLE IF NOT EXISTS words (
   kept INTEGER NOT NULL DEFAULT 1,
   cut_reason TEXT,  -- 'edit' (deleted in the text) or 'tic'
   speaker_id INTEGER,
-  para INTEGER  -- its paragraph in the Edit text tab, set once from all the words
+  para INTEGER,  -- its paragraph in the Edit text tab, set once from all the words
+  speaker_how TEXT,  -- 'tag' (you tagged it) or 'voiceprint' (matched; never over a tag)
+  speaker_unsure INTEGER  -- a voiceprint match that barely beat the next speaker
 );
 CREATE TABLE IF NOT EXISTS transcript_edits (
   id INTEGER PRIMARY KEY,

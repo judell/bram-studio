@@ -623,6 +623,13 @@ PODCAST_SETTINGS = {
     "fadeMs": (10, 0, 100),  # the fade at each join when an edit is played
     "paragraphPauseS": (0.5, 0.1, 5.0),  # a sentence ending in a pause this long ends a paragraph
     "paragraphWords": (120, 20, 1000),  # ...and so does any sentence once a paragraph has this many words
+    # Voiceprints (voiceprint.py): how much audio each voiceprint is taken
+    # from and how far apart, the shortest run of words left as its own
+    # turn, and how much tagged speech a speaker needs before matching.
+    "vpWindowS": (1.5, 0.5, 5.0),
+    "vpStepS": (0.5, 0.1, 2.0),
+    "vpMinTurnS": (1.0, 0.0, 10.0),
+    "vpMinTaggedS": (10.0, 2.0, 120.0),
 }
 
 
@@ -1925,7 +1932,9 @@ WORDS_SQL = """CREATE TABLE IF NOT EXISTS words (
   kept INTEGER NOT NULL DEFAULT 1,
   cut_reason TEXT,
   speaker_id INTEGER,
-  para INTEGER
+  para INTEGER,
+  speaker_how TEXT,
+  speaker_unsure INTEGER
 )"""
 # Each save, restore or tic elision is a row; Undo marks the latest kept row
 # undone (it stays, for Redo), Redo re-applies the earliest undone one, and a
@@ -1958,6 +1967,58 @@ WORD_EDGES_SQL = """CREATE TABLE IF NOT EXISTS word_edges (
   PRIMARY KEY (source, i)
 )"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
+matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
+SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
+    "~/.local/share/speech-models/nemo_en_titanet_small.onnx"))
+PROGRESS_LINE = re.compile(r"progress (\d+) (\d+)")
+
+
+def match_speakers(source):
+    # The background half of POST /speakers/propagate: voiceprint.py over
+    # the source, then its speakers written to the words you didn't tag
+    # (speaker_how 'voiceprint'), replacing the last run's.
+    t_start = time.time()
+    try:
+        conf = podcast_settings()
+        env = {**os.environ, "VP_WINDOW": str(conf["vpWindowS"]), "VP_STEP": str(conf["vpStepS"]),
+               "VP_MIN_TURN": str(conf["vpMinTurnS"]), "VP_MIN_TAGGED": str(conf["vpMinTaggedS"]),
+               "SPEAKER_MODEL": SPEAKER_MODEL}
+        proc = subprocess.Popen([SPEECH_PYTHON, os.path.join(HERE, "voiceprint.py"),
+                                 os.path.join(transcript_folder(source), "audio-16k.wav"), DB, source],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        out_lines = []
+        reader = threading.Thread(target=lambda: out_lines.extend(proc.stdout), daemon=True)
+        reader.start()
+        for line in proc.stderr:
+            m = PROGRESS_LINE.match(line)
+            if m:
+                state = {"done": int(m.group(1)), "total": int(m.group(2))}
+                matching[source] = state
+                push({"matching": source, **state})
+        reader.join()
+        if proc.wait():
+            raise RuntimeError(f"voiceprint.py exited {proc.returncode}")
+        result = json.loads(out_lines[-1])
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        db = sqlite3.connect(DB)
+        db.execute("UPDATE words SET speaker_id = NULL, speaker_how = NULL, speaker_unsure = NULL "
+                   "WHERE source = ? AND speaker_how = 'voiceprint'", (source,))
+        db.executemany("UPDATE words SET speaker_id = ?, speaker_how = 'voiceprint', speaker_unsure = ? "
+                       "WHERE id = ? AND (speaker_how IS NULL OR speaker_how = 'voiceprint')",
+                       [(spk, unsure, wid) for wid, spk, unsure in result["assign"]])
+        db.commit()
+        unsure = sum(1 for a in result["assign"] if a[2])
+        print(f"match source={source} speakers={json.dumps(result['speakers'])} windows={result['windows']} "
+              f"words={len(result['assign'])} unsure={unsure} secs={time.time() - t_start:.1f}", flush=True)
+    except Exception as e:
+        print(f"match failed source={source} error={e}", flush=True)
+        push({"matching": source, "error": str(e)})
+    finally:
+        with TRANSCRIBE_LOCK:
+            matching.pop(source, None)
+        push({"matching": source, "finished": True})
+        notify("words")
 WORD_KEY = re.compile(r"[^\w']+")
 
 
@@ -2055,7 +2116,7 @@ def kept_text(db, source):
     return "".join(out)
 
 
-def paragraphs(db, source):
+def paragraphs(db, source, with_words=False):
     # Each paragraph's kept text, its counts and a version: a hash of its
     # words' state, which changes whenever an edit touches it (the page keys
     # rows and audio by it, so a changed paragraph redraws and re-renders).
@@ -2065,19 +2126,29 @@ def paragraphs(db, source):
     for wid, para in db.execute("SELECT id, para FROM words WHERE source = ?", (source,)):
         para_of[wid] = para
     ticky = collections.Counter(para_of[i] for i in elide_tics(db, source, dry=True)["ids"])
-    for para, wid, kept, shown, text, reason in db.execute(
-            "SELECT para, id, kept, shown, text, cut_reason FROM words WHERE source = ? ORDER BY i", (source,)):
-        p = paras.setdefault(para, {"para": para, "words": [], "kept": 0, "cut": 0, "tics": 0,
+    colors = dict(db.execute("SELECT id, color FROM speakers"))
+    # Each paragraph carries the speakers in tag mode, for its own "Who said
+    # it?" buttons: the page's data can't be read reliably from inside the
+    # list (xmlui-org/xmlui#3940).
+    roster = [{"id": i, "name": n, "color": c}
+              for i, n, c in db.execute("SELECT id, name, color FROM speakers ORDER BY position, id")]
+    for para, wid, kept, shown, text, reason, spk, how, unsure in db.execute(
+            "SELECT para, id, kept, shown, text, cut_reason, speaker_id, speaker_how, speaker_unsure "
+            "FROM words WHERE source = ? ORDER BY i", (source,)):
+        p = paras.setdefault(para, {"para": para, "words": [], "wl": [], "kept": 0, "cut": 0, "tics": 0,
                                     "h": hashlib.sha1()})
         if kept:
             p["words"].append(shown or text)
+            p["wl"].append({"id": wid, "w": shown or text, "s": spk, "h": how, "u": unsure or 0,
+                            "c": colors.get(spk)})
             p["kept"] += 1
         else:
             p["cut"] += 1
             p["tics"] += reason == "tic"
-        p["h"].update(f"{wid}:{kept}:{shown or ''};".encode())
+        p["h"].update(f"{wid}:{kept}:{shown or ''}:{spk}:{how}:{unsure};".encode())
     return [{"para": p["para"], "text": " ".join(p["words"]), "kept": p["kept"], "cut": p["cut"],
              "ticsCut": p["tics"], "ticsKept": ticky.get(p["para"], 0),
+             **({"wl": p["wl"], "speakers": roster} if with_words else {}),
              "v": p["h"].hexdigest()[:10],
              "key": f"{p['para']}-{p['h'].hexdigest()[:10]}-{ticky.get(p['para'], 0)}"} for p in paras.values()]
 
@@ -2087,7 +2158,8 @@ def describe_step(db, source, ch):
     # the paragraph named by its opening words (the page doesn't number
     # them). Returns (text, the first paragraph it touched).
     cut, back, fixed = ch.get("cut", []), ch.get("restored", []), ch.get("corrected", [])
-    ids = cut + back + [c[0] for c in fixed]
+    tagged = ch.get("tagged", [])
+    ids = cut + back + [c[0] for c in fixed] + [t["id"] for t in tagged]
     if not ids:
         return "", None
     paras = sorted({r[0] for r in db.execute(
@@ -2099,9 +2171,16 @@ def describe_step(db, source, ch):
         "SELECT coalesce(shown, text) FROM words WHERE source = ? AND para = ? AND kept = 1 ORDER BY i LIMIT 5",
         (source, first))) or " ".join(r[0] for r in db.execute(
         "SELECT text FROM words WHERE source = ? AND para = ? ORDER BY i LIMIT 5", (source, first)))
-    where = f"“{opening}…”" + (f" and {len(paras) - 1} more paragraphs" if len(paras) > 1 else "")
+    more = len(paras) - 1
+    where = f"“{opening}…”" + (f" and {more} more paragraph{'s' if more > 1 else ''}" if more else "")
     n = lambda k, one, many: f"{k} {one if k == 1 else many}"
-    if ch.get("reason") == "tic":
+    if ch.get("reason") == "tag":
+        spk = tagged[0]["now"][0] if tagged else None
+        name = (db.execute("SELECT name FROM speakers WHERE id = ?", (spk,)).fetchone() or ["a deleted speaker"])[0] \
+            if spk is not None else None
+        what = (f"tag {n(len(tagged), 'word', 'words')} as {name}" if name
+                else f"clear the speaker from {n(len(tagged), 'word', 'words')}")
+    elif ch.get("reason") == "tic":
         what = "elide " + n(len(cut), "tic", "tics")
     elif back and not cut and not fixed:
         was = ch.get("restoredWas", {})
@@ -2216,6 +2295,10 @@ def undo_text_edit(db, source):
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
                    [(was.get(str(i), "edit"), i) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(old, i) for i, old, _ in ch["corrected"]])
+    # A tag step: each word's speaker as it was before (another speaker's
+    # tag, a match, or none), so Undo is exact.
+    db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = ? WHERE id = ?",
+                   [(t["was"][0], t["was"][1], t["was"][2], t["id"]) for t in ch.get("tagged", [])])
     db.execute("UPDATE transcript_edits SET undone = 1 WHERE id = ?", (row[0],))
     return ch
 
@@ -2231,6 +2314,8 @@ def redo_text_edit(db, source):
                    [(ch.get("reason", "edit"), i) for i in ch["cut"]])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in ch["corrected"]])
+    db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = ? WHERE id = ?",
+                   [(t["now"][0], t["now"][1], t["now"][2], t["id"]) for t in ch.get("tagged", [])])
     db.execute("UPDATE transcript_edits SET undone = 0 WHERE id = ?", (row[0],))
     return ch
 
@@ -2743,6 +2828,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.transcript_cuts()
         if self.path.startswith("/transcripts/paras"):
             return self.transcript_paras()
+        if self.path.startswith("/speakers/stats"):
+            return self.speaker_stats()
         if self.path.startswith("/transcripts/play"):
             return self.play_para()
         super().do_GET()
@@ -2898,6 +2985,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
+        if self.path == "/words/speaker":
+            return self.tag_words()
+        if self.path == "/speakers/propagate":
+            return self.start_matching()
         self.send_json(404, {"error": "not found"})
 
     def query_source(self):
@@ -2919,7 +3010,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with TEXT_LOCK:
             if not ensure_words(db, source):
                 return self.send_json(404, {"error": f"no transcript of {source!r}"})
-            paras = paragraphs(db, source)
+            paras = paragraphs(db, source, with_words="words=1" in self.path)
             # A paragraph holding a join the last check flagged (check.json
             # keys are the first word of the cut after each join).
             try:
@@ -2971,6 +3062,78 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(404, {"error": f"no transcript of {source!r}"})
             self.send_json(200, text_cuts(db, source, row[0] or 0))
 
+    def tag_words(self):
+        # {source, from_id, to_id, speaker_id}: tag the kept words from one
+        # to the other (either order) as that speaker; speaker_id null clears
+        # them. A tag is yours: matching never overwrites it.
+        body = self.json_body()
+        source = body.get("source") or ""
+        db = sqlite3.connect(DB)
+        ends = [r[0] for r in db.execute("SELECT i FROM words WHERE source = ? AND id IN (?, ?)",
+                                         (source, body.get("from_id"), body.get("to_id")))]
+        if not ends:
+            return self.send_json(404, {"error": "no such words"})
+        lo, hi = min(ends), max(ends)
+        spk = body.get("speaker_id")
+        if spk is not None and not db.execute("SELECT 1 FROM speakers WHERE id = ?", (spk,)).fetchone():
+            return self.send_json(404, {"error": f"no speaker with id {spk}"})
+        # One Undo step, recording each word's speaker before and after, so
+        # Undo restores exactly what was there and Redo re-applies it.
+        how = "tag" if spk is not None else None
+        with TEXT_LOCK:
+            rows = db.execute("SELECT id, speaker_id, speaker_how, speaker_unsure FROM words "
+                              "WHERE source = ? AND kept = 1 AND i BETWEEN ? AND ? ORDER BY i",
+                              (source, lo, hi)).fetchall()
+            tagged = [{"id": wid, "was": [s0, h0, u0], "now": [spk, how, 0]} for wid, s0, h0, u0 in rows
+                      if (s0, h0) != (spk, how)]
+            if tagged:
+                db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = 0 WHERE id = ?",
+                               [(spk, how, t["id"]) for t in tagged])
+                db.execute("DELETE FROM transcript_edits WHERE source = ? AND undone = 1", (source,))
+                db.execute("INSERT INTO transcript_edits (source, created_at, changes) VALUES (?, ?, ?)",
+                           (source, datetime_now(), json.dumps({"cut": [], "restored": [], "corrected": [],
+                                                                "tagged": tagged, "reason": "tag"})))
+            db.commit()
+        print(f"tag source={source} words={len(tagged)} speaker={spk}", flush=True)
+        notify("words")
+        self.send_json(200, {"tagged": len(tagged)})
+
+    def speaker_stats(self):
+        # GET /speakers/stats?source=: each speaker's tagged and matched
+        # speech in this source, and whether it has enough tagged to match.
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        need = podcast_settings()["vpMinTaggedS"]
+        rows = db.execute(
+            "SELECT s.id, s.name, s.color, "
+            "coalesce(sum(CASE WHEN w.speaker_how = 'tag' THEN w.t1 - w.t0 END), 0), "
+            "coalesce(sum(CASE WHEN w.speaker_how = 'voiceprint' THEN w.t1 - w.t0 END), 0) "
+            "FROM speakers s LEFT JOIN words w ON w.speaker_id = s.id AND w.source = ? AND w.kept = 1 "
+            "GROUP BY s.id ORDER BY s.position, s.id", (source,)).fetchall()
+        with TRANSCRIBE_LOCK:
+            busy = matching.get(source)
+        self.send_json(200, {"need": need, "matching": busy, "speakers": [
+            {"id": i, "name": n, "color": c, "tagged": round(t, 1), "matched": round(m, 1), "ready": t >= need}
+            for i, n, c, t, m in rows]})
+
+    def start_matching(self):
+        # {source}: voiceprint.py in the background (match_speakers), one at
+        # a time; progress on /events as {"matching": source, done, total}.
+        body = self.json_body()
+        source = body.get("source") or ""
+        db = sqlite3.connect(DB)
+        if not db.execute("SELECT 1 FROM words WHERE source = ? LIMIT 1", (source,)).fetchone():
+            return self.send_json(404, {"error": f"no transcript of {source!r}"})
+        if not (os.path.isfile(SPEECH_PYTHON) and os.path.isfile(SPEAKER_MODEL)):
+            return self.send_json(409, {"error": f"the speaker model isn't installed ({SPEAKER_MODEL})"})
+        with TRANSCRIBE_LOCK:
+            if matching:
+                return self.send_json(409, {"error": "voices are already being matched"})
+            matching[source] = {"done": 0, "total": 0}
+        threading.Thread(target=match_speakers, args=(source,), daemon=True).start()
+        push({"matching": source, "done": 0, "total": 0})
+        self.send_json(200, {"source": source, "matching": True})
+
     def start_check(self):
         # {source, t0, t1}: the round-trip check (check_text) over that
         # stretch of the source, the whole of it when not given; in the
@@ -3008,13 +3171,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result = apply_text_edit(db, source, body["text"], None if para is None else int(para))
             elif op == "undo":
                 ch = undo_text_edit(db, source)
-                result = {"undone": bool(ch), "cut": len(ch["restored"]) if ch else 0,
+                result = {"undone": bool(ch), "tagged": len(ch.get("tagged", [])) if ch else 0,
+                          "cut": len(ch["restored"]) if ch else 0,
                           "restored": len(ch["cut"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0,
                           "para": describe_step(db, source, ch)[1] if ch else None,
                           "did": "Undid " + describe_step(db, source, ch)[0] if ch else ""}
             elif op == "redo":
                 ch = redo_text_edit(db, source)
-                result = {"redone": bool(ch), "cut": len(ch["cut"]) if ch else 0,
+                result = {"redone": bool(ch), "tagged": len(ch.get("tagged", [])) if ch else 0,
+                          "cut": len(ch["cut"]) if ch else 0,
                           "restored": len(ch["restored"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0,
                           "para": describe_step(db, source, ch)[1] if ch else None,
                           "did": "Redid " + describe_step(db, source, ch)[0] if ch else ""}
@@ -3117,6 +3282,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             result = {"id": body.get("id"), "name": name}
         else:
             db.execute("UPDATE segments SET speaker_id = NULL WHERE speaker_id = ?", (body.get("id"),))
+            db.execute("UPDATE words SET speaker_id = NULL, speaker_how = NULL, speaker_unsure = NULL "
+                       "WHERE speaker_id = ?", (body.get("id"),))
             if not db.execute("DELETE FROM speakers WHERE id = ?", (body.get("id"),)).rowcount:
                 return self.send_json(404, {"error": f"no speaker with id {body.get('id')}"})
             result = {"id": body.get("id")}
@@ -5248,6 +5415,9 @@ with sqlite3.connect(DB) as _db:
     # words.para and transcript_edits.undone arrived later (podcast-paragraph-playback).
     if "para" not in [r[1] for r in _db.execute("PRAGMA table_info(words)")]:
         _db.execute("ALTER TABLE words ADD COLUMN para INTEGER")
+    for col, kind in (("speaker_how", "TEXT"), ("speaker_unsure", "INTEGER")):
+        if col not in [r[1] for r in _db.execute("PRAGMA table_info(words)")]:
+            _db.execute(f"ALTER TABLE words ADD COLUMN {col} {kind}")
     if "undone" not in [r[1] for r in _db.execute("PRAGMA table_info(transcript_edits)")]:
         _db.execute("ALTER TABLE transcript_edits ADD COLUMN undone INTEGER NOT NULL DEFAULT 0")
     # A transcript still 'running' was cut off by the server stopping.
