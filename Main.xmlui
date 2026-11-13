@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
+<App name="Bram Studio" layout="vertical-sticky" var.podcastSource="" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
   <!-- Bram's own layout (~/bram/app/tools/Main.xmlui): header band over the
        main area, nav always visible. themes/studio.json keeps the nav from
        collapsing into a drawer on a narrow window, as Bram's theme does. -->
@@ -15,6 +15,10 @@
     pollIntervalInSeconds="60" />
   <!-- A scene appears here when Make scene's clip (/takes/clip) registers. -->
   <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
+  <!-- The Podcast source's transcript status, for the header line. The same
+       query as the page's own, so the two share one fetch. -->
+  <DataSource id="podcastTranscript" when="{!!podcastSource}" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [podcastSource] }}" />
   <!-- The project folders and which one is open ({open, name, projects};
        list_projects() in serve_media.py), for the Projects page and the name
        at the top of the nav panel. -->
@@ -496,14 +500,64 @@
     onSuccess="voiceTests.refetch()"
     errorNotificationMessage="{$error.message}" />
 
+  <!-- New project, from the header: a name, then Create makes the project
+         and opens it (switchProject, as the Projects page's New project). -->
+  <ModalDialog id="newProjectDialog" title="New project">
+    <TextBox id="newProjectDialogName" placeholder="Name" width="100%" />
+    <HStack>
+      <Button label="Create" enabled="{!!(newProjectDialogName.value || '').trim() &amp;&amp; !opening}"
+        onClick="
+          const name = newProjectDialogName.value.trim();
+          if (switchProject('new', { name }, name)) { newProjectDialogName.setValue(''); newProjectDialog.close(); }
+        " />
+      <Button label="Cancel" variant="ghost" onClick="newProjectDialog.close()" />
+    </HStack>
+  </ModalDialog>
   <AppHeader>
     <HStack verticalAlignment="center" width="100%">
       <H3>Bram Studio</H3>
       <!-- The open project, so it is always clear which one a recording
            will land in. It is here, not in the nav panel: the panel's logo
            slot doesn't wrap, and clipped a long name at both ends. -->
-      <Text variant="secondary" value="{projects.value ? projects.value.name : ''}" />
+      <!-- The open project, as a picker on every page: choosing one opens it,
+           as the Projects page's Open does (switchProject). New project and
+           Manage (the Projects page, out of the nav) are at the right. -->
+      <Select when="{!!projects.value}" width="220px"
+        data="{(projects.value ? projects.value.projects : []).map((p) => ({ label: p.name, value: p.slug }))}"
+        initialValue="{projects.value ? projects.value.open : ''}" enabled="{!opening}"
+        onDidChange="(v) => {
+          const p = (projects.value.projects || []).find((x) => x.slug === v);
+          if (p &amp;&amp; v !== projects.value.open) switchProject('open', { slug: v }, p.name);
+        }" />
+      <!-- On the Scenes page, its source picker lives here, in the header
+           that never scrolls; scenesSource keeps the choice across visits to
+           other pages (the picker is only mounted on /). Everything on the
+           page reads it as sourceChoice.value, as before. -->
+      <Select when="{$pathname === '/'}" id="sourceChoice" data="{sources}" valueField="name" labelField="name"
+        placeholder="Choose a source" width="260px" initialValue="{scenesSource}"
+        onDidChange="(v) => { scenesSource = v || ''; audition = null; playing = ''; scene = null; }" />
+      <!-- On the Podcast page, its source and transcript line live here, in
+           the header that never scrolls ($pathname, as in
+           https://www.xmlui.org/docs/context-variables#pathname). The source
+           is the app's (podcastSource), passed to the page, so it is kept
+           across visits to other pages. -->
+      <Select when="{$pathname === '/podcast'}" id="podcastSourcePick" data="{sources}"
+        valueField="name" labelField="name" placeholder="Choose a source" width="260px"
+        initialValue="{podcastSource}" onDidChange="(v) => podcastSource = v || ''" />
+      <Text variant="secondary" when="{$pathname === '/podcast' &amp;&amp; !!podcastSource &amp;&amp; podcastTranscript.value &amp;&amp; podcastTranscript.value.length > 0}"
+        value="{podcastTranscript.value &amp;&amp; podcastTranscript.value[0]
+          ? (podcastTranscript.value[0].status === 'done'
+              ? 'Transcribed ' + podcastTranscript.value[0].finished_at + ' with ' + podcastTranscript.value[0].model
+              : 'Transcript ' + podcastTranscript.value[0].status)
+          : ''}" />
       <SpaceFiller />
+      <Button label="New project" variant="outlined" size="sm" enabled="{!opening}"
+        onClick="newProjectDialog.open()" />
+      <!-- Exports belong to the screencast editor: reached from it, not
+           from the nav. -->
+      <Link when="{$pathname === '/'}" to="/exports" label="Exports" />
+      <Link when="{$pathname === '/exports'}" to="/" label="Screencast" />
+      <Link to="/projects" label="Manage" />
       <!-- XMLUI trace viewer. The studio carries its own xs-diff.html and the
            xmlui-parser.es.js it imports (vendor/), as it carries its own engine;
            config.json's xmluiConfig.xsVerbose turns capture on. Capture costs
@@ -532,10 +586,8 @@
     <property name="footerTemplate">
       <Fragment/>
     </property>
-    <NavLink label="Projects" to="/projects" />
-    <NavLink label="Scenes" to="/" />
+    <NavLink label="Screencast" to="/" />
     <NavLink label="Podcast" to="/podcast" />
-    <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
     <NavLink label="Settings" to="/settings" />
   </NavPanel>
@@ -592,7 +644,6 @@
            whenever the server's change stream says takes, exports or a
            project folder changed (the EventSource above), so there is no
            Refresh button. -->
-      <H2>Projects</H2>
       <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
         value="No projects yet: this Studio keeps its scenes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
       <!-- Each project is one line, so the page can be scanned: an expander
@@ -801,11 +852,9 @@
       </HStack>
     </Page>
     <Page url="/">
+      <!-- The source picker (sourceChoice) is in the app header, as the
+           Podcast page's is. -->
       <HStack verticalAlignment="center">
-        <H2>Sources</H2>
-        <Select id="sourceChoice" data="{sources}" valueField="name" labelField="name"
-          placeholder="Choose a source"
-          width="260px" onDidChange="audition = null; playing = ''; scene = null;" />
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
              3 s callout of its name at the top right, an ordinary item to
              edit on the Annotate tab, burned in by Export. The button
@@ -1256,7 +1305,7 @@
     <!-- Editing a recorded conversation; for now, who speaks when, in a
          source (components/Podcast.xmlui). -->
     <Page url="/podcast">
-      <Podcast />
+      <Podcast source="{podcastSource}" />
     </Page>
   </Pages>
 </App>

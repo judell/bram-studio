@@ -18,10 +18,9 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.matchProgress="{null}">
+  var.source="{$props.source || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
+  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text">
 
-  <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
   <DataSource id="segments" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -190,19 +189,12 @@
     }
   </script>
 
-  <VStack padding="$space-6" gap="$space-4">
-    <HStack verticalAlignment="center">
-      <H2>Podcast</H2>
-      <Select id="speakerSource" data="{speakerSources}" valueField="name" labelField="name"
-        placeholder="Choose a source" width="260px"
-        onDidChange="(v) => { source = v || ''; currentId = null; progress = null; }" />
-      <Text variant="secondary" when="{!!source &amp;&amp; !progress &amp;&amp; transcript.value &amp;&amp; transcript.value.length > 0}"
-        value="{transcript.value &amp;&amp; transcript.value[0]
-          ? (transcript.value[0].status === 'done'
-              ? 'Transcribed ' + transcript.value[0].finished_at + ' with ' + transcript.value[0].model
-              : 'Transcript ' + transcript.value[0].status)
-          : ''}" />
-    </HStack>
+  <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 100px)">
+    <!-- The source is chosen in the app header (Main.xmlui's
+         podcastSource), with the transcript line beside it; source follows
+         it here. -->
+    <ChangeListener listenTo="{$props.source}"
+      onDidChange="source = $props.source || ''; currentId = null; progress = null;" />
 
     <!-- Transcribing, offered only for a source with no transcript (or a
          failed one): the names go to whisper as its prompt, which is what
@@ -217,15 +209,24 @@
       <Text value="{'Transcribing ' + source + (progress &amp;&amp; progress.duration_s ? ': ' + stamp(progress.done_s) + ' of ' + stamp(progress.duration_s) : '…')}" />
     </HStack>
 
-    <HStack when="{!!source}" gap="$space-6">
-      <VStack width="45%" gap="$space-4">
-        <MediaPlayer id="speakerPlayer" maxHeight="45vh"
+    <!-- A splitter: on the left the video and the tabs' controls, on the
+         right the paragraphs (or the Transcript tab's rows); drag the divider
+         to give either more width
+         (https://www.xmlui.org/docs/reference/components/Splitter,
+         orientation horizontal: side by side). Each side scrolls on its own;
+         the page doesn't: it sizes itself to the window (the root VStack's
+         height: the window less Studio's header and the page padding, ~100
+         px), and the splitter takes the height left (height="*" in a parent
+         of fixed height). The source picker is in the app header. XMLUI's scrollWholePage is
+         App-wide only; binding it to $pathname so only Podcast stopped
+         scrolling didn't take (2026-11-13). The tabs hold only their
+         controls; which list the right side shows follows the tab (view). -->
+    <Splitter when="{!!source}" orientation="horizontal" height="*"
+      initialPrimarySize="40%" minPrimarySize="20%" maxPrimarySize="-320px">
+      <VStack height="100%" overflowY="auto" gap="$space-4" paddingRight="$space-4">
+        <MediaPlayer id="speakerPlayer" width="100%"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
-
-      </VStack>
-
-      <VStack width="*" gap="$space-2">
         <!-- Edit text: the podcast edited as its text, a paragraph at a
              time, no time codes. Delete anything in a paragraph's box; when
              you leave the box it saves: the server diffs that paragraph word
@@ -241,176 +242,169 @@
              including one you're typing in. The list is virtualized, which
              is why a box saves when you leave it rather than on a button:
              a paragraph scrolled away is unmounted. -->
-        <Tabs keepMounted="true">
+        <Tabs keepMounted="true" onDidChange="(index, id, label) => view = label">
           <TabItem label="Edit text">
             <VStack gap="$space-2">
-              <!-- The Undo / Redo bar stays put because the paragraphs scroll in
-                   their own bounded region below it, not the page: a List can
-                   hand its scrolling to the page, and then Undo's scroll to a
-                   paragraph moved the whole page, bar and all (2026-11-13;
-                   a StickySection didn't hold). The bounded-VStack form of
-                   https://www.xmlui.org/docs/howto/pin-a-toolbar-above-a-bounded-scroll-region
-                   (its ScrollViewer form, with an always-visible overlay
-                   scrollbar, made the whole page scroll instead). -->
               <VStack gap="$space-2">
-                <VStack gap="$space-2">
-                  <HStack verticalAlignment="center">
-                    <Button size="sm" variant="outlined" label="Undo"
-                      enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
-                    <Button size="sm" variant="outlined" label="Redo"
-                      enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canRedo)}" onClick="redoText()" />
-                    <!-- Check joins: render the whole edit, transcribe it and flag
-                         each join where the words heard differ from the words
-                         kept (serve_media.py's /transcripts/check). About as long
-                         as a transcription. Hidden for now (2026-11-13), with its
-                         status line and ⚠ marks: editing and checking each
-                         paragraph by ear comes first. Remove when="{false}" here
-                         and on the marks below to bring it back. -->
-                    <Button when="{false}" size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
-                      tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
-                      onClick="startCheck()" />
-                    <Spinner when="{false &amp;&amp; checkBusy}" />
-                    <Text variant="secondary" value="{editLine()}" />
+                <HStack verticalAlignment="center">
+                  <Button size="sm" variant="outlined" label="Undo"
+                    enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
+                  <Button size="sm" variant="outlined" label="Redo"
+                    enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canRedo)}" onClick="redoText()" />
+                  <!-- Check joins: render the whole edit, transcribe it and flag
+                       each join where the words heard differ from the words
+                       kept (serve_media.py's /transcripts/check). About as long
+                       as a transcription. Hidden for now (2026-11-13), with its
+                       status line and ⚠ marks: editing and checking each
+                       paragraph by ear comes first. Remove when="{false}" here
+                       and on the marks below to bring it back. -->
+                  <Button when="{false}" size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
+                    tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
+                    onClick="startCheck()" />
+                  <Spinner when="{false &amp;&amp; checkBusy}" />
+                  <Text variant="secondary" value="{editLine()}" />
+                </HStack>
+                <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
+                <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
+                <!-- Tag speakers: each paragraph's words become clickable;
+                     click where a speaker starts, then where they stop, to
+                     tag the stretch as the speaker chosen here. Tagged
+                     stretches are the voiceprints' examples; Match voices
+                     carries them to the rest (voiceprint.py). -->
+                <Switch label="Tag speakers" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
+                <VStack when="{tagMode}" gap="$space-2">
+                  <HStack verticalAlignment="center" wrapContent="true">
+                    <!-- Match voices (voiceprint.py) is hidden for now
+                         (2026-11-13): slower and more than tagging needs
+                         yet. Remove when="{false}" here and on its
+                         progress to bring it back. -->
+                    <Button when="{false}" size="sm" variant="outlined" label="Match voices"
+                      enabled="{readyCount() > 0 &amp;&amp; !matchProgress}"
+                      tooltip="Give every word you haven't tagged to the speaker whose voice it matches"
+                      onClick="startMatch()" />
+                    <Spinner when="{false &amp;&amp; !!matchProgress}" />
+                    <Text variant="secondary" when="{false &amp;&amp; !!matchProgress}"
+                      value="{'Matching voices' + (matchProgress &amp;&amp; matchProgress.total ? ': ' + Math.round(100 * matchProgress.done / matchProgress.total) + '%' : '…')}" />
+                    <Text variant="secondary" value="{taggedLine()}" />
                   </HStack>
-                  <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
-                  <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
-                  <!-- Tag speakers: each paragraph's words become clickable;
-                       click where a speaker starts, then where they stop, to
-                       tag the stretch as the speaker chosen here. Tagged
-                       stretches are the voiceprints' examples; Match voices
-                       carries them to the rest (voiceprint.py). -->
-                  <Switch label="Tag speakers" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
-                  <VStack when="{tagMode}" gap="$space-2">
-                    <HStack verticalAlignment="center" wrapContent="true">
-                      <!-- Match voices (voiceprint.py) is hidden for now
-                           (2026-11-13): slower and more than tagging needs
-                           yet. Remove when="{false}" here and on its
-                           progress to bring it back. -->
-                      <Button when="{false}" size="sm" variant="outlined" label="Match voices"
-                        enabled="{readyCount() > 0 &amp;&amp; !matchProgress}"
-                        tooltip="Give every word you haven't tagged to the speaker whose voice it matches"
-                        onClick="startMatch()" />
-                      <Spinner when="{false &amp;&amp; !!matchProgress}" />
-                      <Text variant="secondary" when="{false &amp;&amp; !!matchProgress}"
-                        value="{'Matching voices' + (matchProgress &amp;&amp; matchProgress.total ? ': ' + Math.round(100 * matchProgress.done / matchProgress.total) + '%' : '…')}" />
-                      <Text variant="secondary" value="{taggedLine()}" />
-                    </HStack>
-                    <Text variant="secondary"
-                      value="Click the first word of a stretch, then the last, then who said it." />
-                  </VStack>
-                  <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
-                    value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
-                             textDoc.value.redoLabel ? 'Redo would ' + textDoc.value.redoLabel : ''].filter((x) => x).join(' · ')}" />
+                  <Text variant="secondary"
+                    value="Click the first word of a stretch, then the last, then who said it." />
                 </VStack>
+                <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
+                  value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
+                           textDoc.value.redoLabel ? 'Redo would ' + textDoc.value.redoLabel : ''].filter((x) => x).join(' · ')}" />
               </VStack>
-              <VStack height="70vh" overflowY="auto">
-              <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
-                <!-- draft is the row's own: assignments to the component's
-                     variables made in here don't take (podcast-page log,
-                     2026-11-13: editingPara and paraDraft read back null in
-                     the same handler that set them; xmlui-org/xmlui#3940
-                     reaches further than its workaround). -->
-                <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}">
-                  <!-- Tag mode: the paragraph as clickable words, each in its
-                       speaker's color. A first click starts a selection
-                       (anchor), a second ends it (focus); then "Who said it?"
-                       under the paragraph tags it. Selection is the row's own,
-                       like draft. Each click is logged (podcast-page: word). -->
-                  <HStack when="{tagMode}" wrapContent="true" gap="$space-1">
-                    <Items data="{$item.wl || []}">
-                      <Link noIndicator
-                        onClick="
-                          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                            body: { ev: 'word', id: $item.id, anchor, focus } });
-                          if (anchor === null || focus !== null) { anchor = $item.id; focus = null; }
-                          else { focus = $item.id; }
-                        ">
-                        <Text value="{$item.w}" color="{$item.c || '$textColor-primary'}"
-                          fontWeight="{$item.h === 'tag' ? 'bold' : 'normal'}"
-                          fontStyle="{$item.u ? 'italic' : 'normal'}"
-                          backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
-                      </Link>
-                    </Items>
-                  </HStack>
-                  <HStack when="{tagMode &amp;&amp; anchor !== null}" verticalAlignment="center" wrapContent="true">
-                    <Text variant="secondary" value="{focus === null ? 'Now click the last word.' : 'Who said it?'}" />
-                    <Items data="{$item.speakers || []}">
-                      <Button size="xs" variant="outlined" label="{$item.name}" enabled="{focus !== null}"
-                        onClick="
-                          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                            body: { ev: 'tag', speaker: $item.id, anchor, focus } });
-                          tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
-                        " />
-                    </Items>
-                    <Button size="xs" variant="ghost" label="Clear" enabled="{focus !== null}"
-                      tooltip="Take the speaker off these words"
-                      onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
-                    <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
-                  </HStack>
-                  <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
-                    onGotFocus="
-                      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                        body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });
-                    "
-                    onDidChange="(v) => draft = v"
-                    onLostFocus="
-                      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                        body: { ev: 'blur', para: $item.para, draftLen: (draft || '').length,
-                                                textLen: $item.text.length, changed: draft !== $item.text } });
-                      if (draft !== $item.text) savePara(source, $item.para, draft);
-                    " />
-                  <MediaPlayer kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
-                  <HStack verticalAlignment="center" gap="$space-2">
-                    <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
-                    <Text variant="secondary" when="{$item.ticsCut > 0}"
-                      value="{'(' + $item.ticsCut + (($item.ticsCut === 1) ? ' tic' : ' tics') + ')'}" />
-                    <Button size="xs" variant="ghost" when="{$item.ticsCut > 0}" label="Restore tics"
-                      tooltip="Put back the fillers and stutters Elide tics cut in this paragraph"
-                      onClick="paraTics('/transcripts/restore', { source, para: $item.para, reason: 'tic' })" />
-                    <Button size="xs" variant="outlined" when="{$item.ticsKept > 0}"
-                      label="{'Elide ' + $item.ticsKept + (($item.ticsKept === 1) ? ' tic' : ' tics')}"
-                      tooltip="Cut this paragraph's fillers and stutters, as one step Undo can take back"
-                      onClick="paraTics('/transcripts/elide', { source, para: $item.para })" />
-                  </HStack>
-                  <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
-                    value="⚠ Check joins flagged a join here: listen" />
-                </VStack>
-              </List>
-              </VStack>
-              <ExpandableItem iconPosition="start" fullWidthSummary="true"
-                summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
-                <Items data="{cutList.value ? cutList.value.spans : []}">
-                  <VStack gap="0">
-                    <HStack verticalAlignment="start">
-                      <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
-                      <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
-                      <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
-                      <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
-                    </HStack>
-                    <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
-                      value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
-                    <Text when="{false &amp;&amp; $item.check &amp;&amp; !$item.check.ok}" variant="secondary"
-                      value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
-                  </VStack>
-                </Items>
-              </ExpandableItem>
             </VStack>
           </TabItem>
           <TabItem label="Transcript">
-            <List id="transcriptList" data="{segments}" height="70vh"
-              dataRefreshMode="preserve-state">
-              <HStack verticalAlignment="start" gap="$space-2"
-                backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
-                <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
-                  onClick="playFrom($item.t0)" />
-                <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
-                  value="{$item.name || '—'}" />
-                <Text width="*" value="{$item.text}" />
-              </HStack>
-            </List>
+            <Text variant="secondary" value="whisper's segments, with their times: click a time to play from there." />
           </TabItem>
         </Tabs>
       </VStack>
-    </HStack>
+      <VStack height="100%" overflowY="auto" paddingLeft="$space-4">
+      <VStack when="{view === 'Edit text'}" gap="$space-2">
+        <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
+          <!-- draft is the row's own: assignments to the component's
+               variables made in here don't take (podcast-page log,
+               2026-11-13: editingPara and paraDraft read back null in
+               the same handler that set them; xmlui-org/xmlui#3940
+               reaches further than its workaround). -->
+          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}">
+            <!-- Tag mode: the paragraph as clickable words, each in its
+                 speaker's color. A first click starts a selection
+                 (anchor), a second ends it (focus); then "Who said it?"
+                 under the paragraph tags it. Selection is the row's own,
+                 like draft. Each click is logged (podcast-page: word). -->
+            <HStack when="{tagMode}" wrapContent="true" gap="$space-1">
+              <Items data="{$item.wl || []}">
+                <Link noIndicator
+                  onClick="
+                    Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                      body: { ev: 'word', id: $item.id, anchor, focus } });
+                    if (anchor === null || focus !== null) { anchor = $item.id; focus = null; }
+                    else { focus = $item.id; }
+                  ">
+                  <Text value="{$item.w}" color="{$item.c || '$textColor-primary'}"
+                    fontWeight="{$item.h === 'tag' ? 'bold' : 'normal'}"
+                    fontStyle="{$item.u ? 'italic' : 'normal'}"
+                    backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
+                </Link>
+              </Items>
+            </HStack>
+            <HStack when="{tagMode &amp;&amp; anchor !== null}" verticalAlignment="center" wrapContent="true">
+              <Text variant="secondary" value="{focus === null ? 'Now click the last word.' : 'Who said it?'}" />
+              <Items data="{$item.speakers || []}">
+                <Button size="xs" variant="outlined" label="{$item.name}" enabled="{focus !== null}"
+                  onClick="
+                    Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                      body: { ev: 'tag', speaker: $item.id, anchor, focus } });
+                    tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
+                  " />
+              </Items>
+              <Button size="xs" variant="ghost" label="Clear" enabled="{focus !== null}"
+                tooltip="Take the speaker off these words"
+                onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
+              <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
+            </HStack>
+            <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+              onGotFocus="
+                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });
+              "
+              onDidChange="(v) => draft = v"
+              onLostFocus="
+                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'blur', para: $item.para, draftLen: (draft || '').length,
+                                          textLen: $item.text.length, changed: draft !== $item.text } });
+                if (draft !== $item.text) savePara(source, $item.para, draft);
+              " />
+            <MediaPlayer kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
+            <HStack verticalAlignment="center" gap="$space-2">
+              <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
+              <Text variant="secondary" when="{$item.ticsCut > 0}"
+                value="{'(' + $item.ticsCut + (($item.ticsCut === 1) ? ' tic' : ' tics') + ')'}" />
+              <Button size="xs" variant="ghost" when="{$item.ticsCut > 0}" label="Restore tics"
+                tooltip="Put back the fillers and stutters Elide tics cut in this paragraph"
+                onClick="paraTics('/transcripts/restore', { source, para: $item.para, reason: 'tic' })" />
+              <Button size="xs" variant="outlined" when="{$item.ticsKept > 0}"
+                label="{'Elide ' + $item.ticsKept + (($item.ticsKept === 1) ? ' tic' : ' tics')}"
+                tooltip="Cut this paragraph's fillers and stutters, as one step Undo can take back"
+                onClick="paraTics('/transcripts/elide', { source, para: $item.para })" />
+            </HStack>
+            <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
+              value="⚠ Check joins flagged a join here: listen" />
+          </VStack>
+        </List>
+        <ExpandableItem iconPosition="start" fullWidthSummary="true"
+          summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
+          <Items data="{cutList.value ? cutList.value.spans : []}">
+            <VStack gap="0">
+              <HStack verticalAlignment="start">
+                <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
+                <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
+                <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
+                <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
+              </HStack>
+              <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
+                value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
+              <Text when="{false &amp;&amp; $item.check &amp;&amp; !$item.check.ok}" variant="secondary"
+                value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
+            </VStack>
+          </Items>
+        </ExpandableItem>
+      </VStack>
+      <List id="transcriptList" when="{view === 'Transcript'}" data="{segments}"
+        dataRefreshMode="preserve-state">
+        <HStack verticalAlignment="start" gap="$space-2"
+          backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
+          <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
+            onClick="playFrom($item.t0)" />
+          <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
+            value="{$item.name || '—'}" />
+          <Text width="*" value="{$item.text}" />
+        </HStack>
+      </List>
+      </VStack>
+    </Splitter>
   </VStack>
 </Component>
