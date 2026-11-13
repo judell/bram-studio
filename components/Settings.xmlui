@@ -33,7 +33,8 @@
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
                           body: { podcast: { pauseMs: pauseBox.value, fadeMs: fadeBox.value,
-                                             paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value } } });
+                                             paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value,
+                                             fillers: fillersBox.value, repeatsToKeep: keepBox.value } } });
         toast.success('Podcast editing settings saved.');
       } catch (e) {
         toast.error(e.message);
@@ -92,6 +93,16 @@
           initialValue="{settings.value.podcast.paragraphWords}" />
         <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
       </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Fillers (Elide tics cuts these)" width="250px" />
+        <TextBox id="fillersBox" width="*" initialValue="{settings.value.podcast.fillers}" />
+      </HStack>
+      <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.fillers}" />
+      <HStack verticalAlignment="center">
+        <Text value="Repeats to keep (not stutters)" width="250px" />
+        <TextBox id="keepBox" width="*" initialValue="{settings.value.podcast.repeatsToKeep}" />
+      </HStack>
+      <Text variant="secondary" value="{'default: ' + settings.value.podcastDefaults.repeatsToKeep}" />
       <HStack>
         <Button label="Save" variant="outlined" size="sm" onClick="savePodcast()" />
       </HStack>
@@ -101,6 +112,7 @@
       <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
       <Text value="Paragraph breaks: a sentence that ends in a pause at least this long ends a paragraph, and so does any sentence once a paragraph is this long. Changing either re-splits the paragraphs on the Edit text tab; your cuts and corrections are kept (they belong to words, not paragraphs)." />
       <Text value="Changing the pause or the fade re-renders a paragraph's audio the next time you play it." />
+      <Text value="Fillers and Repeats to keep: words separated by commas, matched ignoring case and punctuation. Elide tics (Edit text tab) cuts every filler still kept, and every word said twice in a row, keeping the second, unless it's a repeat to keep or a number. Run it again after changing the lists: it only cuts what's still kept." />
     </ModalDialog>
     <ModalDialog id="safeInfo" title="Safekeeping">
       <Text value="Safekeeping copies a project (its takes, re-mix ingredients, exports and logs, with its database) to a folder you choose, such as one OneDrive keeps in the cloud. Copy to safekeeping is on the Projects page." />

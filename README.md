@@ -50,9 +50,12 @@ voice recorder uses AVFoundation).
   restored. Under each paragraph, a player plays it as edited, rendered when you press
   play, so you can check by ear as you go. Paragraph breaks are set once from all the
   words and never move. **Undo** takes back the last save, and **Cuts** lists each cut
-  with **Restore**. **Settings › Podcast editing** holds the durations involved, each
+  with **Restore**. Each paragraph has its own **Elide N tics**, which cuts its fillers
+  ("um", "uh") and stutters ("and, and") as one step, and **Restore tics**, which puts
+  them back. "you know", "like" and "I mean" are left to you. **Settings › Podcast editing** holds the durations involved, each
   with a default: the shortest pause that separates words (80 ms), the fade at each cut
-  (10 ms), and when a paragraph breaks (after a 0.5 s pause, or past 120 words). Every word keeps its source
+  (10 ms), when a paragraph breaks (after a 0.5 s pause, or past 120 words), and the
+  word lists Elide tics uses (fillers; repeats said on purpose, like "yeah, yeah"). Every word keeps its source
   time, so the cuts become an edit list (`GET /transcripts/cuts`). Rendering that list
   into the edited podcast is a later step.
   - **Where a cut falls:** whisper's word times can be off by up to a second, enough to

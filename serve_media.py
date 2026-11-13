@@ -626,9 +626,17 @@ PODCAST_SETTINGS = {
 }
 
 
+# Word lists, likewise Settings: what counts as a tic is a matter of taste.
+# Comma-separated; matched on a word's letters, ignoring case and punctuation.
+PODCAST_WORD_SETTINGS = {
+    "fillers": "um, umm, uh, uhm, er, ah, hmm, mm",  # cut wherever they're kept (elide_tics)
+    "repeatsToKeep": "yeah, no, very, blah, bye",  # said twice on purpose: not cut as stutters
+}
+
+
 def podcast_settings():
     saved = read_settings().get("podcast", {})
-    out = {}
+    out = {k: str(saved.get(k, default)) for k, default in PODCAST_WORD_SETTINGS.items()}
     for k, (default, lo, hi) in PODCAST_SETTINGS.items():
         try:
             v = type(default)(saved.get(k, default))
@@ -1817,6 +1825,21 @@ SEGMENT_LINE = re.compile(r"^\[(\d+):(\d+):([\d.]+) --> ")
 transcribing = {}  # source -> {"done_s", "duration_s"} while whisper-cli runs; one at a time
 TRANSCRIBE_LOCK = threading.Lock()
 TEXT_LOCK = threading.Lock()  # one text edit (save, undo, restore) at a time
+ALIGN_LOCK = threading.Lock()  # one align.py run at a time (aligned_edges)
+
+
+def align_soon(source):
+    # Place a change's new cut edges in the background, so the next paragraph
+    # played needn't wait for them (Elide tics' 144 new edges took 10.6 s).
+    def run():
+        try:
+            db = sqlite3.connect(DB)
+            row = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+            if row:
+                text_cuts(db, source, row[0] or 0)
+        except Exception as e:
+            print(f"align soon failed source={source} error={e}", flush=True)
+    threading.Thread(target=run, daemon=True).start()
 
 
 def transcribe_model():
@@ -2037,17 +2060,59 @@ def paragraphs(db, source):
     # words' state, which changes whenever an edit touches it (the page keys
     # rows and audio by it, so a changed paragraph redraws and re-renders).
     paras = {}
-    for para, wid, kept, shown, text in db.execute(
-            "SELECT para, id, kept, shown, text FROM words WHERE source = ? ORDER BY i", (source,)):
-        p = paras.setdefault(para, {"para": para, "words": [], "kept": 0, "cut": 0, "h": hashlib.sha1()})
+    # Tics still kept, per paragraph (what Elide tics would cut there).
+    para_of = {}
+    for wid, para in db.execute("SELECT id, para FROM words WHERE source = ?", (source,)):
+        para_of[wid] = para
+    ticky = collections.Counter(para_of[i] for i in elide_tics(db, source, dry=True)["ids"])
+    for para, wid, kept, shown, text, reason in db.execute(
+            "SELECT para, id, kept, shown, text, cut_reason FROM words WHERE source = ? ORDER BY i", (source,)):
+        p = paras.setdefault(para, {"para": para, "words": [], "kept": 0, "cut": 0, "tics": 0,
+                                    "h": hashlib.sha1()})
         if kept:
             p["words"].append(shown or text)
             p["kept"] += 1
         else:
             p["cut"] += 1
+            p["tics"] += reason == "tic"
         p["h"].update(f"{wid}:{kept}:{shown or ''};".encode())
     return [{"para": p["para"], "text": " ".join(p["words"]), "kept": p["kept"], "cut": p["cut"],
-             "v": p["h"].hexdigest()[:10], "key": f"{p['para']}-{p['h'].hexdigest()[:10]}"} for p in paras.values()]
+             "ticsCut": p["tics"], "ticsKept": ticky.get(p["para"], 0),
+             "v": p["h"].hexdigest()[:10],
+             "key": f"{p['para']}-{p['h'].hexdigest()[:10]}-{ticky.get(p['para'], 0)}"} for p in paras.values()]
+
+
+def describe_step(db, source, ch):
+    # A change in words, for the Undo / Redo line: what it did and where,
+    # the paragraph named by its opening words (the page doesn't number
+    # them). Returns (text, the first paragraph it touched).
+    cut, back, fixed = ch.get("cut", []), ch.get("restored", []), ch.get("corrected", [])
+    ids = cut + back + [c[0] for c in fixed]
+    if not ids:
+        return "", None
+    paras = sorted({r[0] for r in db.execute(
+        f"SELECT para FROM words WHERE id IN ({','.join('?' * len(ids))})", ids)})
+    first = paras[0]
+    # The paragraph's opening as its box shows it (kept words, corrected);
+    # a paragraph that's all cut, by its original words.
+    opening = " ".join(r[0] for r in db.execute(
+        "SELECT coalesce(shown, text) FROM words WHERE source = ? AND para = ? AND kept = 1 ORDER BY i LIMIT 5",
+        (source, first))) or " ".join(r[0] for r in db.execute(
+        "SELECT text FROM words WHERE source = ? AND para = ? ORDER BY i LIMIT 5", (source, first)))
+    where = f"“{opening}…”" + (f" and {len(paras) - 1} more paragraphs" if len(paras) > 1 else "")
+    n = lambda k, one, many: f"{k} {one if k == 1 else many}"
+    if ch.get("reason") == "tic":
+        what = "elide " + n(len(cut), "tic", "tics")
+    elif back and not cut and not fixed:
+        was = ch.get("restoredWas", {})
+        what = "restore " + (n(len(back), "tic", "tics") if was and all(v == "tic" for v in was.values())
+                             else n(len(back), "word", "words"))
+    else:
+        what = "your edit (" + ", ".join(x for x in (n(len(cut), "word cut", "words cut") if cut else "",
+                                                     n(len(fixed), "correction", "corrections") if fixed else "",
+                                                     n(len(back), "word restored", "words restored") if back else "")
+                                         if x) + ")"
+    return f"{what} in {where}", first
 
 
 def text_summary(db, source):
@@ -2056,8 +2121,14 @@ def text_summary(db, source):
         "sum(CASE WHEN kept THEN 0 ELSE t1 - t0 END) FROM words WHERE source = ?", (source,)).fetchone()
     done, undone = db.execute("SELECT coalesce(sum(1 - undone), 0), coalesce(sum(undone), 0) "
                               "FROM transcript_edits WHERE source = ?", (source,)).fetchone()
+    nxt_undo = db.execute("SELECT changes FROM transcript_edits WHERE source = ? AND undone = 0 "
+                          "ORDER BY id DESC LIMIT 1", (source,)).fetchone()
+    nxt_redo = db.execute("SELECT changes FROM transcript_edits WHERE source = ? AND undone = 1 "
+                          "ORDER BY id LIMIT 1", (source,)).fetchone()
     return {"text": kept_text(db, source), "keptWords": kept or 0, "cutWords": cut or 0,
-            "canUndo": done > 0, "canRedo": undone > 0}
+            "canUndo": done > 0, "canRedo": undone > 0,
+            "undoLabel": describe_step(db, source, json.loads(nxt_undo[0]))[0] if nxt_undo else "",
+            "redoLabel": describe_step(db, source, json.loads(nxt_redo[0]))[0] if nxt_redo else ""}
 
 
 def apply_text_edit(db, source, text, para=None):
@@ -2164,6 +2235,42 @@ def redo_text_edit(db, source):
     return ch
 
 
+def elide_tics(db, source, dry=False, para=None):
+    # Cut the tics still kept, as one Undo step (cut_reason 'tic'): every
+    # filler, and every stutter (a word said again at once, the last kept),
+    # except deliberate doubles (repeatsToKeep) and numbers. Words you've cut
+    # are left as they are. Matched on letters, so "uh," is "uh". With dry,
+    # only says what it would cut (and which words: ids); with para, only in
+    # that paragraph (stutters are still found across its edges).
+    conf = podcast_settings()
+    fillers = {word_key(w) for w in conf["fillers"].split(",") if word_key(w)}
+    keep = {word_key(w) for w in conf["repeatsToKeep"].split(",") if word_key(w)}
+    kept = db.execute("SELECT id, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 ORDER BY i",
+                      (source,)).fetchall()
+    keys = [word_key(w) for _, w in kept]
+    filler_ids = [kept[n][0] for n, k in enumerate(keys) if k in fillers]
+    # Stutters on the words left once fillers go, so "and, uh, and" counts.
+    rest = [(n, k) for n, k in enumerate(keys) if k not in fillers and k]
+    stutter_ids = [kept[rest[m][0]][0] for m in range(len(rest) - 1)
+                   if rest[m][1] == rest[m + 1][1] and rest[m][1] not in keep and not rest[m][1].isdigit()]
+    if para is not None:
+        mine = {r[0] for r in db.execute("SELECT id FROM words WHERE source = ? AND para = ?", (source, para))}
+        filler_ids = [i for i in filler_ids if i in mine]
+        stutter_ids = [i for i in stutter_ids if i in mine]
+        chosen = set(filler_ids) | set(stutter_ids)
+        kept = [k for k in kept if k[0] in mine]
+        keys = [word_key(w) for _, w in kept]
+        rest = [(n, k) for n, k in enumerate(keys) if k not in fillers and k]
+    found = {"fillers": len(filler_ids), "stutters": len(stutter_ids), "ids": filler_ids + stutter_ids,
+             "examples": [kept[n][1] for n, k in enumerate(keys) if k in fillers][:5]
+             + [kept[rest[m][0]][1] + " " + kept[rest[m + 1][0]][1] for m in range(len(rest) - 1)
+                if kept[rest[m][0]][0] in set(stutter_ids)][:5]}
+    if not dry:
+        record_text_change(db, source, {"cut": filler_ids + stutter_ids, "restored": [], "corrected": []},
+                           reason="tic")
+    return found
+
+
 def silences(source):
     # Quiet stretches in the transcript's 16 kHz audio, [start, end] seconds,
     # measured once (ffmpeg silencedetect) and kept beside the transcript.
@@ -2207,6 +2314,11 @@ def aligned_edges(db, source, boundaries):
     # Edges are cached per pauseMs setting (method "ctc@80"): a new setting
     # aligns them again; rows from before the setting existed are ignored.
     pause = podcast_settings()["pauseMs"]
+    with ALIGN_LOCK:  # one alignment at a time: a second asker waits, then finds them cached
+        return _aligned_edges(db, source, boundaries, pause)
+
+
+def _aligned_edges(db, source, boundaries, pause):
     have = {i: (t, m.split("@")[0]) for i, t, m in db.execute(
         f"SELECT i, t, method FROM word_edges WHERE source = ? AND method LIKE ? "
         f"AND i IN ({','.join('?' * len(boundaries))})", [source, f"%@{pause}", *boundaries])} if boundaries else {}
@@ -2600,7 +2712,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, {"on": trace_on()})
         if self.path == "/settings":
             return self.send_json(200, {**read_settings(), "podcast": podcast_settings(),
-                                        "podcastDefaults": {k: v[0] for k, v in PODCAST_SETTINGS.items()}})
+                                        "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS}})
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
         if self.path == "/sources":
@@ -2781,7 +2893,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.edit_speaker(self.path.rsplit("/", 1)[1])
         if self.path == "/segments/speaker":
             return self.label_segments()
-        if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore"):
+        if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore",
+                         "/transcripts/elide"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
@@ -2896,22 +3009,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif op == "undo":
                 ch = undo_text_edit(db, source)
                 result = {"undone": bool(ch), "cut": len(ch["restored"]) if ch else 0,
-                          "restored": len(ch["cut"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0}
+                          "restored": len(ch["cut"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0,
+                          "para": describe_step(db, source, ch)[1] if ch else None,
+                          "did": "Undid " + describe_step(db, source, ch)[0] if ch else ""}
             elif op == "redo":
                 ch = redo_text_edit(db, source)
                 result = {"redone": bool(ch), "cut": len(ch["cut"]) if ch else 0,
-                          "restored": len(ch["restored"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0}
+                          "restored": len(ch["restored"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0,
+                          "para": describe_step(db, source, ch)[1] if ch else None,
+                          "did": "Redid " + describe_step(db, source, ch)[0] if ch else ""}
+            elif op == "elide":
+                para = body.get("para")
+                result = elide_tics(db, source, dry=bool(body.get("dryRun")), para=None if para is None else int(para))
+                result.pop("ids", None)
+                result["cut"] = 0 if body.get("dryRun") else result["fillers"] + result["stutters"]
+                print(f"elide source={source} fillers={result['fillers']} stutters={result['stutters']}"
+                      f"{' dry' if body.get('dryRun') else ''}", flush=True)
             else:
-                ids = [int(i) for i in body.get("ids") or []]
-                cut = [r[0] for r in db.execute(
-                    f"SELECT id FROM words WHERE source = ? AND kept = 0 AND id IN ({','.join('?' * len(ids))})",
-                    [source, *ids])] if ids else []
+                # {ids} restores those cut words; {reason: 'tic'} every word
+                # cut as that ("Restore all tics").
+                if body.get("reason"):
+                    only, scope = ("", ()) if body.get("para") is None else (" AND para = ?", (int(body["para"]),))
+                    cut = [r[0] for r in db.execute("SELECT id FROM words WHERE source = ? AND kept = 0 "
+                                                    f"AND cut_reason = ?{only}", (source, body["reason"], *scope))]
+                else:
+                    ids = [int(i) for i in body.get("ids") or []]
+                    cut = [r[0] for r in db.execute(
+                        f"SELECT id FROM words WHERE source = ? AND kept = 0 AND id IN ({','.join('?' * len(ids))})",
+                        [source, *ids])] if ids else []
                 record_text_change(db, source, {"cut": [], "restored": cut, "corrected": []})
                 result = {"restored": len(cut)}
             db.commit()
             print(f"text {op} source={source} {json.dumps(result)}", flush=True)
             result.update(text_summary(db, source))
         notify("words")
+        if result.get("cut") or result.get("restored"):
+            align_soon(source)
         self.send_json(200, result)
 
     def json_body(self):
@@ -4751,6 +4884,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if isinstance(body.get("podcast"), dict):
             podcast = dict(settings.get("podcast", {}))
             for k, v in body["podcast"].items():
+                if k in PODCAST_WORD_SETTINGS:
+                    podcast[k] = ", ".join(w for w in (x.strip() for x in str(v or "").split(",")) if w)
+                    continue
                 if k not in PODCAST_SETTINGS:
                     continue
                 default, lo, hi = PODCAST_SETTINGS[k]
@@ -4778,7 +4914,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             print(f"paragraphs reassigned pause={after['paragraphPauseS']} words={after['paragraphWords']}", flush=True)
             notify("words")
         self.send_json(200, {**settings, "podcast": after,
-                             "podcastDefaults": {k: v[0] for k, v in PODCAST_SETTINGS.items()}})
+                             "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS}})
 
     def set_safekeeping(self):
         # {slug, location, create}: where this project's safekeeping copies

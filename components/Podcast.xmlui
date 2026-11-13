@@ -92,10 +92,11 @@
     function textChange(path, body) {
       try {
         const r = post(path, Object.assign({ source }, body));  // body.source, when given, wins
-        const said = [r.cut ? r.cut + ' words cut' : '', r.restored ? r.restored + ' restored' : '',
-                      r.corrected ? r.corrected + ' corrected' : '',
-                      r.ignored ? r.ignored + ' typed words ignored (no audio for them)' : ''].filter((x) => x).join(', ');
-        toast.success(said || 'No changes');
+        // No toast for a change that went as typed (the paragraph shows it);
+        // only for typed words that couldn't be kept, which would otherwise
+        // vanish without a word.
+        if (r.ignored) toast(r.ignored + (r.ignored === 1 ? ' typed word has' : ' typed words have')
+                             + ' no audio, so ' + (r.ignored === 1 ? 'it was' : 'they were') + ' left out.');
       } catch (e) {
         toast.error(e.message);
       }
@@ -108,9 +109,23 @@
     function savePara(src, para, text) {
       textChange('/transcripts/edit', { source: src, para, text });
     }
-    function undoText() { textChange('/transcripts/undo', {}); }
-    function redoText() { textChange('/transcripts/redo', {}); }
+    // Undo and Redo bring the paragraph they changed into view; the line
+    // under the buttons says what the next of each would do. No toast: a
+    // pop-up per press got in the way of undoing and redoing quickly.
+    function stepText(path) {
+      try {
+        const r = post(path, { source });
+        if (r.para !== null && r.para !== undefined) paraList.scrollToIndex(r.para);
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function undoText() { stepText('/transcripts/undo'); }
+    function redoText() { stepText('/transcripts/redo'); }
     function restoreCut(ids) { textChange('/transcripts/restore', { ids }); }
+    // A paragraph's Elide / Restore tics, called from inside the list with
+    // everything it needs (xmlui-org/xmlui#3940: no component variables in here).
+    function paraTics(path, body) { textChange(path, body); }
     function playUrl(item) {
       return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
         + '&para=' + item.para + '&v=' + item.v;
@@ -246,27 +261,43 @@
         <Tabs keepMounted="true">
           <TabItem label="Edit text">
             <VStack gap="$space-2">
-              <HStack verticalAlignment="center">
-                <Button size="sm" variant="outlined" label="Undo"
-                  enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
-                <Button size="sm" variant="outlined" label="Redo"
-                  enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canRedo)}" onClick="redoText()" />
-                <!-- Check joins: render the whole edit, transcribe it and flag
-                     each join where the words heard differ from the words
-                     kept (serve_media.py's /transcripts/check). About as long
-                     as a transcription. Hidden for now (2026-11-13), with its
-                     status line and ⚠ marks: editing and checking each
-                     paragraph by ear comes first. Remove when="{false}" here
-                     and on the marks below to bring it back. -->
-                <Button when="{false}" size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
-                  tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
-                  onClick="startCheck()" />
-                <Spinner when="{false &amp;&amp; checkBusy}" />
-                <Text variant="secondary" value="{editLine()}" />
-              </HStack>
-              <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
-              <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo takes back the last save; Redo puts it back." />
-              <List id="paraList" data="{paras}" idKey="key" height="70vh" dataRefreshMode="preserve-state">
+              <!-- The Undo / Redo bar stays put because the paragraphs scroll in
+                   their own bounded region below it, not the page: a List can
+                   hand its scrolling to the page, and then Undo's scroll to a
+                   paragraph moved the whole page, bar and all (2026-11-13;
+                   a StickySection didn't hold). The bounded-VStack form of
+                   https://www.xmlui.org/docs/howto/pin-a-toolbar-above-a-bounded-scroll-region
+                   (its ScrollViewer form, with an always-visible overlay
+                   scrollbar, made the whole page scroll instead). -->
+              <VStack gap="$space-2">
+                <VStack gap="$space-2">
+                  <HStack verticalAlignment="center">
+                    <Button size="sm" variant="outlined" label="Undo"
+                      enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
+                    <Button size="sm" variant="outlined" label="Redo"
+                      enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canRedo)}" onClick="redoText()" />
+                    <!-- Check joins: render the whole edit, transcribe it and flag
+                         each join where the words heard differ from the words
+                         kept (serve_media.py's /transcripts/check). About as long
+                         as a transcription. Hidden for now (2026-11-13), with its
+                         status line and ⚠ marks: editing and checking each
+                         paragraph by ear comes first. Remove when="{false}" here
+                         and on the marks below to bring it back. -->
+                    <Button when="{false}" size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
+                      tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
+                      onClick="startCheck()" />
+                    <Spinner when="{false &amp;&amp; checkBusy}" />
+                    <Text variant="secondary" value="{editLine()}" />
+                  </HStack>
+                  <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
+                  <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
+                  <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
+                    value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
+                             textDoc.value.redoLabel ? 'Redo would ' + textDoc.value.redoLabel : ''].filter((x) => x).join(' · ')}" />
+                </VStack>
+              </VStack>
+              <VStack height="70vh" overflowY="auto">
+              <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
                 <!-- draft is the row's own: assignments to the component's
                      variables made in here don't take (podcast-page log,
                      2026-11-13: editingPara and paraDraft read back null in
@@ -286,18 +317,30 @@
                       if (draft !== $item.text) savePara(source, $item.para, draft);
                     " />
                   <MediaPlayer kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
-                  <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
+                  <HStack verticalAlignment="center" gap="$space-2">
+                    <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
+                    <Text variant="secondary" when="{$item.ticsCut > 0}"
+                      value="{'(' + $item.ticsCut + (($item.ticsCut === 1) ? ' tic' : ' tics') + ')'}" />
+                    <Button size="xs" variant="ghost" when="{$item.ticsCut > 0}" label="Restore tics"
+                      tooltip="Put back the fillers and stutters Elide tics cut in this paragraph"
+                      onClick="paraTics('/transcripts/restore', { source, para: $item.para, reason: 'tic' })" />
+                    <Button size="xs" variant="outlined" when="{$item.ticsKept > 0}"
+                      label="{'Elide ' + $item.ticsKept + (($item.ticsKept === 1) ? ' tic' : ' tics')}"
+                      tooltip="Cut this paragraph's fillers and stutters, as one step Undo can take back"
+                      onClick="paraTics('/transcripts/elide', { source, para: $item.para })" />
+                  </HStack>
                   <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
                     value="⚠ Check joins flagged a join here: listen" />
                 </VStack>
               </List>
+              </VStack>
               <ExpandableItem iconPosition="start" fullWidthSummary="true"
                 summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
                 <Items data="{cutList.value ? cutList.value.spans : []}">
                   <VStack gap="0">
                     <HStack verticalAlignment="start">
                       <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
-                      <Text width="*" maxLines="2" value="{$item.text}" />
+                      <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
                       <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
                       <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
                     </HStack>
