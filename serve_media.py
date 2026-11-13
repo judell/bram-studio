@@ -615,6 +615,29 @@ def read_settings():
         return {}
 
 
+# The Podcast page's settings, with their defaults: durations and sizes that
+# are a matter of taste or of the recording, so they're Settings, not
+# constants. Each is (default, minimum, maximum).
+PODCAST_SETTINGS = {
+    "pauseMs": (80, 20, 500),  # quiet must last this long to count as a pause between words (align.py)
+    "fadeMs": (10, 0, 100),  # the fade at each join when an edit is played
+    "paragraphPauseS": (0.5, 0.1, 5.0),  # a sentence ending in a pause this long ends a paragraph
+    "paragraphWords": (120, 20, 1000),  # ...and so does any sentence once a paragraph has this many words
+}
+
+
+def podcast_settings():
+    saved = read_settings().get("podcast", {})
+    out = {}
+    for k, (default, lo, hi) in PODCAST_SETTINGS.items():
+        try:
+            v = type(default)(saved.get(k, default))
+        except (TypeError, ValueError):
+            v = default
+        out[k] = min(max(v, lo), hi)
+    return out
+
+
 def write_settings(settings):
     tmp = SETTINGS + ".tmp"
     with open(tmp, "w") as f:
@@ -1878,20 +1901,25 @@ WORDS_SQL = """CREATE TABLE IF NOT EXISTS words (
   shown TEXT,
   kept INTEGER NOT NULL DEFAULT 1,
   cut_reason TEXT,
-  speaker_id INTEGER
+  speaker_id INTEGER,
+  para INTEGER
 )"""
+# Each save, restore or tic elision is a row; Undo marks the latest kept row
+# undone (it stays, for Redo), Redo re-applies the earliest undone one, and a
+# new change discards the undone rows, as a scene's Undo and Redo do.
 TRANSCRIPT_EDITS_SQL = """CREATE TABLE IF NOT EXISTS transcript_edits (
   id INTEGER PRIMARY KEY,
   source TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  changes TEXT NOT NULL
+  changes TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0
 )"""
-# Paragraphs in the editable text, for reading only (saving ignores them): a
-# new one after a sentence that ends in a pause over PARAGRAPH_GAP, or after
-# any sentence once a paragraph passes PARAGRAPH_WORDS. On AIW, pauses alone
-# gave 11 paragraphs at 1.5 s and still one of 845 words at 0.5 s.
-PARAGRAPH_GAP = 0.5
-PARAGRAPH_WORDS = 120
+# Paragraphs of the editable text (words.para): a new one after a sentence
+# that ends in a pause over the paragraphPauseS setting, or after any
+# sentence once a paragraph passes paragraphWords (PODCAST_SETTINGS). On AIW, pauses alone gave 11 paragraphs at
+# 1.5 s and still one of 845 words at 0.5 s. Computed once, from all the
+# words (assign_paras), so cutting words never moves a break: the Edit text
+# tab edits and plays a paragraph at a time.
 SNAP_WINDOW = 0.25  # a cut edge moves at most this far to reach quiet
 # Cut edges by the sound (align.py): a CTC speech model under sherpa-onnx, in
 # its own venv, since Homebrew's Python refuses system-wide installs. Both are
@@ -1941,12 +1969,44 @@ def build_words(db, source):
         pass
     db.executemany("INSERT INTO words (source, i, t0, t1, text) VALUES (?, ?, ?, ?, ?)",
                    [(source, i, w[0], max(w[0], w[1]), w[2]) for i, w in enumerate(words)])
+    assign_paras(db, source)
     return len(words)
 
 
+def assign_paras(db, source):
+    # words.para for every word of the source, kept or cut, by the
+    # paragraph settings, which are noted beside the transcript so a project
+    # opened after they change is re-split (ensure_words).
+    conf = podcast_settings()
+    gap, most = conf["paragraphPauseS"], conf["paragraphWords"]
+    para, prev, run, rows = 0, None, 0, []
+    for wid, t0, t1, text in db.execute("SELECT id, t0, t1, text FROM words WHERE source = ? ORDER BY i",
+                                        (source,)).fetchall():
+        if prev is not None and prev[1][-1:] in ".?!" and (t0 - prev[0] > gap or run >= most):
+            para, run = para + 1, 0
+        rows.append((para, wid))
+        prev, run = (t1, text), run + 1
+    db.executemany("UPDATE words SET para = ? WHERE id = ?", rows)
+    try:
+        json.dump({"gap": gap, "words": most}, open(os.path.join(transcript_folder(source), "paras.json"), "w"))
+    except OSError:
+        pass
+
+
 def ensure_words(db, source):
-    # Words for a transcript made before the words table existed.
+    # Words for a transcript made before the words table existed, and
+    # paragraphs for words made before words.para did.
     if db.execute("SELECT 1 FROM words WHERE source = ? LIMIT 1", (source,)).fetchone():
+        conf = podcast_settings()
+        try:
+            stamp = json.load(open(os.path.join(transcript_folder(source), "paras.json")))
+        except (OSError, ValueError):
+            stamp = {}
+        if (db.execute("SELECT 1 FROM words WHERE source = ? AND para IS NULL LIMIT 1", (source,)).fetchone()
+                or stamp != {"gap": conf["paragraphPauseS"], "words": conf["paragraphWords"]}):
+            assign_paras(db, source)
+            db.commit()
+            print(f"paragraphs assigned source={source}", flush=True)
         return True
     if not os.path.isfile(os.path.join(transcript_folder(source), "transcript.json")):
         return False
@@ -1961,41 +2021,58 @@ def word_key(text):
 
 
 def kept_text(db, source):
-    # The kept words as running text, in paragraphs (PARAGRAPH_GAP).
-    out, prev, run = [], None, 0
-    for t0, t1, text in db.execute(
-            "SELECT t0, t1, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 ORDER BY i", (source,)):
+    # The kept words as running text, a blank line between paragraphs.
+    out, prev = [], None
+    for para, text in db.execute(
+            "SELECT para, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 ORDER BY i", (source,)):
         if prev is not None:
-            ends = out[-1][-1:] in ".?!"
-            if ends and (t0 - prev > PARAGRAPH_GAP or run >= PARAGRAPH_WORDS):
-                out.append("\n\n")
-                run = 0
-            else:
-                out.append(" ")
+            out.append("\n\n" if para != prev else " ")
         out.append(text)
-        prev, run = t1, run + 1
+        prev = para
     return "".join(out)
+
+
+def paragraphs(db, source):
+    # Each paragraph's kept text, its counts and a version: a hash of its
+    # words' state, which changes whenever an edit touches it (the page keys
+    # rows and audio by it, so a changed paragraph redraws and re-renders).
+    paras = {}
+    for para, wid, kept, shown, text in db.execute(
+            "SELECT para, id, kept, shown, text FROM words WHERE source = ? ORDER BY i", (source,)):
+        p = paras.setdefault(para, {"para": para, "words": [], "kept": 0, "cut": 0, "h": hashlib.sha1()})
+        if kept:
+            p["words"].append(shown or text)
+            p["kept"] += 1
+        else:
+            p["cut"] += 1
+        p["h"].update(f"{wid}:{kept}:{shown or ''};".encode())
+    return [{"para": p["para"], "text": " ".join(p["words"]), "kept": p["kept"], "cut": p["cut"],
+             "v": p["h"].hexdigest()[:10], "key": f"{p['para']}-{p['h'].hexdigest()[:10]}"} for p in paras.values()]
 
 
 def text_summary(db, source):
     kept, kept_s, cut, cut_s = db.execute(
         "SELECT sum(kept), sum(CASE WHEN kept THEN t1 - t0 ELSE 0 END), sum(1 - kept), "
         "sum(CASE WHEN kept THEN 0 ELSE t1 - t0 END) FROM words WHERE source = ?", (source,)).fetchone()
-    edits = db.execute("SELECT count(*) FROM transcript_edits WHERE source = ?", (source,)).fetchone()[0]
+    done, undone = db.execute("SELECT coalesce(sum(1 - undone), 0), coalesce(sum(undone), 0) "
+                              "FROM transcript_edits WHERE source = ?", (source,)).fetchone()
     return {"text": kept_text(db, source), "keptWords": kept or 0, "cutWords": cut or 0,
-            "canUndo": edits > 0}
+            "canUndo": done > 0, "canRedo": undone > 0}
 
 
-def apply_text_edit(db, source, text):
+def apply_text_edit(db, source, text, para=None):
     # Diff the edited text against the kept words, word by word, on their
     # letters (so punctuation alone never makes a cut):
     # - deleted words are cut;
     # - words replaced one for one are corrections: shown changes, time stays;
     # - inserted words that match cut words between the same kept neighbors
     #   are restored; other inserted words have no audio and are ignored.
+    # With para, the text is that paragraph alone, compared with its words.
     import difflib
+    only = "" if para is None else " AND para = ?"
+    scope = () if para is None else (para,)
     kept = db.execute("SELECT id, i, coalesce(shown, text), text FROM words "
-                      "WHERE source = ? AND kept = 1 ORDER BY i", (source,)).fetchall()
+                      f"WHERE source = ? AND kept = 1{only} ORDER BY i", (source, *scope)).fetchall()
     new = text.split()
     a, b = [word_key(w[2]) for w in kept], [word_key(w) for w in new]
     changes = {"cut": [], "restored": [], "corrected": []}
@@ -2011,8 +2088,8 @@ def apply_text_edit(db, source, text):
         nonlocal ignored
         lo = kept[at - 1][1] if at > 0 else -1
         hi = kept[at][1] if at < len(kept) else 1 << 30
-        gone = db.execute("SELECT id, text FROM words WHERE source = ? AND kept = 0 AND i > ? AND i < ? ORDER BY i",
-                          (source, lo, hi)).fetchall()
+        gone = db.execute(f"SELECT id, text FROM words WHERE source = ? AND kept = 0 AND i > ? AND i < ?{only} "
+                          "ORDER BY i", (source, lo, hi, *scope)).fetchall()
         m = difflib.SequenceMatcher(None, [word_key(g[1]) for g in gone], [word_key(t) for t in typed], autojunk=False)
         matched = 0
         for blk in m.get_matching_blocks():
@@ -2051,14 +2128,15 @@ def record_text_change(db, source, changes, reason="edit"):
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?", [(reason, i) for i in changes["cut"]])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in changes["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in changes["corrected"]])
+    db.execute("DELETE FROM transcript_edits WHERE source = ? AND undone = 1", (source,))
     db.execute("INSERT INTO transcript_edits (source, created_at, changes) VALUES (?, ?, ?)",
                (source, datetime_now(), json.dumps({**changes, "reason": reason})))
     return True
 
 
 def undo_text_edit(db, source):
-    row = db.execute("SELECT id, changes FROM transcript_edits WHERE source = ? ORDER BY id DESC LIMIT 1",
-                     (source,)).fetchone()
+    row = db.execute("SELECT id, changes FROM transcript_edits WHERE source = ? AND undone = 0 "
+                     "ORDER BY id DESC LIMIT 1", (source,)).fetchone()
     if not row:
         return None
     ch = json.loads(row[1])
@@ -2067,7 +2145,22 @@ def undo_text_edit(db, source):
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
                    [(was.get(str(i), "edit"), i) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(old, i) for i, old, _ in ch["corrected"]])
-    db.execute("DELETE FROM transcript_edits WHERE id = ?", (row[0],))
+    db.execute("UPDATE transcript_edits SET undone = 1 WHERE id = ?", (row[0],))
+    return ch
+
+
+def redo_text_edit(db, source):
+    # The earliest undone change, applied again as it was first made.
+    row = db.execute("SELECT id, changes FROM transcript_edits WHERE source = ? AND undone = 1 "
+                     "ORDER BY id LIMIT 1", (source,)).fetchone()
+    if not row:
+        return None
+    ch = json.loads(row[1])
+    db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
+                   [(ch.get("reason", "edit"), i) for i in ch["cut"]])
+    db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["restored"]])
+    db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in ch["corrected"]])
+    db.execute("UPDATE transcript_edits SET undone = 0 WHERE id = ?", (row[0],))
     return ch
 
 
@@ -2111,18 +2204,21 @@ def aligned_edges(db, source, boundaries):
     # sound (align.py), cached in word_edges so each is aligned once. Without
     # the speech tools, or for a boundary align.py couldn't place, there is
     # no entry and the caller snaps by whisper's times instead.
-    have = {i: (t, m) for i, t, m in db.execute(
-        f"SELECT i, t, method FROM word_edges WHERE source = ? AND i IN ({','.join('?' * len(boundaries))})",
-        [source, *boundaries])} if boundaries else {}
+    # Edges are cached per pauseMs setting (method "ctc@80"): a new setting
+    # aligns them again; rows from before the setting existed are ignored.
+    pause = podcast_settings()["pauseMs"]
+    have = {i: (t, m.split("@")[0]) for i, t, m in db.execute(
+        f"SELECT i, t, method FROM word_edges WHERE source = ? AND method LIKE ? "
+        f"AND i IN ({','.join('?' * len(boundaries))})", [source, f"%@{pause}", *boundaries])} if boundaries else {}
     missing = sorted(set(boundaries) - set(have))
     if missing and os.path.isfile(SPEECH_PYTHON) and os.path.isdir(CTC_MODEL):
         t_start = time.time()
         wav = os.path.join(transcript_folder(source), "audio-16k.wav")
         r = subprocess.run([SPEECH_PYTHON, os.path.join(HERE, "align.py"), wav, DB, source, *map(str, missing)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, env={**os.environ, "ALIGN_PAUSE_MS": str(pause)})
         found = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
         db.executemany("INSERT OR REPLACE INTO word_edges (source, i, t, method) VALUES (?, ?, ?, ?)",
-                       [(source, e["i"], e["t"], e["method"]) for e in found])
+                       [(source, e["i"], e["t"], f"{e['method']}@{pause}") for e in found])
         db.commit()
         have.update({e["i"]: (e["t"], e["method"]) for e in found})
         methods = collections.Counter(e["method"] for e in found)
@@ -2196,6 +2292,66 @@ def text_cuts(db, source, duration):
             "unaligned": sum(1 for s in spans if s["unaligned"]), "check": check}
 
 
+PARA_AUDIO = os.path.join(ROOT, ".preview", "paras")  # rendered paragraphs, served at /.preview/paras/
+
+
+def para_audio(db, source, para, duration):
+    # A paragraph as edited, rendered from the source movie's own soundtrack:
+    # its stretch of the source (from the cut edge before its first word to
+    # the one after its last, aligned like any cut edge) less the cuts in it,
+    # 10 ms fades at each join. Named by the paragraph's version, so it is
+    # rendered once per edit; older renders of it are removed. Returns the
+    # file name, or None when every word is cut.
+    words = db.execute("SELECT i, t0, t1, kept FROM words WHERE source = ? ORDER BY i", (source,)).fetchall()
+    mine = [w[0] for w in db.execute("SELECT i FROM words WHERE source = ? AND para = ? ORDER BY i", (source, para))]
+    if not mine:
+        return None
+    version = next(p["v"] for p in paragraphs(db, source) if p["para"] == para)
+    conf = podcast_settings()
+    fade = conf["fadeMs"] / 1000
+    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
+    # The settings that shape the render are in its name, so changing one
+    # renders anew.
+    name = f"{stem}-p{para}-{version}-a{conf['pauseMs']}-f{conf['fadeMs']}.m4a"
+    path = os.path.join(PARA_AUDIO, name)
+    if os.path.isfile(path):
+        return name
+    first, last = mine[0], mine[-1]
+    edges = aligned_edges(db, source, [b for b in (first, last + 1) if 0 < b < len(words)])
+
+    def edge(b):
+        if b <= 0:
+            return 0.0
+        if b >= len(words):
+            return duration
+        return edges[b][0] if b in edges else (words[b - 1][2] + words[b][1]) / 2
+
+    start, end = edge(first), edge(last + 1)
+    pieces = [(max(k["src0"], start), min(k["src1"], end)) for k in text_cuts(db, source, duration)["kept"]
+              if k["src1"] > start and k["src0"] < end]
+    pieces = [(a, b) for a, b in pieces if b - a > 0.02]
+    if not pieces:
+        return None
+    graph = ";".join(f"[0:a]atrim={a - start:.3f}:{b - start:.3f},asetpts=PTS-STARTPTS"
+                     + (f",afade=t=in:d={fade},afade=t=out:st={max(b - a - fade, 0):.3f}:d={fade}" if fade else "")
+                     + f"[p{n}]" for n, (a, b) in enumerate(pieces))
+    graph += ";" + "".join(f"[p{n}]" for n in range(len(pieces))) + f"concat=n={len(pieces)}:v=0:a=1[out]"
+    os.makedirs(PARA_AUDIO, exist_ok=True)
+    t_start = time.time()
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
+                        "-i", source_paths()[source], "-filter_complex", graph, "-map", "[out]",
+                        "-c:a", "aac", "-b:a", "192k", path + ".tmp.m4a"], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("render: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+    os.replace(path + ".tmp.m4a", path)
+    for old in os.listdir(PARA_AUDIO):
+        if old.startswith(f"{stem}-p{para}-") and old != name:
+            os.remove(os.path.join(PARA_AUDIO, old))
+    print(f"para audio source={source} para={para} pieces={len(pieces)} "
+          f"secs={sum(b - a for a, b in pieces):.1f} render={time.time() - t_start:.2f}", flush=True)
+    return name
+
+
 CHECK_WINDOW = 1.5  # seconds of the edit either side of a join where a mismatch counts against it
 RECHECK = 12.0  # seconds of the edit around a suspect join that whisper hears again on its own
 
@@ -2254,8 +2410,10 @@ def check_text(source, lo, hi):
             return out
 
         wav = os.path.join(folder, "check.wav")
-        parts = [f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,afade=t=in:d=0.01,"
-                 f"afade=t=out:st={max(b - a - 0.01, 0)}:d=0.01[p{n}]" for n, (a, b) in enumerate(pieces)]
+        fade = podcast_settings()["fadeMs"] / 1000
+        parts = [f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS"
+                 + (f",afade=t=in:d={fade},afade=t=out:st={max(b - a - fade, 0)}:d={fade}" if fade else "")
+                 + f"[p{n}]" for n, (a, b) in enumerate(pieces)]
         graph = ";".join(parts) + ";" + "".join(f"[p{n}]" for n in range(len(pieces))) + \
             f"concat=n={len(pieces)}:v=0:a=1[out]"
         # The graph is read from a file (ffmpeg's "-/option file" form; this
@@ -2268,11 +2426,22 @@ def check_text(source, lo, hi):
                            capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError("render: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
-        r = subprocess.run(["whisper-cli", "-m", transcribe_model(), "-f", wav, "-l", "en", "-t", "8", "-ojf",
-                            "-of", os.path.join(folder, "check-heard"), "--prompt",
-                            f"{DISFLUENT_PROMPT} {prompt or ''}".strip()], capture_output=True, text=True)
-        if r.returncode:
-            raise RuntimeError(f"whisper-cli exited {r.returncode}")
+        # whisper's segment lines are the progress, pushed every 2 s as
+        # {"checking": source, done: false, done_s, duration_s}, as a
+        # transcription's are: a full check takes minutes.
+        proc = subprocess.Popen(["whisper-cli", "-m", transcribe_model(), "-f", wav, "-l", "en", "-t", "8", "-ojf",
+                                 "-of", os.path.join(folder, "check-heard"), "--prompt",
+                                 f"{DISFLUENT_PROMPT} {prompt or ''}".strip()],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        last_push = 0
+        for line in proc.stdout:
+            m = SEGMENT_LINE.match(line)
+            if m and time.time() - last_push > 2:
+                last_push = time.time()
+                push({"checking": source, "done": False, "duration_s": out,
+                      "done_s": int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))})
+        if proc.wait():
+            raise RuntimeError(f"whisper-cli exited {proc.returncode}")
         heard = heard_words(os.path.join(folder, "check-heard.json"))
         expected = [[word_key(w), edited(t), w] for t, w in kept if word_key(w)]
         ops = [o for o in difflib.SequenceMatcher(None, [e[0] for e in expected], [h[0] for h in heard],
@@ -2430,7 +2599,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/trace":
             return self.send_json(200, {"on": trace_on()})
         if self.path == "/settings":
-            return self.send_json(200, read_settings())
+            return self.send_json(200, {**read_settings(), "podcast": podcast_settings(),
+                                        "podcastDefaults": {k: v[0] for k, v in PODCAST_SETTINGS.items()}})
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
         if self.path == "/sources":
@@ -2459,6 +2629,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.transcript_text()
         if self.path.startswith("/transcripts/cuts"):
             return self.transcript_cuts()
+        if self.path.startswith("/transcripts/paras"):
+            return self.transcript_paras()
+        if self.path.startswith("/transcripts/play"):
+            return self.play_para()
         super().do_GET()
 
     def stream_events(self):
@@ -2535,6 +2709,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.log_audition()
         if self.path == "/undo/log":
             return self.log_undo_gate()
+        if self.path == "/podcast/log":
+            return self.log_podcast()
         if self.path == "/page/health":
             return self.log_page_health()
         if self.path == "/voicetest":
@@ -2605,7 +2781,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.edit_speaker(self.path.rsplit("/", 1)[1])
         if self.path == "/segments/speaker":
             return self.label_segments()
-        if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/restore"):
+        if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
@@ -2622,6 +2798,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not ensure_words(db, source):
                 return self.send_json(404, {"error": f"no transcript of {source!r}"})
             self.send_json(200, text_summary(db, source))
+
+    def transcript_paras(self):
+        # GET /transcripts/paras?source=: the paragraphs to edit (paragraphs).
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            paras = paragraphs(db, source)
+            # A paragraph holding a join the last check flagged (check.json
+            # keys are the first word of the cut after each join).
+            try:
+                flagged = [int(k) for k, v in json.load(open(os.path.join(transcript_folder(source), "check.json")))[
+                    "spans"].items() if not v["ok"]]
+            except (OSError, ValueError, KeyError):
+                flagged = []
+            marks = {r[0] for r in db.execute(
+                f"SELECT para FROM words WHERE id IN ({','.join('?' * len(flagged))})", flagged)} if flagged else set()
+            for p in paras:
+                p["suspect"] = p["para"] in marks
+            self.send_json(200, paras)
+
+    def play_para(self):
+        # GET /transcripts/play?source=&para=&v=: a paragraph's edited audio
+        # (para_audio), by redirect to the rendered file, which the ordinary
+        # file serving streams with byte ranges. v is only for the browser's
+        # cache: a new version is a new address.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+        try:
+            para = int(query.get("para", [""])[0])
+        except ValueError:
+            return self.send_json(400, {"error": "expected para"})
+        with TEXT_LOCK:
+            if not row or not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            try:
+                name = para_audio(db, source, para, row[0] or 0)
+            except Exception as e:
+                print(f"para audio failed source={source} para={para} error={e}", flush=True)
+                return self.send_json(500, {"error": str(e)})
+        if not name:
+            return self.send_json(404, {"error": "nothing kept in this paragraph"})
+        self.send_response(302)
+        self.send_header("Location", "/.preview/paras/" + urllib.parse.quote(name))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def transcript_cuts(self):
         # GET /transcripts/cuts?source=: the edit list (text_cuts).
@@ -2666,11 +2891,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if op == "edit":
                 if not isinstance(body.get("text"), str):
                     return self.send_json(400, {"error": "expected {source, text}"})
-                result = apply_text_edit(db, source, body["text"])
+                para = body.get("para")
+                result = apply_text_edit(db, source, body["text"], None if para is None else int(para))
             elif op == "undo":
                 ch = undo_text_edit(db, source)
                 result = {"undone": bool(ch), "cut": len(ch["restored"]) if ch else 0,
                           "restored": len(ch["cut"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0}
+            elif op == "redo":
+                ch = redo_text_edit(db, source)
+                result = {"redone": bool(ch), "cut": len(ch["cut"]) if ch else 0,
+                          "restored": len(ch["restored"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0}
             else:
                 ids = [int(i) for i in body.get("ids") or []]
                 cut = [r[0] for r in db.execute(
@@ -4374,6 +4604,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(400, {"error": "need start, stop and stoppedAt"})
         self.send_json(200, {"logged": 1})
 
+    def log_podcast(self):
+        # {ev, ...}: one line per paragraph-box event on the Podcast page
+        # (focus, blur, with what the page thought it was editing and whether
+        # the text changed), so a save that never arrives can be traced to the
+        # step that dropped it (2026-11-13: edits weren't saving).
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        ev = body.pop("ev", "?")
+        print(f"podcast-page: {ev} " + " ".join(f"{k}={json.dumps(v)}" for k, v in body.items()), flush=True)
+        self.send_json(200, {})
+
     def log_undo_gate(self):
         # {enabled, changed, ...inputs}: the take editor's Undo button's
         # inputs changed (the ChangeListener beside undoEdit in Main.xmlui).
@@ -4507,12 +4747,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if missing:
                     return self.send_json(200, {**settings, "defaultSafekeeping": loc, "missing": True})
             settings["defaultSafekeeping"] = loc
+        before = podcast_settings()
+        if isinstance(body.get("podcast"), dict):
+            podcast = dict(settings.get("podcast", {}))
+            for k, v in body["podcast"].items():
+                if k not in PODCAST_SETTINGS:
+                    continue
+                default, lo, hi = PODCAST_SETTINGS[k]
+                try:
+                    v = type(default)(v)
+                except (TypeError, ValueError):
+                    return self.send_json(400, {"error": f"{k} must be a number"})
+                if not lo <= v <= hi:
+                    return self.send_json(400, {"error": f"{k} must be between {lo} and {hi}"})
+                podcast[k] = v
+            settings["podcast"] = podcast
         try:
             write_settings(settings)
         except OSError as e:
             return self.send_json(500, {"error": f"Couldn't save the settings: {e}"})
         print(f"settings: {settings}", flush=True)
-        self.send_json(200, settings)
+        after = podcast_settings()
+        if (before["paragraphPauseS"], before["paragraphWords"]) != (after["paragraphPauseS"], after["paragraphWords"]):
+            # Paragraphs follow the new rule at once in the open project;
+            # others get it when next opened (ensure_words).
+            db = sqlite3.connect(DB)
+            for (src,) in db.execute("SELECT DISTINCT source FROM words").fetchall():
+                assign_paras(db, src)
+            db.commit()
+            print(f"paragraphs reassigned pause={after['paragraphPauseS']} words={after['paragraphWords']}", flush=True)
+            notify("words")
+        self.send_json(200, {**settings, "podcast": after,
+                             "podcastDefaults": {k: v[0] for k, v in PODCAST_SETTINGS.items()}})
 
     def set_safekeeping(self):
         # {slug, location, create}: where this project's safekeeping copies
@@ -4843,6 +5109,11 @@ with sqlite3.connect(DB) as _db:
     _db.execute(WORDS_SQL)
     _db.execute(TRANSCRIPT_EDITS_SQL)
     _db.execute(WORD_EDGES_SQL)
+    # words.para and transcript_edits.undone arrived later (podcast-paragraph-playback).
+    if "para" not in [r[1] for r in _db.execute("PRAGMA table_info(words)")]:
+        _db.execute("ALTER TABLE words ADD COLUMN para INTEGER")
+    if "undone" not in [r[1] for r in _db.execute("PRAGMA table_info(transcript_edits)")]:
+        _db.execute("ALTER TABLE transcript_edits ADD COLUMN undone INTEGER NOT NULL DEFAULT 0")
     # A transcript still 'running' was cut off by the server stopping.
     _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()

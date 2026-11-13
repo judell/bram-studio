@@ -86,13 +86,15 @@ CREATE TABLE IF NOT EXISTS words (
   shown TEXT,  -- a correction, or NULL
   kept INTEGER NOT NULL DEFAULT 1,
   cut_reason TEXT,  -- 'edit' (deleted in the text) or 'tic'
-  speaker_id INTEGER
+  speaker_id INTEGER,
+  para INTEGER  -- its paragraph in the Edit text tab, set once from all the words
 );
 CREATE TABLE IF NOT EXISTS transcript_edits (
   id INTEGER PRIMARY KEY,
   source TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  changes TEXT NOT NULL  -- JSON {cut, restored, corrected, restoredWas, reason}
+  changes TEXT NOT NULL,  -- JSON {cut, restored, corrected, restoredWas, reason}
+  undone INTEGER NOT NULL DEFAULT 0  -- taken back by Undo, kept for Redo until a new change
 );
 
 -- Where a cut between word i-1 and word i falls, by the sound (align.py), so

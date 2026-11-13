@@ -29,6 +29,17 @@
       }
       settings.refetch();
     }
+    function savePodcast() {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
+                          body: { podcast: { pauseMs: pauseBox.value, fadeMs: fadeBox.value,
+                                             paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value } } });
+        toast.success('Podcast editing settings saved.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      settings.refetch();
+    }
   </script>
   <VStack padding="$space-6" gap="$space-5">
     <H2>Settings</H2>
@@ -49,6 +60,48 @@
           ? 'Projects without their own location copy into ' + settings.value.defaultSafekeeping + ', one subfolder each.'
           : 'No default yet: each project needs its own location, on the Projects page.'}" />
     </VStack>
+    <!-- Podcast editing: the Podcast page's durations and sizes
+         (serve_media.py's PODCAST_SETTINGS: default, minimum, maximum), so
+         none is fixed in code. Saved together; the server checks the range. -->
+    <VStack gap="$space-3" when="{settings.loaded}">
+      <HStack verticalAlignment="center" gap="$space-1">
+        <Button icon="info" size="xs" variant="ghost" tooltip="About Podcast editing" onClick="podcastInfo.open()" />
+        <H3>Podcast editing</H3>
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Pause between words (ms)" width="250px" />
+        <NumberBox id="pauseBox" width="140px" integersOnly="true" minValue="20" maxValue="500" step="10"
+          initialValue="{settings.value.podcast.pauseMs}" />
+        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.pauseMs}" />
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Fade at each cut (ms)" width="250px" />
+        <NumberBox id="fadeBox" width="140px" integersOnly="true" minValue="0" maxValue="100" step="5"
+          initialValue="{settings.value.podcast.fadeMs}" />
+        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.fadeMs}" />
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Paragraph break after a pause of (s)" width="250px" />
+        <NumberBox id="paraPauseBox" width="140px" minValue="0.1" maxValue="5" step="0.1"
+          initialValue="{settings.value.podcast.paragraphPauseS}" />
+        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphPauseS}" />
+      </HStack>
+      <HStack verticalAlignment="center">
+        <Text value="Longest paragraph (words)" width="250px" />
+        <NumberBox id="paraWordsBox" width="140px" integersOnly="true" minValue="20" maxValue="1000" step="10"
+          initialValue="{settings.value.podcast.paragraphWords}" />
+        <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
+      </HStack>
+      <HStack>
+        <Button label="Save" variant="outlined" size="sm" onClick="savePodcast()" />
+      </HStack>
+    </VStack>
+    <ModalDialog id="podcastInfo" title="Podcast editing">
+      <Text value="Pause between words: how long quiet must last to count as a pause. A cut is placed in the pause between the last word kept and the first word cut. Shorter dips happen inside words (the stop in 'be-tween'), so a value too small can put a cut inside a word; too large, and quick speech has no pause to cut in." />
+      <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
+      <Text value="Paragraph breaks: a sentence that ends in a pause at least this long ends a paragraph, and so does any sentence once a paragraph is this long. Changing either re-splits the paragraphs on the Edit text tab; your cuts and corrections are kept (they belong to words, not paragraphs)." />
+      <Text value="Changing the pause or the fade re-renders a paragraph's audio the next time you play it." />
+    </ModalDialog>
     <ModalDialog id="safeInfo" title="Safekeeping">
       <Text value="Safekeeping copies a project (its takes, re-mix ingredients, exports and logs, with its database) to a folder you choose, such as one OneDrive keeps in the cloud. Copy to safekeeping is on the Projects page." />
       <Text value="The default folder here is for every project that has no location of its own. Each project goes into its own subfolder, named after it: ~/OneDrive/BramStudio/issue-433, and so on." />

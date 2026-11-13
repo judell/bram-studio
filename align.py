@@ -45,9 +45,21 @@ WINDOW = 4.0  # seconds of audio on each side of whisper's boundary (its times c
 # ends: a word runs on past its last token's frame, and starts a little
 # before its first. With 0.08 s, the cut after "today." left its tail ("hey")
 # in a round-trip check (2026-11-13).
-TOKEN = 0.15  # how long a word lasts after its last token's timestamp
-LEAD = 0.06  # how long before its first token's timestamp a word starts
+# So a heard word's ends are found in the sound: it ends where the audio goes
+# quiet after its last token, and starts where the quiet before its first
+# ends (quiet_after, quiet_before). A single-token word like "between" runs
+# ~0.3 s past its timestamp, and a fixed 0.15 s cut into it (2026-11-13). The
+# fixed allowances below are used only when a word runs straight into the
+# next, with no quiet between.
+TOKEN = 0.15  # how long a word lasts after its last token's timestamp, without quiet to go by
+LEAD = 0.06  # how long before its first token's timestamp a word starts, likewise
+QUIET = 10 ** (-35 / 20)  # silencedetect's threshold, as an RMS level
+# Quiet must last this long to count as a pause: shorter dips happen inside
+# words (the stop in "be-tween" put a word's end at its middle, 2026-11-13).
+# The Settings page's "pause between words" (pauseMs, default 80 ms, which is
+# silencedetect's d=0.08 that found the real pauses), passed by serve_media.py.
 FRAME = 0.01  # the quietness search's step
+PAUSE = max(1, round(int(os.environ.get("ALIGN_PAUSE_MS", "80")) / 1000 / FRAME))  # in FRAMEs
 KEY = re.compile(r"[^a-z']+")
 
 
@@ -98,7 +110,41 @@ def voiced(audio, sr, lo, hi):
     return lo + loud[0] * FRAME, lo + (loud[-1] + 1) * FRAME
 
 
-def word_spans(ours, at, audio, sr):
+def frame_rms(audio, sr, lo, hi):
+    n = int(FRAME * sr)
+    seg = audio[int(lo * sr):int(hi * sr)]
+    frames = len(seg) // n
+    return np.sqrt(np.mean(seg[:frames * n].reshape(frames, n) ** 2, axis=1)) if frames else np.array([])
+
+
+def pauses(rms):
+    # [(first frame, end frame)] of runs of at least PAUSE quiet frames.
+    runs, start = [], None
+    for k, quiet in enumerate(list(rms < QUIET) + [False]):
+        if quiet and start is None:
+            start = k
+        elif not quiet and start is not None:
+            if k - start >= PAUSE:
+                runs.append((start, k))
+            start = None
+    return runs
+
+
+def quiet_after(audio, sr, t, cap):
+    # Where the first pause after t (a word's last token) begins, before cap
+    # (the next heard word's first token); else the TOKEN allowance.
+    p = pauses(frame_rms(audio, sr, t + 0.03, cap))
+    return t + 0.03 + p[0][0] * FRAME if p else min(t + TOKEN, cap)
+
+
+def quiet_before(audio, sr, t, floor):
+    # Where the last pause before t (a word's first token) ends, after floor
+    # (the previous heard word's last token); else the LEAD allowance.
+    p = pauses(frame_rms(audio, sr, floor, t))
+    return floor + p[-1][1] * FRAME if p else max(t - LEAD, floor)
+
+
+def word_spans(ours, at, heard, audio, sr):
     # [start, end] for each of our words, by the sound. A word the model heard
     # (at: our i -> its word) has its own times. Words it missed ("uh", which
     # it often doesn't hear at all) lie between the heard words around them:
@@ -106,9 +152,14 @@ def word_spans(ours, at, audio, sr):
     # outside the first and last heard word get no span.
     spans = {}
     anchors = [n for n, r in enumerate(ours) if r[0] in at]
+    place = {id(h): k for k, h in enumerate(heard)}
     for n in anchors:
         h = at[ours[n][0]]
-        spans[ours[n][0]] = (h[1], h[2] + TOKEN)
+        k = place[id(h)]
+        floor = heard[k - 1][2] + 0.03 if k > 0 else h[1] - 0.4
+        cap = heard[k + 1][1] if k + 1 < len(heard) else h[2] + 0.6
+        spans[ours[n][0]] = (quiet_before(audio, sr, h[1], max(floor, h[1] - 0.4)),
+                             quiet_after(audio, sr, h[2], max(cap, h[2] + 0.04)))
     for a, b in zip(anchors, anchors[1:]):
         missed = ours[a + 1:b]
         if not missed:
@@ -153,14 +204,14 @@ def main():
         for blk in m.get_matching_blocks():
             for k in range(blk.size):
                 at[ours[blk.a + k][0]] = heard[blk.b + k]
-        span = word_spans(ours, at, audio, sr)
+        span = word_spans(ours, at, heard, audio, sr)
         sp, sn = span.get(prev[0]), span.get(nxt[0])
         if not sp or not sn:
             print(json.dumps({"i": i, "t": round(whisper_t, 3), "method": "unaligned",
                               "before": prev[3], "after": nxt[3]}), flush=True)
             continue
         method = "ctc" if prev[0] in at and nxt[0] in at else "ctc-gap"
-        lo, hi = sp[1], sn[0] - LEAD
+        lo, hi = sp[1], sn[0]
         if hi < lo:  # words run together: cut where one ends and the next begins
             lo = hi = (lo + hi) / 2
         t = quietest(audio, sr, max(0.0, lo), min(dur, hi))

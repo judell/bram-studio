@@ -44,10 +44,15 @@ voice recorder uses AVFoundation).
   `ggml-large-v3-turbo` model when it's in `~/.local/share/whisper-models/`, else
   `small.en`). The prompt asks whisper to keep "um", "uh" and repeats, so they can be cut.
   Build the list of speakers with the dropdown under the source. **Edit text** shows the
-  transcript as plain text with no time codes: delete whatever you want gone, any number
-  of separate stretches, and **Save**. Deleted words are cut; a word changed in place is a
-  correction (its time stays); cut words pasted back are restored. **Undo** takes back the
-  last save, and **Cuts** lists each cut with **Restore**. Every word keeps its source
+  transcript as plain text with no time codes, a paragraph at a time: delete whatever you
+  want gone, and the paragraph saves when you click outside it. Deleted words are cut; a
+  word changed in place is a correction (its time stays); cut words pasted back are
+  restored. Under each paragraph, a player plays it as edited, rendered when you press
+  play, so you can check by ear as you go. Paragraph breaks are set once from all the
+  words and never move. **Undo** takes back the last save, and **Cuts** lists each cut
+  with **Restore**. **Settings › Podcast editing** holds the durations involved, each
+  with a default: the shortest pause that separates words (80 ms), the fade at each cut
+  (10 ms), and when a paragraph breaks (after a 0.5 s pause, or past 120 words). Every word keeps its source
   time, so the cuts become an edit list (`GET /transcripts/cuts`). Rendering that list
   into the edited podcast is a later step.
   - **Where a cut falls:** whisper's word times can be off by up to a second, enough to

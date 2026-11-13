@@ -19,7 +19,7 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="" var.currentId="{null}" var.progress="{null}" var.savedText="" var.checkBusy="{false}"
+  var.source="" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
   var.renaming="{null}" var.renameDraft="">
 
   <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
@@ -36,8 +36,11 @@
   <!-- The text to edit and the cut list (serve_media.py's /transcripts/text
        and /transcripts/cuts). -->
   <DataSource id="textDoc" when="{!!source}"
-    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source)}"
-    onLoaded="(d, isRefetch) => { if (!isRefetch) showText(d.text); }" />
+    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source)}" />
+  <!-- The paragraphs to edit, each with a version (key) that changes when an
+       edit touches it (/transcripts/paras). -->
+  <DataSource id="paras" when="{!!source}"
+    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source)}" />
   <DataSource id="cutList" when="{!!source}"
     url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source)}" />
 
@@ -46,8 +49,8 @@
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); roster.refetch(); unlabeled.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); roster.refetch(); unlabeled.refetch(); }
-      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); }
-      else if (m.checking) { if (m.checking === source) checkBusy = !m.done; }
+      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); }
+      else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
   <script>
@@ -86,20 +89,9 @@
         return false;
       }
     }
-    // The edit box shows the server's text; savedText is what it last showed,
-    // so Save is on only when there is something to save.
-    function showText(text) {
-      savedText = text || '';
-      editBox.setValue(savedText);
-    }
-    function unsavedOk() {
-      return editBox.value === savedText
-        || confirm('Discard unsaved edits?', 'The text has changes that are not saved.', 'Discard', 'Cancel');
-    }
     function textChange(path, body) {
       try {
-        const r = post(path, Object.assign({ source }, body));
-        showText(r.text);
+        const r = post(path, Object.assign({ source }, body));  // body.source, when given, wins
         const said = [r.cut ? r.cut + ' words cut' : '', r.restored ? r.restored + ' restored' : '',
                       r.corrected ? r.corrected + ' corrected' : '',
                       r.ignored ? r.ignored + ' typed words ignored (no audio for them)' : ''].filter((x) => x).join(', ');
@@ -108,15 +100,26 @@
         toast.error(e.message);
       }
     }
-    function saveText() { textChange('/transcripts/edit', { text: editBox.value }); }
-    function undoText() { if (unsavedOk()) textChange('/transcripts/undo', {}); }
-    function restoreCut(ids) { if (unsavedOk()) textChange('/transcripts/restore', { ids }); }
+    // A paragraph's save, called from its box's lost-focus handler with
+    // everything it needs. The draft lives on the paragraph's row (var.draft),
+    // not in this component's variables: from inside Tabs > List, assigning
+    // those doesn't take, even directly in a handler (xmlui-org/xmlui#3940;
+    // the podcast-page log showed it, 2026-11-13).
+    function savePara(src, para, text) {
+      textChange('/transcripts/edit', { source: src, para, text });
+    }
+    function undoText() { textChange('/transcripts/undo', {}); }
+    function redoText() { textChange('/transcripts/redo', {}); }
+    function restoreCut(ids) { textChange('/transcripts/restore', { ids }); }
+    function playUrl(item) {
+      return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
+        + '&para=' + item.para + '&v=' + item.v;
+    }
     function editLine() {
       const d = textDoc.value, c = cutList.value;
       if (!d) return '';
       return d.keptWords + ' words kept' + (c ? ', ' + stamp(c.keptSecs) + ' long' : '')
-        + (d.cutWords ? '; ' + d.cutWords + ' cut' + (c ? ' (' + stamp(c.cutSecs) + ')' : '') : '')
-        + (editBox.value !== savedText ? ' · unsaved changes' : '');
+        + (d.cutWords ? '; ' + d.cutWords + ' cut' + (c ? ' (' + stamp(c.cutSecs) + ')' : '') : '');
     }
     function startCheck() {
       try {
@@ -131,7 +134,8 @@
       const c = cutList.value;
       if (!c) return '';
       const parts = [];
-      if (checkBusy) parts.push('Checking joins…');
+      if (checkBusy) parts.push('Checking joins: rendering the edit and listening to it'
+        + (checkProgress && checkProgress.duration_s ? ', ' + stamp(checkProgress.done_s) + ' of ' + stamp(checkProgress.duration_s) : '…'));
       else if (c.check) parts.push('Checked ' + c.check.at + ': ' + c.check.joins + ' joins, '
         + (c.check.suspect ? c.check.suspect + ' to listen to (marked ⚠ under Cuts)' : 'all heard as the text reads')
         + (c.check.range[0] || c.check.range[1] ? ' (' + stamp(c.check.range[0]) + '–' + stamp(c.check.range[1]) + ' only)' : '')
@@ -224,33 +228,69 @@
       </VStack>
 
       <VStack width="*" gap="$space-2">
-        <!-- Edit text: the podcast edited as its text, no time codes. Delete
-             any stretches, as many as you like, then Save: the server diffs
-             the text word by word (deleted words are cut, words changed one
-             for one are corrections, cut words pasted back are restored).
-             The box is set from the server only when the text first loads
-             and after Save, Undo or Restore, so a refetch never overwrites
-             typing. Cuts lists what is cut, each with Restore. Tabs keep both
-             mounted, so the box is there when the text loads. -->
+        <!-- Edit text: the podcast edited as its text, a paragraph at a
+             time, no time codes. Delete anything in a paragraph's box; when
+             you leave the box it saves: the server diffs that paragraph word
+             by word (deleted words are cut, words changed one for one are
+             corrections, cut words pasted back are restored). Under each
+             box, its audio as edited (/transcripts/play), rendered when you
+             press play. Paragraphs never move: they were set from all the
+             words, cut or not.
+
+             Rows are keyed by the paragraph's version, so a paragraph an
+             edit touched (yours, Undo, Restore, the agent's) is drawn anew
+             with its new text and audio, and the others are left alone,
+             including one you're typing in. The list is virtualized, which
+             is why a box saves when you leave it rather than on a button:
+             a paragraph scrolled away is unmounted. -->
         <Tabs keepMounted="true">
           <TabItem label="Edit text">
             <VStack gap="$space-2">
               <HStack verticalAlignment="center">
-                <Button size="sm" label="Save" enabled="{editBox.value !== savedText}" onClick="saveText()" />
                 <Button size="sm" variant="outlined" label="Undo"
                   enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
+                <Button size="sm" variant="outlined" label="Redo"
+                  enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canRedo)}" onClick="redoText()" />
                 <!-- Check joins: render the whole edit, transcribe it and flag
                      each join where the words heard differ from the words
                      kept (serve_media.py's /transcripts/check). About as long
-                     as a transcription. -->
-                <Button size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
+                     as a transcription. Hidden for now (2026-11-13), with its
+                     status line and ⚠ marks: editing and checking each
+                     paragraph by ear comes first. Remove when="{false}" here
+                     and on the marks below to bring it back. -->
+                <Button when="{false}" size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
                   tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
                   onClick="startCheck()" />
-                <Spinner when="{checkBusy}" />
+                <Spinner when="{false &amp;&amp; checkBusy}" />
                 <Text variant="secondary" value="{editLine()}" />
               </HStack>
-              <Text variant="secondary" when="{!!checkLine()}" value="{checkLine()}" />
-              <TextArea id="editBox" rows="28" />
+              <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
+              <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo takes back the last save; Redo puts it back." />
+              <List id="paraList" data="{paras}" idKey="key" height="70vh" dataRefreshMode="preserve-state">
+                <!-- draft is the row's own: assignments to the component's
+                     variables made in here don't take (podcast-page log,
+                     2026-11-13: editingPara and paraDraft read back null in
+                     the same handler that set them; xmlui-org/xmlui#3940
+                     reaches further than its workaround). -->
+                <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}">
+                  <TextArea autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+                    onGotFocus="
+                      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                        body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });
+                    "
+                    onDidChange="(v) => draft = v"
+                    onLostFocus="
+                      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                        body: { ev: 'blur', para: $item.para, draftLen: (draft || '').length,
+                                                textLen: $item.text.length, changed: draft !== $item.text } });
+                      if (draft !== $item.text) savePara(source, $item.para, draft);
+                    " />
+                  <MediaPlayer kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
+                  <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
+                  <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
+                    value="⚠ Check joins flagged a join here: listen" />
+                </VStack>
+              </List>
               <ExpandableItem iconPosition="start" fullWidthSummary="true"
                 summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
                 <Items data="{cutList.value ? cutList.value.spans : []}">
@@ -258,12 +298,12 @@
                     <HStack verticalAlignment="start">
                       <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
                       <Text width="*" maxLines="2" value="{$item.text}" />
-                      <Text when="{$item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
+                      <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
                       <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
                     </HStack>
-                    <Text when="{$item.unaligned}" variant="secondary"
+                    <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
                       value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
-                    <Text when="{$item.check &amp;&amp; !$item.check.ok}" variant="secondary"
+                    <Text when="{false &amp;&amp; $item.check &amp;&amp; !$item.check.ok}" variant="secondary"
                       value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
                   </VStack>
                 </Items>
