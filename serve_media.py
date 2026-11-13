@@ -1741,8 +1741,17 @@ def sources():
 # agent labels through them too and every write announces itself on /events
 # ({"changed": "transcripts"|"speakers"}). The recipe is the one first run by
 # hand for the AIW recording: 16 kHz mono WAV, the large-v3-turbo model with a
-# prompt naming who is in it, repeated for every window (names outside the
-# prompt are what came out wrong).
+# prompt naming who is in it.
+#
+# The prompt starts with disfluent text (DISFLUENT_PROMPT), which makes whisper
+# write fillers and repeats as spoken instead of tidying them away, so they can
+# be cut; and it is given once, not repeated for every 30 s window
+# (--carry-initial-prompt). On the AIW recording, repeated names-only prompting
+# gave 24 fillers, 40 repeats and 82 lowercase, unpunctuated segments; this gave
+# 52, 68 and 29 (probe, 2026-11-13). whisper's DTW word alignment was tried and
+# not used: against 75 pause ends its word starts were 0.44 s late, the default
+# token times -0.03 s.
+DISFLUENT_PROMPT = "Um, so, uh, I was like, you know, I mean, hmm. Uh,"
 TRANSCRIPTS_SQL = """CREATE TABLE IF NOT EXISTS transcripts (
   source TEXT PRIMARY KEY,
   model TEXT,
@@ -1808,9 +1817,8 @@ def run_transcript(source, path, prompt, model):
                             "-ar", "16000", "-c:a", "pcm_s16le", wav], capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError("audio: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
-        args = ["whisper-cli", "-m", model, "-f", wav, "-l", "en", "-t", "8", "-ojf", "-osrt", "-otxt", "-of", out]
-        if prompt:
-            args += ["--prompt", prompt, "--carry-initial-prompt"]
+        args = ["whisper-cli", "-m", model, "-f", wav, "-l", "en", "-t", "8", "-ojf", "-osrt", "-otxt", "-of", out,
+                "--prompt", f"{DISFLUENT_PROMPT} {prompt}".strip()]
         with open(os.path.join(folder, "whisper.log"), "w") as log:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=log, text=True)
             last_push = 0
