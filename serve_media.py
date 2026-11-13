@@ -59,7 +59,11 @@ cut, words changed one for one are corrections), /transcripts/undo {source}
 takes the last change back, /transcripts/restore {source, ids} puts cut words
 back; GET /transcripts/cuts?source= is the edit list, cut spans snapped to
 quiet and the kept intervals on the edited timeline. Each change announces
-{"changed": "words"}.
+{"changed": "words"}. Cut edges are placed by the sound (align.py, a CTC
+model under sherpa-onnx), cached in word_edges. POST /transcripts/check
+{source, t0, t1} renders the edit, transcribes it and flags joins where the
+words heard differ from the words kept ({"checking": source, done} on
+/events).
 """
 import collections
 import hashlib
@@ -1889,6 +1893,20 @@ TRANSCRIPT_EDITS_SQL = """CREATE TABLE IF NOT EXISTS transcript_edits (
 PARAGRAPH_GAP = 0.5
 PARAGRAPH_WORDS = 120
 SNAP_WINDOW = 0.25  # a cut edge moves at most this far to reach quiet
+# Cut edges by the sound (align.py): a CTC speech model under sherpa-onnx, in
+# its own venv, since Homebrew's Python refuses system-wide installs. Both are
+# optional: without them, cut edges fall back to snap() and are flagged.
+SPEECH_PYTHON = os.path.expanduser("~/.local/share/bram-studio/venv/bin/python")
+CTC_MODEL = os.environ.get("CTC_MODEL", os.path.expanduser(
+    "~/.local/share/speech-models/sherpa-onnx-nemo-ctc-en-conformer-small"))
+WORD_EDGES_SQL = """CREATE TABLE IF NOT EXISTS word_edges (
+  source TEXT NOT NULL,
+  i INTEGER NOT NULL,
+  t REAL NOT NULL,
+  method TEXT NOT NULL,
+  PRIMARY KEY (source, i)
+)"""
+checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
 WORD_KEY = re.compile(r"[^\w']+")
 
 
@@ -1916,6 +1934,11 @@ def build_words(db, source):
                 words.append([t0, t1, text.strip()])
     db.execute("DELETE FROM words WHERE source = ?", (source,))
     db.execute("DELETE FROM transcript_edits WHERE source = ?", (source,))
+    db.execute("DELETE FROM word_edges WHERE source = ?", (source,))
+    try:
+        os.remove(os.path.join(transcript_folder(source), "check.json"))
+    except OSError:
+        pass
     db.executemany("INSERT INTO words (source, i, t0, t1, text) VALUES (?, ?, ?, ?, ?)",
                    [(source, i, w[0], max(w[0], w[1]), w[2]) for i, w in enumerate(words)])
     return len(words)
@@ -2083,14 +2106,41 @@ def snap(t, quiet, lo, hi):
     return min(max(best if best is not None else t, lo), hi)
 
 
+def aligned_edges(db, source, boundaries):
+    # {i: (t, method)} for the boundaries between word i-1 and word i, by the
+    # sound (align.py), cached in word_edges so each is aligned once. Without
+    # the speech tools, or for a boundary align.py couldn't place, there is
+    # no entry and the caller snaps by whisper's times instead.
+    have = {i: (t, m) for i, t, m in db.execute(
+        f"SELECT i, t, method FROM word_edges WHERE source = ? AND i IN ({','.join('?' * len(boundaries))})",
+        [source, *boundaries])} if boundaries else {}
+    missing = sorted(set(boundaries) - set(have))
+    if missing and os.path.isfile(SPEECH_PYTHON) and os.path.isdir(CTC_MODEL):
+        t_start = time.time()
+        wav = os.path.join(transcript_folder(source), "audio-16k.wav")
+        r = subprocess.run([SPEECH_PYTHON, os.path.join(HERE, "align.py"), wav, DB, source, *map(str, missing)],
+                           capture_output=True, text=True)
+        found = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+        db.executemany("INSERT OR REPLACE INTO word_edges (source, i, t, method) VALUES (?, ?, ?, ?)",
+                       [(source, e["i"], e["t"], e["method"]) for e in found])
+        db.commit()
+        have.update({e["i"]: (e["t"], e["method"]) for e in found})
+        methods = collections.Counter(e["method"] for e in found)
+        print(f"align source={source} edges={len(missing)} {dict(methods)} secs={time.time() - t_start:.1f}"
+              + (f" error={r.stderr.strip().splitlines()[-1]}" if r.returncode else ""), flush=True)
+    return {i: v for i, v in have.items() if v[1] != "unaligned"}
+
+
 def text_cuts(db, source, duration):
     # The cut words as source spans: a run of cut words with no kept word
-    # between them is one span; each edge snapped to quiet. Then what is kept,
-    # as source intervals with where each starts on the edited timeline.
+    # between them is one span. Each edge is placed by the sound
+    # (aligned_edges); one that can't be is snapped to quiet by whisper's
+    # times and the span is marked unaligned. Then what is kept, as source
+    # intervals with where each starts on the edited timeline, and the last
+    # round-trip check's verdict on each span (check_text).
     rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), kept, cut_reason FROM words "
                       "WHERE source = ? ORDER BY i", (source,)).fetchall()
-    quiet = silences(source)
-    spans, k = [], 0
+    runs, k = [], 0
     while k < len(rows):
         if rows[k][5]:
             k += 1
@@ -2098,14 +2148,36 @@ def text_cuts(db, source, duration):
         j = k
         while j + 1 < len(rows) and not rows[j + 1][5]:
             j += 1
-        lo = rows[k - 1][3] if k > 0 else 0.0
-        hi = rows[j + 1][2] if j + 1 < len(rows) else duration
-        a = 0.0 if k == 0 else snap(rows[k][2], quiet, lo, rows[k][2])
-        b = duration if j + 1 == len(rows) else snap(rows[j][3], quiet, rows[j][3], hi)
+        runs.append((k, j))
+        k = j + 1
+    edges = aligned_edges(db, source, [rows[k][1] for k, _ in runs if k > 0]
+                          + [rows[j + 1][1] for _, j in runs if j + 1 < len(rows)])
+    quiet = None
+    try:
+        verdicts = json.load(open(os.path.join(transcript_folder(source), "check.json")))["spans"]
+    except (OSError, ValueError, KeyError):
+        verdicts = {}
+    spans = []
+    for k, j in runs:
+        unaligned = False
+        if k == 0:
+            a = 0.0
+        elif rows[k][1] in edges:
+            a = edges[rows[k][1]][0]
+        else:
+            quiet = quiet if quiet is not None else silences(source)
+            a, unaligned = snap(rows[k][2], quiet, rows[k - 1][3], rows[k][2]), True
+        if j + 1 == len(rows):
+            b = duration
+        elif rows[j + 1][1] in edges:
+            b = edges[rows[j + 1][1]][0]
+        else:
+            quiet = quiet if quiet is not None else silences(source)
+            b, unaligned = snap(rows[j][3], quiet, rows[j][3], rows[j + 1][2]), True
         reasons = sorted({r[6] or "edit" for r in rows[k:j + 1]})
         spans.append({"ids": [r[0] for r in rows[k:j + 1]], "text": " ".join(r[4] for r in rows[k:j + 1]),
-                      "t0": round(a, 3), "t1": round(b, 3), "reason": "+".join(reasons)})
-        k = j + 1
+                      "t0": round(a, 3), "t1": round(max(a, b), 3), "reason": "+".join(reasons),
+                      "unaligned": unaligned, "check": verdicts.get(str(rows[k][0]))})
     kept, at, out = [], 0.0, 0.0
     for s in spans:
         if s["t0"] > at:
@@ -2115,7 +2187,151 @@ def text_cuts(db, source, duration):
     if at < duration:
         kept.append({"src0": round(at, 3), "src1": round(duration, 3), "out0": round(out, 3)})
         out += duration - at
-    return {"spans": spans, "kept": kept, "keptSecs": round(out, 3), "cutSecs": round(duration - out, 3)}
+    try:
+        last = json.load(open(os.path.join(transcript_folder(source), "check.json")))
+        check = {k: last[k] for k in ("at", "range", "joins", "suspect", "noise")}
+    except (OSError, ValueError, KeyError):
+        check = None
+    return {"spans": spans, "kept": kept, "keptSecs": round(out, 3), "cutSecs": round(duration - out, 3),
+            "unaligned": sum(1 for s in spans if s["unaligned"]), "check": check}
+
+
+CHECK_WINDOW = 1.5  # seconds of the edit either side of a join where a mismatch counts against it
+RECHECK = 12.0  # seconds of the edit around a suspect join that whisper hears again on its own
+
+
+def heard_words(path):
+    # whisper's words in a transcript.json-style file: [key, start, end].
+    words = []
+    for seg in json.load(open(path))["transcription"]:
+        for tok in seg.get("tokens", []):
+            text = tok["text"]
+            if text.startswith("[_") or not text.strip():
+                continue
+            t0, t1 = tok["offsets"]["from"] / 1000, tok["offsets"]["to"] / 1000
+            if words and not text.startswith(" "):
+                words[-1][0] += text
+                words[-1][2] = t1
+            else:
+                words.append([text.strip(), t0, t1])
+    return [[word_key(w), a, b] for w, a, b in words if word_key(w)]
+
+
+def check_text(source, lo, hi):
+    # The round-trip check (POST /transcripts/check): render the kept audio
+    # between source seconds lo and hi, transcribe it, and diff what is heard
+    # against the kept words. A join is suspect when a mismatch falls within
+    # CHECK_WINDOW of it; mismatches far from any join are whisper's own
+    # noise, counted so a verdict can be weighed. Verdicts go to check.json
+    # beside the transcript, keyed by the first word id of the cut after each
+    # join, where the cut list (text_cuts) picks them up.
+    import difflib
+    t_start = time.time()
+    folder = transcript_folder(source)
+    try:
+        db = sqlite3.connect(DB)
+        duration, prompt = db.execute("SELECT duration_s, prompt FROM transcripts WHERE source = ?",
+                                      (source,)).fetchone()
+        hi = min(hi or duration, duration)
+        with TEXT_LOCK:
+            cuts = text_cuts(db, source, duration)
+            kept = db.execute("SELECT t0, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 "
+                              "AND t0 >= ? AND t0 < ? ORDER BY i", (source, lo, hi)).fetchall()
+        pieces = [(max(k["src0"], lo), min(k["src1"], hi)) for k in cuts["kept"] if k["src1"] > lo and k["src0"] < hi]
+        pieces = [p for p in pieces if p[1] - p[0] > 0.02]
+        after = {s["t0"]: s for s in cuts["spans"]}
+        joins, out, starts = [], 0.0, []
+        for n, (a, b) in enumerate(pieces):
+            starts.append((a, b, out))
+            out += b - a
+            if n + 1 < len(pieces) and round(b, 3) in after:
+                joins.append({"at": out, "span": after[round(b, 3)]})
+
+        def edited(t):  # a source second on the edited timeline
+            for a, b, o in starts:
+                if t < b:
+                    return o + max(0.0, t - a)
+            return out
+
+        wav = os.path.join(folder, "check.wav")
+        parts = [f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,afade=t=in:d=0.01,"
+                 f"afade=t=out:st={max(b - a - 0.01, 0)}:d=0.01[p{n}]" for n, (a, b) in enumerate(pieces)]
+        graph = ";".join(parts) + ";" + "".join(f"[p{n}]" for n in range(len(pieces))) + \
+            f"concat=n={len(pieces)}:v=0:a=1[out]"
+        # The graph is read from a file (ffmpeg's "-/option file" form; this
+        # ffmpeg has no -filter_complex_script), since a long edit's graph
+        # outgrows a command line.
+        script = os.path.join(folder, "check-graph.txt")
+        open(script, "w").write(graph)
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", os.path.join(folder, "audio-16k.wav"),
+                            "-/filter_complex", script, "-map", "[out]", "-c:a", "pcm_s16le", wav],
+                           capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("render: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+        r = subprocess.run(["whisper-cli", "-m", transcribe_model(), "-f", wav, "-l", "en", "-t", "8", "-ojf",
+                            "-of", os.path.join(folder, "check-heard"), "--prompt",
+                            f"{DISFLUENT_PROMPT} {prompt or ''}".strip()], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError(f"whisper-cli exited {r.returncode}")
+        heard = heard_words(os.path.join(folder, "check-heard.json"))
+        expected = [[word_key(w), edited(t), w] for t, w in kept if word_key(w)]
+        ops = [o for o in difflib.SequenceMatcher(None, [e[0] for e in expected], [h[0] for h in heard],
+                                                  autojunk=False).get_opcodes() if o[0] != "equal"]
+
+        def where(op):
+            _, i1, i2, j1, j2 = op
+            if i1 < len(expected):
+                return expected[i1][1], expected[max(i1, i2 - 1)][1]
+            return heard[j1][1], heard[max(j1, j2 - 1)][1]
+
+        near = set()
+        verdicts = {}
+        for j in joins:
+            bad = [o for o in ops if where(o)[0] - CHECK_WINDOW <= j["at"] <= where(o)[1] + CHECK_WINDOW]
+            near.update(map(id, bad))
+            e_ctx = [e[2] for e in expected if abs(e[1] - j["at"]) <= CHECK_WINDOW]
+            h_ctx = [h[0] for h in heard if abs(h[1] - j["at"]) <= CHECK_WINDOW]
+            verdicts[str(j["span"]["ids"][0])] = {"ok": not bad, "kept": " ".join(e_ctx), "heard": " ".join(h_ctx)}
+        noise = sum(1 for o in ops if id(o) not in near)
+        # A second opinion on each suspect join: whisper again on just the
+        # RECHECK seconds around it. Over a whole hour whisper hears some
+        # phrases differently from one run to the next ("and this is before"
+        # vs "that was before" for the same audio, 2026-11-13), so a join
+        # stays suspect only if the short listen disagrees with the text too.
+        for j in joins:
+            v = verdicts[str(j["span"]["ids"][0])]
+            if v["ok"]:
+                continue
+            c0 = max(0.0, j["at"] - RECHECK / 2)
+            clip = os.path.join(folder, "recheck.wav")
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{c0:.3f}", "-t", str(RECHECK),
+                            "-i", wav, "-c:a", "pcm_s16le", clip], capture_output=True)
+            r = subprocess.run(["whisper-cli", "-m", transcribe_model(), "-f", clip, "-l", "en", "-t", "8",
+                                "-ojf", "-of", os.path.join(folder, "recheck"), "--prompt", DISFLUENT_PROMPT],
+                               capture_output=True, text=True)
+            if r.returncode:
+                continue
+            near_h = [h for h in heard_words(os.path.join(folder, "recheck.json"))
+                      if 1.0 <= h[1] <= RECHECK - 1.0]
+            if not near_h:
+                continue
+            exp = [e for e in expected if c0 + near_h[0][1] - 0.5 <= e[1] <= c0 + near_h[-1][2] + 0.5]
+            again = [o for o in difflib.SequenceMatcher(None, [e[0] for e in exp], [h[0] for h in near_h],
+                                                        autojunk=False).get_opcodes() if o[0] != "equal"]
+            v["recheck"] = " ".join(h[0] for h in near_h)
+            v["ok"] = not again
+        suspect = sum(1 for v in verdicts.values() if not v["ok"])
+        json.dump({"at": datetime_now(), "range": [lo, hi], "joins": len(joins), "suspect": suspect,
+                   "noise": noise, "spans": verdicts}, open(os.path.join(folder, "check.json"), "w"))
+        print(f"check source={source} range={lo:.0f}-{hi:.0f} joins={len(joins)} suspect={suspect} "
+              f"noise={noise} secs={time.time() - t_start:.1f}", flush=True)
+    except Exception as e:
+        print(f"check failed source={source} error={e}", flush=True)
+    finally:
+        with TRANSCRIBE_LOCK:
+            checking.pop(source, None)
+        push({"checking": source, "done": True})
+        notify("words")
 
 
 def add_speaker(db, name):
@@ -2391,6 +2607,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.label_segments()
         if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/restore"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
+        if self.path == "/transcripts/check":
+            return self.start_check()
         self.send_json(404, {"error": "not found"})
 
     def query_source(self):
@@ -2414,6 +2632,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not row or not ensure_words(db, source):
                 return self.send_json(404, {"error": f"no transcript of {source!r}"})
             self.send_json(200, text_cuts(db, source, row[0] or 0))
+
+    def start_check(self):
+        # {source, t0, t1}: the round-trip check (check_text) over that
+        # stretch of the source, the whole of it when not given; in the
+        # background, one at a time, and not while whisper is transcribing.
+        body = self.json_body()
+        source = body.get("source") or ""
+        db = sqlite3.connect(DB)
+        if not db.execute("SELECT 1 FROM transcripts WHERE source = ? AND status = 'done'", (source,)).fetchone():
+            return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
+        with TRANSCRIBE_LOCK:
+            if transcribing or checking:
+                return self.send_json(409, {"error": "whisper is busy (transcribing or checking); try again when it's done"})
+            checking[source] = {"started": datetime_now()}
+        lo, hi = float(body.get("t0") or 0), float(body.get("t1") or 0)
+        print(f"check start source={source} range={lo:.0f}-{hi or 0:.0f}", flush=True)
+        threading.Thread(target=check_text, args=(source, lo, hi), daemon=True).start()
+        push({"checking": source, "done": False})
+        self.send_json(200, {"source": source, "checking": True})
 
     def edit_text(self, op):
         # edit {source, text}: save the edited text (apply_text_edit);
@@ -2477,8 +2714,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"edited": edited,
                                         "error": f"{edited} words are cut or corrected; transcribing again loses that editing"})
         with TRANSCRIBE_LOCK:
-            if transcribing:
-                return self.send_json(409, {"error": f"already transcribing {next(iter(transcribing))}"})
+            if transcribing or checking:
+                return self.send_json(409, {"error": f"whisper is busy with {next(iter(transcribing or checking))}"})
             duration = float(probe(path, "format=duration") or 0)
             transcribing[source] = {"done_s": 0, "duration_s": duration}
         db.execute("INSERT OR REPLACE INTO transcripts (source, model, prompt, status, started_at, duration_s) "
@@ -4190,8 +4427,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return "a narration is being recorded"
         if dictation["current"]:
             return dictating_where()
-        if transcribing:
-            return f"{next(iter(transcribing))} is being transcribed"
+        if transcribing or checking:
+            return f"{next(iter(transcribing or checking))} is being transcribed or checked"
         if testing.locked() or exporting.locked() or overlaying.locked() or POSTS["n"] > 1:
             return "Studio is busy (rendering, exporting or saving an edit)"
         return None
@@ -4605,6 +4842,7 @@ with sqlite3.connect(DB) as _db:
     _db.execute(SPEAKERS_SQL)
     _db.execute(WORDS_SQL)
     _db.execute(TRANSCRIPT_EDITS_SQL)
+    _db.execute(WORD_EDGES_SQL)
     # A transcript still 'running' was cut off by the server stopping.
     _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()

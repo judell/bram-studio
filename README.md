@@ -48,8 +48,26 @@ voice recorder uses AVFoundation).
   of separate stretches, and **Save**. Deleted words are cut; a word changed in place is a
   correction (its time stays); cut words pasted back are restored. **Undo** takes back the
   last save, and **Cuts** lists each cut with **Restore**. Every word keeps its source
-  time, so the cuts become an edit list (`GET /transcripts/cuts`) whose edges sit in the
-  quiet between words. Rendering that list into the edited podcast is a later step.
+  time, so the cuts become an edit list (`GET /transcripts/cuts`). Rendering that list
+  into the edited podcast is a later step.
+  - **Where a cut falls:** whisper's word times can be off by up to a second, enough to
+    cut the wrong words, so each cut's edges are placed by the sound: `align.py` hears
+    the few seconds around the edge with a CTC speech model and cuts in the quietest
+    10 ms between the last kept word and the first cut one. Needs
+    [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) in its own venv (Homebrew's
+    Python refuses system-wide installs) and the model:
+
+    ```sh
+    python3 -m venv ~/.local/share/bram-studio/venv
+    ~/.local/share/bram-studio/venv/bin/pip install sherpa-onnx numpy
+    mkdir -p ~/.local/share/speech-models && cd ~/.local/share/speech-models
+    curl -L https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-en-conformer-small.tar.bz2 | tar xj
+    ```
+
+    Without them, edges fall back to whisper's times and those cuts are marked ⚠.
+  - **Check joins** renders the edit, transcribes it, and marks each join where the words
+    heard differ from the words kept (⚠ under Cuts, with what was heard). Run it after a
+    batch of edits; listen to what it marks.
 - **After editing elsewhere:** if you cut the export in another editor, run
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
   the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.

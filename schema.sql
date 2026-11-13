@@ -94,3 +94,13 @@ CREATE TABLE IF NOT EXISTS transcript_edits (
   created_at TEXT NOT NULL,
   changes TEXT NOT NULL  -- JSON {cut, restored, corrected, restoredWas, reason}
 );
+
+-- Where a cut between word i-1 and word i falls, by the sound (align.py), so
+-- each boundary is aligned once. method: ctc, ctc-gap or unaligned.
+CREATE TABLE IF NOT EXISTS word_edges (
+  source TEXT NOT NULL,
+  i INTEGER NOT NULL,
+  t REAL NOT NULL,
+  method TEXT NOT NULL,
+  PRIMARY KEY (source, i)
+);

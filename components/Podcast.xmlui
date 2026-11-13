@@ -19,7 +19,7 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="" var.currentId="{null}" var.progress="{null}" var.savedText=""
+  var.source="" var.currentId="{null}" var.progress="{null}" var.savedText="" var.checkBusy="{false}"
   var.renaming="{null}" var.renameDraft="">
 
   <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
@@ -47,6 +47,7 @@
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); roster.refetch(); unlabeled.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); roster.refetch(); unlabeled.refetch(); }
       else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); }
+      else if (m.checking) { if (m.checking === source) checkBusy = !m.done; }
     }" />
 
   <script>
@@ -116,6 +117,27 @@
       return d.keptWords + ' words kept' + (c ? ', ' + stamp(c.keptSecs) + ' long' : '')
         + (d.cutWords ? '; ' + d.cutWords + ' cut' + (c ? ' (' + stamp(c.cutSecs) + ')' : '') : '')
         + (editBox.value !== savedText ? ' · unsaved changes' : '');
+    }
+    function startCheck() {
+      try {
+        post('/transcripts/check', { source });
+        checkBusy = true;
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    // The last check's verdict, and any cut placed without alignment.
+    function checkLine() {
+      const c = cutList.value;
+      if (!c) return '';
+      const parts = [];
+      if (checkBusy) parts.push('Checking joins…');
+      else if (c.check) parts.push('Checked ' + c.check.at + ': ' + c.check.joins + ' joins, '
+        + (c.check.suspect ? c.check.suspect + ' to listen to (marked ⚠ under Cuts)' : 'all heard as the text reads')
+        + (c.check.range[0] || c.check.range[1] ? ' (' + stamp(c.check.range[0]) + '–' + stamp(c.check.range[1]) + ' only)' : '')
+        + '. Edits since then aren’t checked.');
+      if (c.unaligned) parts.push(c.unaligned + ' cuts placed without alignment (marked ⚠).');
+      return parts.join(' ');
     }
     function playFrom(t) {
       speakerPlayer.seek(t);
@@ -217,17 +239,33 @@
                 <Button size="sm" label="Save" enabled="{editBox.value !== savedText}" onClick="saveText()" />
                 <Button size="sm" variant="outlined" label="Undo"
                   enabled="{!!(textDoc.value &amp;&amp; textDoc.value.canUndo)}" onClick="undoText()" />
+                <!-- Check joins: render the whole edit, transcribe it and flag
+                     each join where the words heard differ from the words
+                     kept (serve_media.py's /transcripts/check). About as long
+                     as a transcription. -->
+                <Button size="sm" variant="outlined" label="Check joins" enabled="{!checkBusy &amp;&amp; !progress}"
+                  tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
+                  onClick="startCheck()" />
+                <Spinner when="{checkBusy}" />
                 <Text variant="secondary" value="{editLine()}" />
               </HStack>
+              <Text variant="secondary" when="{!!checkLine()}" value="{checkLine()}" />
               <TextArea id="editBox" rows="28" />
               <ExpandableItem iconPosition="start" fullWidthSummary="true"
                 summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
                 <Items data="{cutList.value ? cutList.value.spans : []}">
-                  <HStack verticalAlignment="start">
-                    <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
-                    <Text width="*" maxLines="2" value="{$item.text}" />
-                    <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
-                  </HStack>
+                  <VStack gap="0">
+                    <HStack verticalAlignment="start">
+                      <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
+                      <Text width="*" maxLines="2" value="{$item.text}" />
+                      <Text when="{$item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
+                      <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
+                    </HStack>
+                    <Text when="{$item.unaligned}" variant="secondary"
+                      value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
+                    <Text when="{$item.check &amp;&amp; !$item.check.ok}" variant="secondary"
+                      value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
+                  </VStack>
                 </Items>
               </ExpandableItem>
             </VStack>
