@@ -47,6 +47,12 @@ Export burns each changed scene's items in with overlay.py (apply_scene).
 GET /events is a server-sent-events stream: {"changed": "takes"|"sources"|
 "exports"|"projects"} whenever watch_changes() sees one of them change, so the
 page refetches then instead of polling.
+The Speakers page: POST /transcripts/start {source, prompt, replace} runs
+whisper-cli over a source in the background (GET /transcripts/status?source=,
+and {"transcribing": source, done_s, duration_s} on /events while it runs);
+POST /speakers/add {name}, /speakers/rename {id, name}, /speakers/delete {id};
+POST /segments/speaker {speaker_id, ids | source, t0, t1} labels segments.
+Each announces {"changed": "transcripts"|"speakers"} on /events.
 """
 import collections
 import hashlib
@@ -1725,7 +1731,123 @@ def source_paths():
 
 def sources():
     return list(source_paths())
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+
+
+# Transcripts and speakers (the Speakers page). A source is transcribed by
+# whisper-cli into work/transcripts/<source stem>/, and its segments (source
+# seconds) are loaded into the project's database, where each can be given a
+# speaker. Speakers belong to the project, not to a source. The page reads all
+# three tables through /query; these routes are the only writers, so the
+# agent labels through them too and every write announces itself on /events
+# ({"changed": "transcripts"|"speakers"}). The recipe is the one first run by
+# hand for the AIW recording: 16 kHz mono WAV, the large-v3-turbo model with a
+# prompt naming who is in it, repeated for every window (names outside the
+# prompt are what came out wrong).
+TRANSCRIPTS_SQL = """CREATE TABLE IF NOT EXISTS transcripts (
+  source TEXT PRIMARY KEY,
+  model TEXT,
+  prompt TEXT,
+  status TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  duration_s REAL
+)"""
+SEGMENTS_SQL = """CREATE TABLE IF NOT EXISTS segments (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  t0 REAL NOT NULL,
+  t1 REAL NOT NULL,
+  text TEXT NOT NULL,
+  speaker_id INTEGER
+)"""
+SPEAKERS_SQL = """CREATE TABLE IF NOT EXISTS speakers (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  position INTEGER
+)"""
+WHISPER_MODELS = os.path.expanduser("~/.local/share/whisper-models")
+# Largest first; WHISPER_MODEL, when set, is used as given.
+TRANSCRIBE_MODELS = ("ggml-large-v3-turbo.bin", "ggml-large-v3.bin", "ggml-small.en.bin")
+SPEAKER_COLORS = ("#2a78d6", "#d6602a", "#2a9d5c", "#9b4dca", "#c9a227", "#d63a6b", "#1aa3a3", "#7a7a7a")
+SEGMENT_LINE = re.compile(r"^\[(\d+):(\d+):([\d.]+) --> ")
+transcribing = {}  # source -> {"done_s", "duration_s"} while whisper-cli runs; one at a time
+TRANSCRIBE_LOCK = threading.Lock()
+
+
+def transcribe_model():
+    if os.environ.get("WHISPER_MODEL"):
+        return os.environ["WHISPER_MODEL"]
+    for name in TRANSCRIBE_MODELS:
+        path = os.path.join(WHISPER_MODELS, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def run_transcript(source, path, prompt, model):
+    # The background half of POST /transcripts/start: audio out, whisper-cli
+    # over it (its segment lines are the progress), segments in. Progress goes
+    # to the page as {"transcribing": source, done_s, duration_s} every 2 s.
+    t_start = time.time()
+    folder = os.path.join(WORK, "transcripts", os.path.splitext(source)[0])
+    os.makedirs(folder, exist_ok=True)
+    wav, out = os.path.join(folder, "audio-16k.wav"), os.path.join(folder, "transcript")
+    state = transcribing[source]
+
+    def finish(status):
+        with sqlite3.connect(DB) as db:
+            db.execute("UPDATE transcripts SET status = ?, finished_at = ? WHERE source = ?",
+                       (status, datetime_now(), source))
+        with TRANSCRIBE_LOCK:
+            transcribing.pop(source, None)
+        notify("transcripts")
+
+    try:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1",
+                            "-ar", "16000", "-c:a", "pcm_s16le", wav], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("audio: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+        args = ["whisper-cli", "-m", model, "-f", wav, "-l", "en", "-t", "8", "-ojf", "-osrt", "-otxt", "-of", out]
+        if prompt:
+            args += ["--prompt", prompt, "--carry-initial-prompt"]
+        with open(os.path.join(folder, "whisper.log"), "w") as log:
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=log, text=True)
+            last_push = 0
+            for line in proc.stdout:
+                log.write(line)
+                m = SEGMENT_LINE.match(line)
+                if m:
+                    state["done_s"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    if time.time() - last_push > 2:
+                        last_push = time.time()
+                        push({"transcribing": source, **state})
+            if proc.wait():
+                raise RuntimeError(f"whisper-cli exited {proc.returncode} (see {folder}/whisper.log)")
+        rows = [(source, s["offsets"]["from"] / 1000, s["offsets"]["to"] / 1000, s["text"].strip())
+                for s in json.load(open(out + ".json"))["transcription"] if s["text"].strip()]
+        with sqlite3.connect(DB) as db:
+            db.execute("DELETE FROM segments WHERE source = ?", (source,))
+            db.executemany("INSERT INTO segments (source, t0, t1, text) VALUES (?, ?, ?, ?)", rows)
+        print(f"transcribe done source={source} segments={len(rows)} secs={time.time() - t_start:.1f}", flush=True)
+        finish("done")
+    except Exception as e:
+        print(f"transcribe failed source={source} error={e}", flush=True)
+        finish(f"failed: {e}")
+
+
+def datetime_now():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def add_speaker(db, name):
+    n = db.execute("SELECT count(*) FROM speakers").fetchone()[0]
+    cur = db.execute("INSERT INTO speakers (name, color, position) VALUES (?, ?, ?)",
+                     (name, SPEAKER_COLORS[n % len(SPEAKER_COLORS)], n))
+    return cur.lastrowid
+
+
+PORT =int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("audio/mp4", ".m4a")
 mimetypes.add_type("audio/wav", ".wav")
@@ -1837,6 +1959,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, {"id": n["id"] if n else None})
         if self.path == "/events":
             return self.stream_events()
+        if self.path.startswith("/transcripts/status"):
+            return self.transcript_status()
         super().do_GET()
 
     def stream_events(self):
@@ -1977,7 +2101,109 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.annotation_sprites()
         if self.path == "/callouts/delete":
             return self.delete_callout()
+        if self.path == "/transcripts/start":
+            return self.start_transcript()
+        if self.path in ("/speakers/add", "/speakers/rename", "/speakers/delete"):
+            return self.edit_speaker(self.path.rsplit("/", 1)[1])
+        if self.path == "/segments/speaker":
+            return self.label_segments()
         self.send_json(404, {"error": "not found"})
+
+    def json_body(self):
+        return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+
+    def start_transcript(self):
+        # {source, prompt, replace}: transcribe a listed source in the
+        # background (run_transcript). Refused while another runs, and, when
+        # this source's segments already have speakers, unless replace is
+        # true: a new transcript has new segments, so the labels would go.
+        body = self.json_body()
+        source, prompt = body.get("source") or "", " ".join(str(body.get("prompt") or "").split())
+        path = source_paths().get(source)
+        if not path:
+            return self.send_json(404, {"error": f"no source named {source!r}"})
+        model = transcribe_model()
+        if not model:
+            return self.send_json(409, {"error": f"no whisper model in {WHISPER_MODELS}"})
+        db = sqlite3.connect(DB)
+        labeled = db.execute("SELECT count(*) FROM segments WHERE source = ? AND speaker_id IS NOT NULL",
+                             (source,)).fetchone()[0]
+        if labeled and not body.get("replace"):
+            return self.send_json(409, {"labeled": labeled,
+                                        "error": f"{labeled} segments have speakers; transcribing again loses them"})
+        with TRANSCRIBE_LOCK:
+            if transcribing:
+                return self.send_json(409, {"error": f"already transcribing {next(iter(transcribing))}"})
+            duration = float(probe(path, "format=duration") or 0)
+            transcribing[source] = {"done_s": 0, "duration_s": duration}
+        db.execute("INSERT OR REPLACE INTO transcripts (source, model, prompt, status, started_at, duration_s) "
+                   "VALUES (?, ?, ?, 'running', ?, ?)",
+                   (source, os.path.basename(model), prompt, datetime_now(), duration))
+        db.commit()
+        print(f"transcribe start source={source} model={os.path.basename(model)} duration={duration:.0f}", flush=True)
+        threading.Thread(target=run_transcript, args=(source, path, prompt, model), daemon=True).start()
+        notify("transcripts")
+        self.send_json(200, {"source": source, "model": os.path.basename(model), "duration_s": duration})
+
+    def transcript_status(self):
+        source = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("source", [""])[0]
+        db = sqlite3.connect(DB)
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM transcripts WHERE source = ?", (source,)).fetchone()
+        result = dict(row) if row else {"source": source, "status": None}
+        with TRANSCRIBE_LOCK:
+            result.update(transcribing.get(source, {}))
+        result["segments"] = db.execute("SELECT count(*) FROM segments WHERE source = ?", (source,)).fetchone()[0]
+        self.send_json(200, result)
+
+    def edit_speaker(self, op):
+        # add {name}, rename {id, name}, delete {id} (its segments go back to
+        # no speaker).
+        body = self.json_body()
+        name = " ".join(str(body.get("name") or "").split())
+        db = sqlite3.connect(DB)
+        if op in ("add", "rename") and not name:
+            return self.send_json(400, {"error": "a speaker needs a name"})
+        if op == "add":
+            result = {"id": add_speaker(db, name), "name": name}
+        elif op == "rename":
+            if not db.execute("UPDATE speakers SET name = ? WHERE id = ?", (name, body.get("id"))).rowcount:
+                return self.send_json(404, {"error": f"no speaker with id {body.get('id')}"})
+            result = {"id": body.get("id"), "name": name}
+        else:
+            db.execute("UPDATE segments SET speaker_id = NULL WHERE speaker_id = ?", (body.get("id"),))
+            if not db.execute("DELETE FROM speakers WHERE id = ?", (body.get("id"),)).rowcount:
+                return self.send_json(404, {"error": f"no speaker with id {body.get('id')}"})
+            result = {"id": body.get("id")}
+        db.commit()
+        print(f"speakers {op} {json.dumps(result)}", flush=True)
+        notify("speakers")
+        self.send_json(200, result)
+
+    def label_segments(self):
+        # {speaker_id (null clears), and either ids: [...] or source, t0, t1
+        # (every segment of that source starting in [t0, t1))}. The range form
+        # is for labeling a stretch by time, as the agent does from content.
+        body = self.json_body()
+        speaker = body.get("speaker_id")
+        db = sqlite3.connect(DB)
+        if speaker is not None and not db.execute("SELECT 1 FROM speakers WHERE id = ?", (speaker,)).fetchone():
+            return self.send_json(404, {"error": f"no speaker with id {speaker}"})
+        if isinstance(body.get("ids"), list):
+            ids = [int(i) for i in body["ids"]]
+            n = db.executemany("UPDATE segments SET speaker_id = ? WHERE id = ?",
+                               [(speaker, i) for i in ids]).rowcount if ids else 0
+            how = f"ids={len(ids)}"
+        elif body.get("source") is not None and body.get("t0") is not None and body.get("t1") is not None:
+            n = db.execute("UPDATE segments SET speaker_id = ? WHERE source = ? AND t0 >= ? AND t0 < ?",
+                           (speaker, body["source"], float(body["t0"]), float(body["t1"]))).rowcount
+            how = f"source={body['source']} t0={body['t0']} t1={body['t1']}"
+        else:
+            return self.send_json(400, {"error": "expected ids, or source, t0 and t1"})
+        db.commit()
+        print(f"segments speaker={speaker} {how} changed={n}", flush=True)
+        notify("speakers")
+        self.send_json(200, {"changed": n})
 
     @staticmethod
     def listed_export(name, where):
@@ -3619,6 +3845,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return "a narration is being recorded"
         if dictation["current"]:
             return dictating_where()
+        if transcribing:
+            return f"{next(iter(transcribing))} is being transcribed"
         if testing.locked() or exporting.locked() or overlaying.locked() or POSTS["n"] > 1:
             return "Studio is busy (rendering, exporting or saving an edit)"
         return None
@@ -4027,6 +4255,11 @@ with sqlite3.connect(DB) as _db:
     _db.execute(NARRATIONS_SQL)
     _db.execute(PAUSES_SQL)
     _db.execute(CUTS_SQL)
+    _db.execute(TRANSCRIPTS_SQL)
+    _db.execute(SEGMENTS_SQL)
+    _db.execute(SPEAKERS_SQL)
+    # A transcript still 'running' was cut off by the server stopping.
+    _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

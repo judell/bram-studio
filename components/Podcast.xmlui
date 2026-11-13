@@ -1,0 +1,179 @@
+<!-- The Podcast page: where a recorded conversation is edited and its
+     companion composed. For now, who is speaking when, in a source. Pick a
+     source, transcribe it (serve_media.py's /transcripts/start runs
+     whisper-cli with the names you give it); build the list of speakers
+     under the top row (a dropdown that starts empty, with Add and Delete).
+     A source is transcribed once: Transcribe is offered only while it has
+     no finished transcript.
+
+     Labeling segments happens in conversation for now: the agent labels
+     through /segments/speaker, and every write arrives here as an /events
+     message ({changed: 'transcripts'|'speakers'}), so this page refetches
+     on those alone and its own handlers don't. Progress while whisper runs
+     arrives the same way ({transcribing, done_s, duration_s}).
+
+     The transcript is a List (virtualized:
+     https://www.xmlui.org/docs/reference/components/List), preserve-state
+     keeping its scroll across a refetch. Clicking a row's time plays from
+     there; while playing, the spoken row is tinted. (A speaker filter,
+     scroll-to-follow and on-page labeling were tried and taken out until
+     there's a use for them.) -->
+<Component name="Podcast"
+  var.source="" var.currentId="{null}" var.progress="{null}"
+  var.renaming="{null}" var.renameDraft="">
+
+  <DataSource id="speakerSources" url="http://127.0.0.1:8765/sources" />
+  <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
+  <DataSource id="segments" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT g.id, g.t0, g.t1, g.text, g.speaker_id, s.name, s.color FROM segments g LEFT JOIN speakers s ON s.id = g.speaker_id WHERE g.source = ? ORDER BY g.t0',
+             params: [source] }}" />
+  <DataSource id="roster" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT s.id, s.name, s.color, count(g.id) AS n, coalesce(sum(g.t1 - g.t0), 0) AS secs FROM speakers s LEFT JOIN segments g ON g.speaker_id = s.id AND g.source = ? GROUP BY s.id ORDER BY s.position, s.id', params: [source] }}" />
+  <DataSource id="unlabeled" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT count(*) AS n, coalesce(sum(t1 - t0), 0) AS secs FROM segments WHERE source = ? AND speaker_id IS NULL', params: [source] }}" />
+
+  <EventSource url="http://127.0.0.1:8765/events"
+    onMessage="(m) => {
+      if (m.transcribing) { if (m.transcribing === source) progress = m; }
+      else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); roster.refetch(); unlabeled.refetch(); }
+      else if (m.changed === 'speakers') { segments.refetch(); roster.refetch(); unlabeled.refetch(); }
+    }" />
+
+  <script>
+    function stamp(s) {
+      const t = Math.floor(s || 0);
+      const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+      return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+    }
+    // The segment being spoken at t (segments are in time order).
+    function segmentAt(t) {
+      const rows = segments.value || [];
+      let lo = 0, hi = rows.length - 1, found = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rows[mid].t0 <= t) { found = rows[mid]; lo = mid + 1; } else hi = mid - 1;
+      }
+      return found && t < found.t1 + 1 ? found.id : null;
+    }
+    function post(path, body) {
+      return Actions.callApi({ url: 'http://127.0.0.1:8765' + path, method: 'post', invalidates: [], body });
+    }
+    function transcribe() {
+      try {
+        post('/transcripts/start', { source, prompt: namesBox.value });
+        progress = { done_s: 0, duration_s: 0 };
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function speakerOp(op, body) {
+      try {
+        post('/speakers/' + op, body);
+        return true;
+      } catch (e) {
+        toast.error(e.message);
+        return false;
+      }
+    }
+    function playFrom(t) {
+      speakerPlayer.seek(t);
+      speakerPlayer.play();
+    }
+  </script>
+
+  <VStack padding="$space-6" gap="$space-4">
+    <HStack verticalAlignment="center">
+      <H2>Podcast</H2>
+      <Select id="speakerSource" data="{speakerSources}" valueField="name" labelField="name"
+        placeholder="Choose a source" width="260px"
+        onDidChange="(v) => { source = v || ''; currentId = null; progress = null; }" />
+      <Text variant="secondary" when="{!!source &amp;&amp; !progress &amp;&amp; transcript.value &amp;&amp; transcript.value.length > 0}"
+        value="{transcript.value &amp;&amp; transcript.value[0]
+          ? (transcript.value[0].status === 'done'
+              ? 'Transcribed ' + transcript.value[0].finished_at + ' with ' + transcript.value[0].model
+              : 'Transcript ' + transcript.value[0].status)
+          : ''}" />
+    </HStack>
+
+    <!-- The list of speakers: a dropdown that starts empty; add a name, or
+         delete the one chosen (its segments go back to unlabeled). -->
+    <HStack verticalAlignment="center" when="{!!source}">
+      <Select id="speakerPick" width="260px" placeholder="Speakers"
+        data="{(roster.value || []).map((s) => ({ label: s.name, value: s.id }))}" />
+      <Button size="sm" variant="ghost" icon="trash" label="Delete" enabled="{!!speakerPick.value}"
+        onClick="
+          const s = (roster.value || []).find((r) => r.id === speakerPick.value);
+          if (s &amp;&amp; confirm('Delete ' + s.name + '?', 'Their ' + s.n + ' segments go back to unlabeled.', 'Delete', 'Cancel')) {
+            if (speakerOp('delete', { id: s.id })) speakerPick.setValue('');
+          }" />
+      <TextBox id="newSpeaker" width="260px" placeholder="A speaker's name" />
+      <Button size="sm" variant="outlined" label="Add" enabled="{!!(newSpeaker.value || '').trim()}"
+        onClick="if (speakerOp('add', { name: newSpeaker.value })) newSpeaker.setValue('')" />
+    </HStack>
+
+    <!-- Transcribing, offered only for a source with no transcript (or a
+         failed one): the names go to whisper as its prompt, which is what
+         gets unusual names spelled right. -->
+    <HStack verticalAlignment="center"
+      when="{!!source &amp;&amp; !progress &amp;&amp; transcript.loaded &amp;&amp; !(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}">
+      <TextBox id="namesBox" width="*" placeholder="Who's in it, and names likely to come up" />
+      <Button size="sm" variant="outlined" label="Transcribe" onClick="transcribe()" />
+    </HStack>
+    <HStack verticalAlignment="center" when="{!!progress}">
+      <Spinner />
+      <Text value="{'Transcribing ' + source + (progress &amp;&amp; progress.duration_s ? ': ' + stamp(progress.done_s) + ' of ' + stamp(progress.duration_s) : '…')}" />
+    </HStack>
+
+    <HStack when="{!!source}" gap="$space-6">
+      <VStack width="45%" gap="$space-4">
+        <MediaPlayer id="speakerPlayer" maxHeight="45vh"
+          src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
+          onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
+
+        <!-- The roster: each speaker's segments and talk time in this
+             source, with rename and delete. -->
+        <VStack gap="$space-2">
+          <H3>Who's speaking</H3>
+          <Items data="{roster}">
+            <HStack verticalAlignment="center">
+              <Text value="●" color="{$item.color}" />
+              <Text when="{renaming !== $item.id}" width="160px" variant="strong" value="{$item.name}" />
+              <TextBox when="{renaming === $item.id}" width="160px" initialValue="{$item.name}"
+                onDidChange="(v) => renameDraft = v" />
+              <Text width="*" variant="secondary" value="{$item.n + ' segments, ' + stamp($item.secs)}" />
+              <Button when="{renaming !== $item.id}" size="xs" variant="ghost" icon="pencil" tooltip="Rename"
+                onClick="renameDraft = $item.name; renaming = $item.id" />
+              <Button when="{renaming === $item.id}" size="xs" label="Save"
+                onClick="if (speakerOp('rename', { id: $item.id, name: renameDraft })) renaming = null" />
+              <Button when="{renaming === $item.id}" size="xs" variant="ghost" label="Cancel" onClick="renaming = null" />
+              <Button when="{renaming !== $item.id}" size="xs" variant="ghost" icon="trash" tooltip="Delete this speaker"
+                onClick="if (confirm('Delete ' + $item.name + '?', 'Their ' + $item.n + ' segments go back to unlabeled.', 'Delete', 'Cancel')) speakerOp('delete', { id: $item.id })" />
+            </HStack>
+          </Items>
+          <HStack verticalAlignment="center">
+            <Text value="○" />
+            <Text width="160px" value="Unlabeled" />
+            <Text width="*" variant="secondary"
+              value="{unlabeled.value &amp;&amp; unlabeled.value[0] ? unlabeled.value[0].n + ' segments, ' + stamp(unlabeled.value[0].secs) : ''}" />
+          </HStack>
+        </VStack>
+      </VStack>
+
+      <VStack width="*" gap="$space-2">
+        <H3>Transcript</H3>
+        <List id="transcriptList" data="{segments}" height="70vh"
+          dataRefreshMode="preserve-state">
+          <HStack verticalAlignment="start" gap="$space-2"
+            backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
+            <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
+              onClick="playFrom($item.t0)" />
+            <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
+              value="{$item.name || '—'}" />
+            <Text width="*" value="{$item.text}" />
+          </HStack>
+        </List>
+      </VStack>
+    </HStack>
+  </VStack>
+</Component>

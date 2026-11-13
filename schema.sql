@@ -43,3 +43,31 @@ CREATE TABLE IF NOT EXISTS narrations (
   audio TEXT NOT NULL,  -- a WAV in media/.narrated/: what was there before
   created_at TEXT NOT NULL
 );
+
+-- Transcripts of sources, their segments and who speaks in each (the
+-- Speakers page; serve_media.py's /transcripts/start, /speakers/*,
+-- /segments/speaker, which create these at startup for older projects).
+-- Segment times are source seconds. Speakers belong to the project.
+CREATE TABLE IF NOT EXISTS transcripts (
+  source TEXT PRIMARY KEY,  -- the source movie's file name
+  model TEXT,
+  prompt TEXT,  -- the names given to whisper
+  status TEXT NOT NULL,  -- 'running', 'done' or 'failed: ...'
+  started_at TEXT,
+  finished_at TEXT,
+  duration_s REAL
+);
+CREATE TABLE IF NOT EXISTS segments (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  t0 REAL NOT NULL,
+  t1 REAL NOT NULL,
+  text TEXT NOT NULL,
+  speaker_id INTEGER  -- speakers.id, or NULL while unlabeled
+);
+CREATE TABLE IF NOT EXISTS speakers (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  position INTEGER
+);

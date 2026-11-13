@@ -534,6 +534,7 @@
     </property>
     <NavLink label="Projects" to="/projects" />
     <NavLink label="Scenes" to="/" />
+    <NavLink label="Podcast" to="/podcast" />
     <NavLink label="Exports" to="/exports" />
     <NavLink label="Audio" to="/bench" />
     <NavLink label="Settings" to="/settings" />
@@ -1251,6 +1252,11 @@
     <!-- Studio's settings: components/Settings.xmlui. -->
     <Page url="/settings">
       <Settings />
+    </Page>
+    <!-- Editing a recorded conversation; for now, who speaks when, in a
+         source (components/Podcast.xmlui). -->
+    <Page url="/podcast">
+      <Podcast />
     </Page>
   </Pages>
 </App>
