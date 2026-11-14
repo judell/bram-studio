@@ -1,9 +1,6 @@
 # Bram Studio
 
-Bram Studio makes two kinds of project, each a folder of its own with a row of tabs:
-**Workspace**, **Final video** and **Manage**, plus **Raw transcript** and **Final
-transcript** for a podcast. Built with and inside [Bram](https://github.com/judell/bram);
-macOS only for now (the voice recorder uses AVFoundation).
+Bram Studio makes two kinds of project: 
 
 - **Screencast:** cut scenes from screen recordings you've already made, then narrate over
   a stretch, insert a pause, cut what you don't need, and add callouts and shapes. Final
@@ -13,6 +10,13 @@ macOS only for now (the voice recorder uses AVFoundation).
   "um"s and stutters, and hear each paragraph as edited. Final video renders the edit;
   Final transcript says who's speaking, matched from a few samples of each voice. Both
   keep every version, and two transcripts can be compared.
+
+Each project lives in folder of its own. Each displays a row of tabs:
+**Workspace**, **Final video** and **Manage**, plus **Raw transcript** and **Final
+transcript** for a podcast. 
+
+Built with and inside [Bram](https://github.com/judell/bram);
+macOS only for now (the voice recorder uses AVFoundation).
 
 Along the way we have needed, built, and are shipping new core XMLUI components:
 `MediaPlayer` ([xmlui-org/xmlui#3913](https://github.com/xmlui-org/xmlui/issues/3913)) and
