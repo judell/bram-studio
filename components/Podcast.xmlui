@@ -326,7 +326,7 @@
                2026-11-13: editingPara and paraDraft read back null in
                the same handler that set them; xmlui-org/xmlui#3940
                reaches further than its workaround). -->
-          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}">
+          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}">
             <!-- Tag mode: the paragraph as clickable words, each in its
                  speaker's color. A first click starts a selection
                  (anchor), a second ends it (focus); then "Who said it?"
@@ -363,7 +363,30 @@
                 onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
               <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
             </HStack>
+            <!-- Where the caret lands, the player under the box goes: to the
+                 start of the word it's in, in the paragraph's edited audio
+                 (/transcripts/marks: [character offset, seconds] per kept
+                 word, fetched once per version of the row and kept on it).
+                 selectionDidChange fires after the caret is placed, also for
+                 clicks inside a box that already has focus, for arrow keys
+                 and while typing (xmlui-org/xmlui#3959, a candidate build in
+                 vendor/). It moves the player only for a bare caret in an
+                 unedited box: typing would chase the caret, and an edit makes
+                 the offsets stale until it saves. seek doesn't play. Logged
+                 (podcast-page: caret). -->
             <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+              onSelectionDidChange="(sel) => {
+                if (!sel || sel.start !== sel.end || draft !== $item.text || $item.kept === 0) return;
+                if (!marks) {
+                  marks = Actions.callApi({ url: 'http://127.0.0.1:8765/transcripts/marks?source=' + encodeURIComponent(source) + '&amp;para=' + $item.para,
+                                            method: 'get', invalidates: [] }) || [];
+                }
+                const hit = marks.filter((m) => m[0] &lt;= sel.start);
+                const t = hit.length ? hit[hit.length - 1][1] : 0;
+                paraPlayer.seek(t);
+                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'caret', para: $item.para, at: sel.start, t, player: paraPlayer.getCurrentTime() } });
+              }"
               onGotFocus="
                 Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });
@@ -375,7 +398,7 @@
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
               " />
-            <MediaPlayer kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
+            <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
             <HStack verticalAlignment="center" gap="$space-2">
               <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
               <Text variant="secondary" when="{$item.ticsCut > 0}"

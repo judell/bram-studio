@@ -2549,27 +2549,12 @@ def text_cuts(db, source, duration):
 PARA_AUDIO = os.path.join(ROOT, ".preview", "paras")  # rendered paragraphs, served at /.preview/paras/
 
 
-def para_audio(db, source, para, duration):
-    # A paragraph as edited, rendered from the source movie's own soundtrack:
-    # its stretch of the source (from the cut edge before its first word to
-    # the one after its last, aligned like any cut edge) less the cuts in it,
-    # 10 ms fades at each join. Named by the paragraph's version, so it is
-    # rendered once per edit; older renders of it are removed. Returns the
-    # file name, or None when every word is cut.
+def para_pieces(db, source, mine, duration):
+    # What a paragraph's audio is made of (para_audio): its stretch of the
+    # source, from the cut edge before its first word (mine: its words' i,
+    # in order) to the one after its last, aligned like any cut edge, less
+    # the cuts in it. Returns (start, end, pieces), pieces as source (a, b).
     words = db.execute("SELECT i, t0, t1, kept FROM words WHERE source = ? ORDER BY i", (source,)).fetchall()
-    mine = [w[0] for w in db.execute("SELECT i FROM words WHERE source = ? AND para = ? ORDER BY i", (source, para))]
-    if not mine:
-        return None
-    version = next(p["v"] for p in paragraphs(db, source) if p["para"] == para)
-    conf = podcast_settings()
-    fade = conf["fadeMs"] / 1000
-    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
-    # The settings that shape the render are in its name, so changing one
-    # renders anew.
-    name = f"{stem}-p{para}-{version}-a{conf['pauseMs']}-f{conf['fadeMs']}.m4a"
-    path = os.path.join(PARA_AUDIO, name)
-    if os.path.isfile(path):
-        return name
     first, last = mine[0], mine[-1]
     edges = aligned_edges(db, source, [b for b in (first, last + 1) if 0 < b < len(words)])
 
@@ -2583,7 +2568,57 @@ def para_audio(db, source, para, duration):
     start, end = edge(first), edge(last + 1)
     pieces = [(max(k["src0"], start), min(k["src1"], end)) for k in text_cuts(db, source, duration)["kept"]
               if k["src1"] > start and k["src0"] < end]
-    pieces = [(a, b) for a, b in pieces if b - a > 0.02]
+    return start, end, [(a, b) for a, b in pieces if b - a > 0.02]
+
+
+def para_marks(db, source, para, duration):
+    # Where each kept word of a paragraph is, in its text as the editor shows
+    # it (kept words, corrected, joined by spaces, as paragraphs() makes it)
+    # and in its rendered audio (para_audio's pieces, end to end): a list of
+    # [character offset, seconds]. The editor moves the paragraph's player to
+    # the word the caret lands on.
+    rows = db.execute("SELECT i, t0, kept, coalesce(shown, text) FROM words WHERE source = ? AND para = ? "
+                      "ORDER BY i", (source, para)).fetchall()
+    if not any(r[2] for r in rows):
+        return []
+    _, _, pieces = para_pieces(db, source, [r[0] for r in rows], duration)
+    before, out = [], 0.0
+    for a, b in pieces:
+        before.append(out)
+        out += b - a
+    marks, c = [], 0
+    for _, t0, kept, w in rows:
+        if not kept:
+            continue
+        # The piece holding the word's start; a start just before its piece
+        # (an edge placed by the sound) counts as the piece's start.
+        t = next((before[n] + max(0.0, t0 - a) for n, (a, b) in enumerate(pieces) if t0 < b), out)
+        marks.append([c, round(t, 3)])
+        c += len(w) + 1
+    return marks
+
+
+def para_audio(db, source, para, duration):
+    # A paragraph as edited, rendered from the source movie's own soundtrack:
+    # its stretch of the source (from the cut edge before its first word to
+    # the one after its last, aligned like any cut edge) less the cuts in it,
+    # 10 ms fades at each join. Named by the paragraph's version, so it is
+    # rendered once per edit; older renders of it are removed. Returns the
+    # file name, or None when every word is cut.
+    mine = [w[0] for w in db.execute("SELECT i FROM words WHERE source = ? AND para = ? ORDER BY i", (source, para))]
+    if not mine:
+        return None
+    version = next(p["v"] for p in paragraphs(db, source) if p["para"] == para)
+    conf = podcast_settings()
+    fade = conf["fadeMs"] / 1000
+    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
+    # The settings that shape the render are in its name, so changing one
+    # renders anew.
+    name = f"{stem}-p{para}-{version}-a{conf['pauseMs']}-f{conf['fadeMs']}.m4a"
+    path = os.path.join(PARA_AUDIO, name)
+    if os.path.isfile(path):
+        return name
+    start, end, pieces = para_pieces(db, source, mine, duration)
     if not pieces:
         return None
     graph = ";".join(f"[0:a]atrim={a - start:.3f}:{b - start:.3f},asetpts=PTS-STARTPTS"
@@ -2889,6 +2924,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.speaker_stats()
         if self.path.startswith("/transcripts/play"):
             return self.play_para()
+        if self.path.startswith("/transcripts/marks"):
+            return self.para_marks_route()
         super().do_GET()
 
     def stream_events(self):
@@ -3110,6 +3147,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Location", "/.preview/paras/" + urllib.parse.quote(name))
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def para_marks_route(self):
+        # GET /transcripts/marks?source=&para=: where each kept word of a
+        # paragraph is in its text and its rendered audio (para_marks).
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        try:
+            para = int(query.get("para", [""])[0])
+        except ValueError:
+            return self.send_json(400, {"error": "expected para"})
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+        with TEXT_LOCK:
+            if not row or not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            self.send_json(200, para_marks(db, source, para, row[0] or 0))
 
     def transcript_cuts(self):
         # GET /transcripts/cuts?source=: the edit list (text_cuts).
