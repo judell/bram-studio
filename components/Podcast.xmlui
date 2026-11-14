@@ -383,6 +383,29 @@
             <Text variant="secondary" value="whisper's segments, with their times: click a time to play from there." />
           </TabItem>
         </Tabs>
+        <!-- The cuts, each with Restore: here under the
+             controls so the first of them are in view (they were at the
+             foot of the paragraph list). After the Tabs, not inside the
+             Edit text tab: Restore is called from Items, and a function
+             called from Items under Tabs is what xmlui-org/xmlui#3940
+             breaks. -->
+        <ExpandableItem when="{view === 'Edit text'}" initiallyExpanded="{true}" iconPosition="start" fullWidthSummary="true"
+          summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
+          <Items data="{cutList.value ? cutList.value.spans : []}">
+            <VStack gap="0">
+              <HStack verticalAlignment="start">
+                <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
+                <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
+                <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
+                <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
+              </HStack>
+              <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
+                value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
+              <Text when="{false &amp;&amp; $item.check &amp;&amp; !$item.check.ok}" variant="secondary"
+                value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
+            </VStack>
+          </Items>
+        </ExpandableItem>
       </VStack>
       <VStack height="100%" overflowY="auto" paddingLeft="$space-4">
       <VStack when="{view === 'Edit text'}" gap="$space-2">
@@ -530,23 +553,6 @@
           </VStack>
           </VStack>
         </List>
-        <ExpandableItem iconPosition="start" fullWidthSummary="true"
-          summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
-          <Items data="{cutList.value ? cutList.value.spans : []}">
-            <VStack gap="0">
-              <HStack verticalAlignment="start">
-                <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
-                <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
-                <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
-                <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
-              </HStack>
-              <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
-                value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
-              <Text when="{false &amp;&amp; $item.check &amp;&amp; !$item.check.ok}" variant="secondary"
-                value="{'⚠ Heard: “' + $item.check.heard + '” where the text keeps “' + $item.check.kept + '”'}" />
-            </VStack>
-          </Items>
-        </ExpandableItem>
       </VStack>
       <List id="transcriptList" when="{view === 'Transcript'}" data="{segments}"
         dataRefreshMode="preserve-state">
