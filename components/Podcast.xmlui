@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.openCut="{null}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -115,7 +115,6 @@
     }
     function undoText() { stepText('/transcripts/undo'); }
     function redoText() { stepText('/transcripts/redo'); }
-    function restoreCut(ids) { textChange('/transcripts/restore', { ids }); }
     // A paragraph's Elide / Restore tics, called from inside the list with
     // everything it needs (xmlui-org/xmlui#3940: no component variables in here).
     function paraTics(path, body) { textChange(path, body); }
@@ -389,21 +388,25 @@
             </VStack>
         <Text when="{view === 'Transcript'}" variant="secondary"
           value="whisper's segments, with their times: click a time to play from there." />
-        <!-- The cuts, each with Restore: here under the
-             controls so the first of them are in view (they were at the
-             foot of the paragraph list). After the Tabs, not inside the
-             Edit text tab: Restore is called from Items, and a function
-             called from Items under Tabs is what xmlui-org/xmlui#3940
-             breaks. -->
-        <ExpandableItem when="{view === 'Edit text'}" initiallyExpanded="{true}" iconPosition="start" fullWidthSummary="true"
+        <!-- The cuts: what was taken out, for interest, folded at first
+             (2026-11-14: "not super valuable, but slightly interesting").
+             No Restore here: typing words back, Undo, or a paragraph's
+             Restore tics bring cuts back. A long cut has More / Less. -->
+        <ExpandableItem when="{view === 'Edit text'}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
           summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
           <Items data="{cutList.value ? cutList.value.spans : []}">
             <VStack gap="0">
               <HStack verticalAlignment="start">
                 <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
-                <Text width="*" maxLines="2" value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
+                <Text when="{openCut !== $item.ids[0]}" width="*" maxLines="2"
+                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
+                <Text when="{openCut === $item.ids[0]}" width="*"
+                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '')}" />
                 <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
-                <Button size="xs" variant="outlined" label="Restore" onClick="restoreCut($item.ids)" />
+                <!-- A long cut (more than two lines' worth) can be read whole. -->
+                <Button when="{$item.text.length > 120}" size="xs" variant="ghost"
+                  label="{openCut === $item.ids[0] ? 'Less' : 'More'}"
+                  onClick="openCut = openCut === $item.ids[0] ? null : $item.ids[0]" />
               </HStack>
               <Text when="{false &amp;&amp; $item.unaligned}" variant="secondary"
                 value="⚠ Placed by whisper's word times, which can be off: listen to this join." />
