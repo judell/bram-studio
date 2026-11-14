@@ -3655,7 +3655,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # turned away.
         if self.path == "/trace":
             return self.set_trace()
-        if self.path == "/query":
+        if urllib.parse.urlparse(self.path).path == "/query":  # ?p=<project>: the pages' cache key only
             return self.query(DB)
         if self.path == "/query/shared":
             return self.query(SHARED_DB, shared=True)
@@ -4000,7 +4000,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db = sqlite3.connect(DB)
         with TEXT_LOCK:
             if not ensure_words(db, source):
-                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+                # A new project, not yet transcribed: nothing made, not an error.
+                return self.send_json(200, {"exists": False, "versions": [], "making": None, "noTranscript": True})
             state = final_state(db, source)
         self.send_json(200, state)
 
@@ -4015,7 +4016,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         db = sqlite3.connect(DB)
         with TEXT_LOCK:
             if not ensure_words(db, source):
-                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+                return self.send_json(200, {"needVideo": True, "noTranscript": True, "versions": [], "version": None,
+                                            "turns": [], "remakeWhy": [], "upToDate": False, "editChanged": False,
+                                            "matching": None})
             state = final_state(db, source)
         snaps = dict(versions(source, "transcript"))
         if self.path.startswith("/podcast/final-transcript/compare"):
@@ -4216,11 +4219,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(409, {"error": f"whisper is busy with {next(iter(transcribing or checking))}"})
             duration = float(probe(path, "format=duration") or 0)
             transcribing[source] = {"done_s": 0, "duration_s": duration}
+        # No names given (the page has no box for them now): whisper gets the
+        # project's speakers (Settings › Speakers), which gets their names
+        # spelled right; on a new project there are usually none yet.
+        from_speakers = False
+        if not prompt:
+            names = [n for (n,) in db.execute("SELECT name FROM speakers ORDER BY position, id") if n]
+            if names:
+                prompt, from_speakers = ", ".join(names) + ".", True
         db.execute("INSERT OR REPLACE INTO transcripts (source, model, prompt, status, started_at, duration_s) "
                    "VALUES (?, ?, ?, 'running', ?, ?)",
                    (source, os.path.basename(model), prompt, datetime_now(), duration))
         db.commit()
-        print(f"transcribe start source={source} model={os.path.basename(model)} duration={duration:.0f}", flush=True)
+        print(f"transcribe start source={source} model={os.path.basename(model)} duration={duration:.0f} "
+              f"prompt={prompt!r}{' (from speakers)' if from_speakers else ''}", flush=True)
         threading.Thread(target=run_transcript, args=(source, path, prompt, model), daemon=True).start()
         notify("transcripts")
         self.send_json(200, {"source": source, "model": os.path.basename(model), "duration_s": duration})

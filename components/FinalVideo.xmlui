@@ -15,11 +15,11 @@
      and waits for it. The versions are Studio's exports, newest first (GET
      /screencast/final), each current or not by the scenes it was made from;
      Delete is the Exports page's (/exports/delete). -->
-<Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}"
+<Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}" var.project="{$props.project || ''}"
   var.pick="{null}" var.confirmDelete="{null}" var.genre="{$props.genre || 'podcast'}">
 
   <DataSource id="final" when="{genre === 'screencast' || !!source}"
-    url="{genre === 'screencast' ? 'http://127.0.0.1:8765/screencast/final' : 'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source)}" />
+    url="{genre === 'screencast' ? 'http://127.0.0.1:8765/screencast/final' : 'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {
@@ -102,6 +102,7 @@
       if (p && p.exporting) return 'Exporting the scenes…';
       if (p) return 'Making the final video' + (p.total ? ': paragraph ' + p.done + ' of ' + p.total : '…');
       if (!f) return '';
+      if (f.noTranscript) return 'Nothing to make yet: transcribe the recording in the Workspace first.';
       if (!f.exists) return 'No final video yet.';
       return all().length + (all().length === 1 ? ' version' : ' versions');
     }
@@ -114,7 +115,7 @@
     <HStack verticalAlignment="center">
       <Button size="sm" variant="outlined"
         label="{final.value &amp;&amp; final.value.exists ? 'Remake final video' : 'Make final video'}"
-        enabled="{(genre === 'screencast' || !!source) &amp;&amp; !progress()}" onClick="make()" />
+        enabled="{(genre === 'screencast' || !!source) &amp;&amp; !progress() &amp;&amp; !(final.value &amp;&amp; final.value.noTranscript)}" onClick="make()" />
       <Spinner when="{!!progress()}" />
       <Text variant="secondary" value="{line()}" />
     </HStack>

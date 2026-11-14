@@ -19,15 +19,15 @@
      No player here (2026-11-14: "don't need video on this page"): the
      times say where each turn is in the version's video, on the Final
      video page. -->
-<Component name="FinalTranscript" var.source="{($props.sources || [])[0] || ''}" var.busy="{null}"
+<Component name="FinalTranscript" var.source="{($props.sources || [])[0] || ''}" var.busy="{null}" var.project="{$props.project || ''}"
   var.pick="{$props.n !== undefined &amp;&amp; $props.n !== null &amp;&amp; $props.n !== '' ? Number($props.n) : null}"
   var.cameBack="{$props.turn !== undefined &amp;&amp; $props.turn !== null &amp;&amp; $props.turn !== '' ? Number($props.turn) : null}"
   var.scrolledBack="{false}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
 
   <DataSource id="ft" when="{!!source}"
-    url="{'http://127.0.0.1:8765/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '')}" />
+    url="{'http://127.0.0.1:8765/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <DataSource id="cmp" when="{comparing &amp;&amp; !!aVer() &amp;&amp; !!bVer()}"
-    url="{'http://127.0.0.1:8765/podcast/final-transcript/compare?source=' + encodeURIComponent(source) + '&amp;a=' + aVer() + '&amp;b=' + bVer()}" />
+    url="{'http://127.0.0.1:8765/podcast/final-transcript/compare?source=' + encodeURIComponent(source) + '&amp;a=' + aVer() + '&amp;b=' + bVer() + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {

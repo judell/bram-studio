@@ -22,33 +22,35 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
-  <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="transcript" url="{'http://127.0.0.1:8765/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
-  <DataSource id="segments" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="segments" url="{'http://127.0.0.1:8765/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT g.id, g.t0, g.t1, g.text, g.speaker_id, s.name, s.color FROM segments g LEFT JOIN speakers s ON s.id = g.speaker_id WHERE g.source = ? ORDER BY g.t0',
              params: [source] }}" />
 
   <!-- The text to edit and the cut list (serve_media.py's /transcripts/text
-       and /transcripts/cuts). -->
-  <DataSource id="textDoc" when="{!!source}"
-    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source)}" />
+       and /transcripts/cuts). These and the paragraphs and samples wait for a
+       finished transcript: asked before one exists, each answered 404 and
+       showed as an error (a new project, 2026-11-14). -->
+  <DataSource id="textDoc" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
+    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <!-- The paragraphs to edit, each with a version (key) that changes when an
        edit touches it (/transcripts/paras). -->
-  <DataSource id="paras" when="{!!source}"
-    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '')}" />
+  <DataSource id="paras" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
+    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <!-- Each speaker's tagged and matched speech, and whether it has enough
        tagged to be matched (/speakers/stats; the need is a Setting). -->
   <!-- The sample stretches and their check (/speakers/samples), while
        Samples is on. -->
-  <DataSource id="samples" when="{!!source &amp;&amp; tagMode}"
-    url="{'http://127.0.0.1:8765/speakers/samples?source=' + encodeURIComponent(source)}" />
+  <DataSource id="samples" when="{!!source &amp;&amp; tagMode &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
+    url="{'http://127.0.0.1:8765/speakers/samples?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <DataSource id="speakerStats" when="{!!source}"
-    url="{'http://127.0.0.1:8765/speakers/stats?source=' + encodeURIComponent(source)}" />
-  <DataSource id="cutList" when="{!!source}"
-    url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source)}" />
+    url="{'http://127.0.0.1:8765/speakers/stats?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+  <DataSource id="cutList" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
+    url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {
@@ -61,6 +63,10 @@
     }" />
 
   <script>
+    // A finished transcript: what the text, paragraphs and cuts need.
+    function transcribed() {
+      return !!(transcript.value && transcript.value[0] && transcript.value[0].status === 'done');
+    }
     function stamp(s) {
       const t = Math.floor(s || 0);
       const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
@@ -81,7 +87,7 @@
     }
     function transcribe() {
       try {
-        post('/transcripts/start', { source, prompt: namesBox.value });
+        post('/transcripts/start', { source });
         progress = { done_s: 0, duration_s: 0 };
       } catch (e) {
         toast.error(e.message);
@@ -292,11 +298,11 @@
       " />
 
     <!-- Transcribing, offered only for a source with no transcript (or a
-         failed one): the names go to whisper as its prompt, which is what
-         gets unusual names spelled right. -->
+         failed one). No names box: whisper's prompt is the project's
+         speakers, if any yet (start_transcript); other names are corrected
+         while editing. -->
     <HStack verticalAlignment="center"
       when="{!!source &amp;&amp; !progress &amp;&amp; transcript.loaded &amp;&amp; !(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}">
-      <TextBox id="namesBox" width="*" placeholder="Who's in it, and names likely to come up" />
       <Button size="sm" variant="outlined" label="Transcribe" onClick="transcribe()" />
     </HStack>
     <HStack verticalAlignment="center" when="{!!progress}">
@@ -381,7 +387,7 @@
              a paragraph scrolled away is unmounted. -->
         <!-- Which view, from the page (Main.xmlui's nav): Workspace is
              Edit text, Raw transcript is Transcript. -->
-            <VStack when="{view === 'Edit text'}" gap="$space-2">
+            <VStack when="{view === 'Edit text' &amp;&amp; transcribed()}" gap="$space-2">
               <VStack gap="$space-2">
                 <HStack verticalAlignment="center">
                   <Button size="sm" variant="outlined" label="Undo"
@@ -478,7 +484,7 @@
              (2026-11-14: "not super valuable, but slightly interesting").
              No Restore here: typing words back, Undo, or a paragraph's
              Restore tics bring cuts back. A long cut has More / Less. -->
-        <ExpandableItem when="{view === 'Edit text'}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
+        <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
           summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
           <Items data="{cutList.value ? cutList.value.spans : []}">
             <VStack gap="0">
@@ -530,7 +536,11 @@
                               body: { ev: 'current', para: null, by: 'outside', readBack: currentPara } });
           }
         }">
-      <VStack when="{view === 'Edit text'}" gap="$space-2">
+      <!-- Before a transcript: what's next, not a list waiting for data
+           (the paragraphs aren't asked for until one is done). -->
+      <Text when="{view === 'Edit text' &amp;&amp; transcript.loaded &amp;&amp; !transcribed()}" variant="secondary"
+        value="{progress ? 'Transcribing… the text appears here when it’s done.' : 'Not transcribed yet: click Transcribe, and the text to edit appears here.'}" />
+      <VStack when="{view === 'Edit text' &amp;&amp; transcribed()}" gap="$space-2">
         <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
           <!-- draft is the row's own: assignments to the component's
                variables made in here don't take (podcast-page log,

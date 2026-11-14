@@ -796,7 +796,7 @@
            back (the final transcript's Edit links). -->
       <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
         sources="{projects.value ? (projects.value.sources || []) : []}"
-        para="{$queryParams.para}" back="{$queryParams.back}" />
+        para="{$queryParams.para}" back="{$queryParams.back}" project="{projects.value ? projects.value.open : ''}" />
       <Fragment when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}">
       <HStack verticalAlignment="center">
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
@@ -1070,21 +1070,21 @@
          other project they lead back to its editor. -->
     <Page url="/raw">
       <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}" view="Transcript"
-        sources="{projects.value ? (projects.value.sources || []) : []}" />
+        sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <!-- The final video, for either genre: a podcast's edit, or a
          screencast's scenes joined (Export). -->
     <Page url="/final-video">
       <FinalVideo when="{projects.loaded}" genre="{projects.value.genre === 'podcast' ? 'podcast' : 'screencast'}"
-        sources="{projects.value ? (projects.value.sources || []) : []}" />
+        sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
     </Page>
     <Page url="/final-transcript">
       <!-- ?n=<version>&turn=<index>: back where you were, from the
            Workspace's "Back to final transcript". -->
       <FinalTranscript when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
         sources="{projects.value ? (projects.value.sources || []) : []}"
-        n="{$queryParams.n}" turn="{$queryParams.turn}" />
+        n="{$queryParams.n}" turn="{$queryParams.turn}" project="{projects.value ? projects.value.open : ''}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <Page url="/exports">
