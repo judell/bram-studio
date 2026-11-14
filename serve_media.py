@@ -2030,6 +2030,116 @@ SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
 PROGRESS_LINE = re.compile(r"progress (\d+) (\d+)")
 
 
+sample_checks = {}  # source -> {"rerun"} while voiceprint.py --check runs (check_samples)
+SAMPLE_LOCK = threading.Lock()
+
+
+def samples_key(db, source):
+    # What the samples are now: a hash of every tagged word and its speaker.
+    # The last check is current while it matches.
+    h = hashlib.sha1()
+    for wid, spk in db.execute("SELECT id, speaker_id FROM words WHERE source = ? AND speaker_how = 'tag' "
+                               "ORDER BY i", (source,)):
+        h.update(f"{wid}:{spk};".encode())
+    return h.hexdigest()[:12]
+
+
+def check_samples(source):
+    # In the background: voiceprint.py --check, which flags runs of windows
+    # in a sample stretch that sound like another speaker; the result is
+    # kept in the transcript's folder (samples-check.json) with the samples
+    # key it was made for, and /events gets {"samplesChecked": source}.
+    # Started when the sample list is asked for and the last check isn't
+    # current; asked again while running, it runs once more after.
+    while True:
+        t_start = time.time()
+        try:
+            db = sqlite3.connect(DB)
+            key = samples_key(db, source)
+            with SAMPLE_LOCK:
+                sample_checks[source]["key"] = key
+            conf = podcast_settings()
+            env = {**os.environ, "VP_WINDOW": str(conf["vpWindowS"]), "VP_STEP": str(conf["vpStepS"]),
+                   "VP_MIN_TURN": str(conf["vpMinTurnS"]), "VP_MIN_TAGGED": str(conf["vpMinTaggedS"]),
+                   "SPEAKER_MODEL": SPEAKER_MODEL}
+            r = subprocess.run([SPEECH_PYTHON, os.path.join(HERE, "voiceprint.py"),
+                                os.path.join(transcript_folder(source), "audio-16k.wav"), DB, source, "--check"],
+                               capture_output=True, text=True, env=env)
+            if r.returncode:
+                raise RuntimeError((r.stderr.strip().splitlines() or ["voiceprint.py --check failed"])[-1])
+            result = json.loads(r.stdout.strip().splitlines()[-1])
+            result["key"] = key
+            path = os.path.join(transcript_folder(source), "samples-check.json")
+            with open(path + ".tmp", "w") as f:
+                json.dump(result, f)
+            os.replace(path + ".tmp", path)
+            flags = sum(len(x["flags"]) for x in result.get("stretches", []))
+            print(f"samples check source={source} stretches={len(result.get('stretches', []))} flags={flags} "
+                  f"secs={time.time() - t_start:.1f}", flush=True)
+        except Exception as e:
+            print(f"samples check failed source={source} error={e}", flush=True)
+        with SAMPLE_LOCK:
+            if not sample_checks.get(source, {}).get("rerun"):
+                sample_checks.pop(source, None)
+                break
+            sample_checks[source] = {"rerun": False, "key": None}
+    push({"samplesChecked": source})
+
+
+def sample_list(db, source):
+    # GET /speakers/samples: every sample stretch (consecutive tagged words,
+    # one speaker), in order, with the last check's flags when it is
+    # current; and whether a check is running or due (which starts it).
+    names = {i: (n, c) for i, n, c in db.execute("SELECT id, name, color FROM speakers")}
+    rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), speaker_id FROM words "
+                      "WHERE source = ? AND speaker_how = 'tag' ORDER BY i", (source,)).fetchall()
+    out, run = [], None
+    for wid, i, t0, t1, w, spk in rows:
+        if run and run["speaker"] == spk and run["_i"] == i - 1:
+            run["_i"], run["t1"], run["toId"] = i, t1, wid
+            run["_w"].append((t0, w, wid))
+        else:
+            name, color = names.get(spk, ("a deleted speaker", None))
+            run = {"speaker": spk, "name": name, "color": color, "t0": t0, "t1": t1, "fromId": wid,
+                   "toId": wid, "_i": i, "_w": [(t0, w, wid)]}
+            out.append(run)
+    key = samples_key(db, source)
+    try:
+        last = json.load(open(os.path.join(transcript_folder(source), "samples-check.json")))
+    except (OSError, ValueError):
+        last = {}
+    current = last.get("key") == key
+    # The last check's flags, by stretch (first word, speaker, end). While a
+    # new check runs, a stretch that hasn't changed keeps its flags rather
+    # than all of them vanishing for its ~9 s.
+    flags = {(x["firstWord"], x["speaker"], round(x["t1"], 1)): x["flags"] for x in last.get("stretches", [])}
+    for r in out:
+        ws = r.pop("_w")
+        r.pop("_i")
+        r["secs"] = round(r["t1"] - r["t0"], 1)
+        r["text"] = " ".join(w for _, w, _ in ws[:10]) + ("…" if len(ws) > 10 else "")
+        r["flags"] = []
+        for f in flags.get((r["fromId"], r["speaker"], round(r["t1"], 1)), []):
+            inside = [(w, wid) for t, w, wid in ws if f["t0"] <= t < f["t1"]]
+            # Its words' ids, for Clear on just this part.
+            r["flags"].append({**f, "likeName": names.get(f["like"], ("someone else",))[0],
+                               "text": " ".join(w for w, _ in inside),
+                               "fromId": inside[0][1] if inside else None,
+                               "toId": inside[-1][1] if inside else None})
+        r["key"] = f"{r['fromId']}-{r['toId']}-{r['speaker']}"
+    due = not current and bool(out) and os.path.isfile(SPEECH_PYTHON) and os.path.isfile(SPEAKER_MODEL)
+    with SAMPLE_LOCK:
+        if due:
+            if source in sample_checks:
+                if sample_checks[source].get("key") != key:
+                    sample_checks[source]["rerun"] = True
+            else:
+                sample_checks[source] = {"rerun": False, "key": key}
+                threading.Thread(target=check_samples, args=(source,), daemon=True).start()
+        checking = source in sample_checks
+    return {"stretches": out, "checked": current, "checking": checking}
+
+
 def match_speakers(source):
     # The background half of POST /speakers/propagate: voiceprint.py over
     # the source, then its speakers written to the words you didn't tag
@@ -3366,6 +3476,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.transcript_cuts()
         if self.path.startswith("/transcripts/paras"):
             return self.transcript_paras()
+        if self.path.startswith("/speakers/sample-audio"):
+            return self.sample_audio_route()
+        if self.path.startswith("/speakers/samples"):
+            source = self.query_source()
+            db = sqlite3.connect(DB)
+            return self.send_json(200, sample_list(db, source))
         if self.path.startswith("/speakers/stats"):
             return self.speaker_stats()
         if self.path.startswith("/transcripts/play"):
@@ -3701,6 +3817,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         threading.Thread(target=match_speakers, args=(source,), daemon=True).start()
         push({"matching": source, "done": 0, "total": 0})
         self.send_json(200, {"source": source, "matching": True})
+
+    def sample_audio_route(self):
+        # GET /speakers/sample-audio?source=&t0=&t1=: that stretch of the
+        # source's sound alone (a sample, or a flagged part of one), cut once
+        # into media/.preview/samples/ and served by redirect, so a player's
+        # scrubber spans just the sample.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        try:
+            t0, t1 = float(query.get("t0", [""])[0]), float(query.get("t1", [""])[0])
+        except ValueError:
+            return self.send_json(400, {"error": "expected t0 and t1"})
+        path_in = source_paths().get(source)
+        if not path_in or not 0 <= t0 < t1 or t1 - t0 > 600:
+            return self.send_json(404, {"error": "no such stretch"})
+        stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
+        name = f"{stem}-{int(t0 * 1000)}-{int(t1 * 1000)}.m4a"
+        folder = os.path.join(ROOT, ".preview", "samples")
+        out = os.path.join(folder, name)
+        if not os.path.isfile(out):
+            os.makedirs(folder, exist_ok=True)
+            r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}",
+                                "-i", path_in, "-vn", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+                                out + ".tmp.m4a"], capture_output=True, text=True)
+            if r.returncode:
+                return self.send_json(500, {"error": (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1]})
+            os.replace(out + ".tmp.m4a", out)
+        self.send_response(302)
+        self.send_header("Location", "/.preview/samples/" + urllib.parse.quote(name))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def start_final(self):
         # {source}: the final video in the background (make_final), one per

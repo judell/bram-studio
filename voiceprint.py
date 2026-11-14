@@ -49,6 +49,53 @@ UNSURE_SCORE = 0.25
 TRIM = 0.2  # seconds shaved off each end of a tagged stretch: whisper's word times can be off
 
 
+CHECK = "--check" in sys.argv
+
+
+def check_samples(stretches, prints, ids, mat, embed):
+    # --check: is each sample stretch the voice it's tagged as? Every window
+    # of it is scored against every voiceprint (built from all the samples,
+    # these included). A run of two or more windows in a row that another
+    # speaker wins is flagged: a lone window that loses is usually two close
+    # scores, noise (2026-11-14: a run is what Liam's sample with Elliot and
+    # Doc in it looked like). Prints {"stretches": [{speaker, firstWord, t0,
+    # t1, flags: [{t0, t1, like, windows}]}]}.
+    out = []
+    for spk, runs in stretches.items():
+        for _, a, b, _, wid in runs:
+            wins = []
+            t = a + TRIM
+            while t + WINDOW <= b - TRIM:
+                v = embed(t, t + WINDOW)
+                if v is not None:
+                    sims = mat @ v
+                    best = ids[int(np.argmax(sims))]
+                    own = float(sims[ids.index(spk)]) if spk in prints else 0.0
+                    wins.append((t, best, float(sims.max()) - own))
+                t += STEP
+            flags, k = [], 0
+            while k < len(wins):
+                if wins[k][1] == spk or spk not in prints:
+                    k += 1
+                    continue
+                j = k
+                while j + 1 < len(wins) and wins[j + 1][1] != spk:
+                    j += 1
+                if j > k:
+                    like = collections.Counter(w[1] for w in wins[k:j + 1]).most_common(1)[0][0]
+                    t0, t1 = round(wins[k][0], 2), round(wins[j][0] + WINDOW, 2)
+                    # Overlapping the last flag, same voice (one window in
+                    # between went the sample's way): one flag, not two.
+                    if flags and flags[-1]["like"] == like and t0 <= flags[-1]["t1"]:
+                        flags[-1]["t1"] = t1
+                        flags[-1]["windows"] += j - k + 1
+                    else:
+                        flags.append({"t0": t0, "t1": t1, "like": like, "windows": j - k + 1})
+                k = j + 1
+            out.append({"speaker": spk, "firstWord": wid, "t0": round(a, 2), "t1": round(b, 2), "flags": flags})
+    return {"stretches": out}
+
+
 def main():
     wav, db_path, source = sys.argv[1:4]
     w = wave.open(wav)
@@ -79,7 +126,7 @@ def main():
             if run and run[0] == spk and run[3] == i - 1:
                 run[2], run[3] = t1, i
             else:
-                run = [spk, t0, t1, i]
+                run = [spk, t0, t1, i, wid]  # wid: the stretch's first word
                 stretches[spk].append(run)
         else:
             run = None
@@ -87,7 +134,7 @@ def main():
     for spk, runs in stretches.items():
         secs = sum(r[2] - r[1] for r in runs)
         vecs = []
-        for _, a, b, _ in runs:
+        for _, a, b, _, _ in runs:
             a, b = a + TRIM, b - TRIM
             t = a
             while t + WINDOW <= b:
@@ -110,6 +157,9 @@ def main():
         return
     ids = list(prints)
     mat = np.stack([prints[k] for k in ids])
+    if CHECK:
+        print(json.dumps(check_samples(stretches, prints, ids, mat, embed)))
+        return
 
     # Every window of the recording against every voiceprint.
     starts = np.arange(0, max(dur - WINDOW, 0) + 1e-9, STEP)

@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.openCut="{null}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.openCut="{null}" var.openSample="{null}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -41,6 +41,10 @@
     url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '')}" />
   <!-- Each speaker's tagged and matched speech, and whether it has enough
        tagged to be matched (/speakers/stats; the need is a Setting). -->
+  <!-- The sample stretches and their check (/speakers/samples), while
+       Samples is on. -->
+  <DataSource id="samples" when="{!!source &amp;&amp; tagMode}"
+    url="{'http://127.0.0.1:8765/speakers/samples?source=' + encodeURIComponent(source)}" />
   <DataSource id="speakerStats" when="{!!source}"
     url="{'http://127.0.0.1:8765/speakers/stats?source=' + encodeURIComponent(source)}" />
   <DataSource id="cutList" when="{!!source}"
@@ -51,7 +55,8 @@
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); speakerStats.refetch(); paras.refetch(); }
-      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); }
+      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); if (tagMode) samples.refetch(); }
+      else if (m.samplesChecked) { if (m.samplesChecked === source &amp;&amp; tagMode) samples.refetch(); }
       else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
@@ -139,6 +144,22 @@
       if (a === null) return false;
       const lo = b === null ? a : Math.min(a, b), hi = b === null ? a : Math.max(a, b);
       return id >= lo && id <= hi;
+    }
+    // A sample's sound alone (or a flagged part of one), so its player's
+    // scrubber spans just that stretch (/speakers/sample-audio).
+    function sampleAudio(t0, t1) {
+      return 'http://127.0.0.1:8765/speakers/sample-audio?source=' + encodeURIComponent(source)
+        + '&t0=' + t0 + '&t1=' + t1;
+    }
+    function clearSample(src, fromId, toId) {
+      tagRange(src, fromId, toId, null);
+    }
+    function sampleSummary() {
+      const s = samples.value;
+      if (!s) return 'Samples';
+      const flagged = s.stretches.filter((x) => x.flags.length).length;
+      return s.stretches.length + ' samples'
+        + (s.checking ? ' · checking…' : s.checked ? (flagged ? ' · ⚠ ' + flagged + ' with someone else in them' : ' · all clean') : '');
     }
     function taggedLine() {
       const st = speakerStats.value;
@@ -380,6 +401,54 @@
                   </HStack>
                   <Text variant="secondary"
                     value="Drag across a stretch (or double-click a word), then pick whose voice it is. Underlined words are samples: hover for whose." />
+                  <!-- Every sample stretch (/speakers/samples), with Play
+                       (an audio player under it, of just that stretch,
+                       so you can seek within it), Clear
+                       (untags it; Undo brings it back) and the check's
+                       flags: runs of it that sound like someone else
+                       (voiceprint.py --check, rerun by itself whenever the
+                       samples change). A sample with someone else in it
+                       pulls its speaker's voiceprint toward theirs: Liam's
+                       took 51 of Doc's words (2026-11-14). -->
+                  <ExpandableItem initiallyExpanded="{true}" iconPosition="start" fullWidthSummary="true"
+                    summary="{sampleSummary()}">
+                    <Items data="{(samples.value &amp;&amp; samples.value.stretches) || []}">
+                      <VStack gap="$space-1" paddingBottom="$space-2">
+                        <HStack verticalAlignment="center" gap="$space-2" wrapContent="true">
+                          <!-- A sample with a flagged part says so first,
+                               without opening anything. -->
+                          <Text when="{$item.flags.length > 0}" variant="strong" color="$color-warn" value="⚠ Undecided" />
+                          <Text variant="strong" color="{$item.color || '$textColor-secondary'}" value="{$item.name}" />
+                          <Text variant="secondary" value="{stamp($item.t0) + ' · ' + $item.secs + ' s'}" />
+                          <Button size="xs" variant="ghost" label="{openSample === $item.key ? 'Close' : 'Play'}"
+                            onClick="openSample = openSample === $item.key ? null : $item.key" />
+                          <Button size="xs" variant="ghost" label="Clear"
+                            tooltip="Stop using this as a sample (the words stay; Undo brings it back)"
+                            onClick="clearSample(source, $item.fromId, $item.toId)" />
+                        </HStack>
+                        <Text variant="secondary" value="{$item.text}" />
+                        <MediaPlayer when="{openSample === $item.key}" kind="audio" autoPlay="true" width="100%"
+                          src="{sampleAudio($item.t0, $item.t1)}" />
+                        <Items data="{$item.flags}">
+                          <!-- A flagged part: undecided until you listen.
+                               Clear untags just its words. -->
+                          <HStack verticalAlignment="center" gap="$space-2">
+                            <Text variant="strong" color="$color-warn" value="⚠ Undecided" />
+                            <Button size="xs" variant="ghost"
+                              label="{openSample === 'flag-' + $item.t0 ? 'Close' : 'Play'}"
+                              onClick="openSample = openSample === 'flag-' + $item.t0 ? null : 'flag-' + $item.t0" />
+                            <Button when="{$item.fromId !== null}" size="xs" variant="ghost" label="Clear"
+                              tooltip="Stop using just this part as a sample (Undo brings it back)"
+                              onClick="clearSample(source, $item.fromId, $item.toId)" />
+                          </HStack>
+                          <Text color="$color-warn"
+                            value="{'Sounds like ' + $item.likeName + ', ' + stamp($item.t0) + '–' + stamp($item.t1) + ': “' + $item.text + '”'}" />
+                          <MediaPlayer when="{openSample === 'flag-' + $item.t0}" kind="audio" autoPlay="true" width="100%"
+                            src="{sampleAudio($item.t0, $item.t1)}" />
+                        </Items>
+                      </VStack>
+                    </Items>
+                  </ExpandableItem>
                 </VStack>
                 <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
                   value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
