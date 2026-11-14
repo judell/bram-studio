@@ -22,7 +22,8 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}" var.paraClock="{null}">
+  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}" var.paraClock="{null}"
+  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
@@ -173,9 +174,26 @@
     }
     // Put the video where the card's player is (paraClock), playing or not.
     // Logs the video's time before the move: how far it had drifted.
+    // Whose sound you hear: 'card' (the video follows a card's player,
+    // muted) or 'video' (you played or paused the main video yourself; it
+    // has its sound and the cards stop). Logged (podcast-page: leader).
+    function setLeader(who, by) {
+      if (leader === who) return;
+      leader = who;
+      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'leader', leader: who, by, para: currentPara } });
+    }
+    // Did the main video play or pause because of you? Not if it is showing
+    // a paragraph other than the current one (a pause from loading a new
+    // file), nor if it did what its card is doing (applyClock following).
+    function videoTouched(playing) {
+      if (videoPara !== currentPara) return false;
+      const c = paraClock;
+      return !(leader === 'card' && c && c.para === currentPara && c.playing === playing);
+    }
     function applyClock(why) {
       const c = paraClock;
-      if (!c || c.para !== currentPara || !followItem()) return;
+      if (leader === 'video' || !c || c.para !== currentPara || !followItem()) return;
       const before = paraVideo.getCurrentTime();
       paraVideo.seek(c.t);
       if (c.playing) paraVideo.play(); else paraVideo.pause();
@@ -273,10 +291,21 @@
              (applyClock), and again once a newly chosen paragraph's video
              has loaded. Rows don't call paraVideo themselves: a List row
              reaching a component's player has been unreliable
-             (xmlui-org/xmlui#3940). Elsewhere, the original recording. -->
-        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="true" controls="false"
+             (xmlui-org/xmlui#3940). Elsewhere, the original recording.
+
+             It has its controls: play or pause it yourself and it takes
+             over (leader 'video', setLeader): it unmutes, the cards stop,
+             and pausing it moves its card's player to the same place
+             (cardSeek). Playing a card hands it back. -->
+        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="{leader !== 'video'}"
           preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
-          onLoadedMetadata="applyClock('loaded')" />
+          onLoadedMetadata="videoPara = currentPara; applyClock('loaded')"
+          onPlay="(e) => { if (videoTouched(true)) setLeader('video', 'video play'); }"
+          onPause="(e) => {
+            if (!videoTouched(false)) return;
+            setLeader('video', 'video pause');
+            cardSeek = { para: currentPara, t: e.currentTime, n: Date.now() };
+          }" />
         <ChangeListener listenTo="{paraClock}" onDidChange="applyClock('clock')" />
         <MediaPlayer id="speakerPlayer" when="{!followItem()}" width="100%"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
@@ -376,6 +405,12 @@
             var.roster="{$item.speakers || []}">
           <ChangeListener listenTo="{currentPara}"
             onDidChange="if (currentPara !== $item.para &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
+          <!-- The main video taking over stops this card; pausing the video
+               leaves this card's player where the video stopped. -->
+          <ChangeListener listenTo="{leader}"
+            onDidChange="if (leader === 'video' &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
+          <ChangeListener listenTo="{cardSeek}"
+            onDidChange="if (cardSeek &amp;&amp; cardSeek.para === $item.para &amp;&amp; $item.kept > 0) paraPlayer.seek(cardSeek.t);" />
           <VStack gap="$space-1" padding="$space-3" borderRadius="$space-2"
             backgroundColor="{currentPara === $item.para ? '$color-primary-50' : '$color-surface-50'}"
             onClick="
@@ -470,6 +505,7 @@
               onPause="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: false, by: 'pause', n: Date.now() }"
               onSeeked="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: !paraPlayer.paused, by: 'seek', n: Date.now() }"
               onPlay="(e) => {
+                setLeader('card', 'card play');
                 paraClock = { para: $item.para, t: e.currentTime, playing: true, by: 'play', n: Date.now() };
                 if (currentPara !== $item.para) {
                   currentPara = $item.para;
