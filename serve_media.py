@@ -2267,6 +2267,53 @@ def text_summary(db, source):
             "redoLabel": describe_step(db, source, json.loads(nxt_redo[0]))[0] if nxt_redo else ""}
 
 
+def align_words(a, b):
+    # Edit-distance alignment of two word lists, as difflib-style opcodes
+    # (equal / replace / delete / insert, merged into runs). Words are
+    # (word as written, less case and edge punctuation; its letters):
+    # the same as written costs 0, the same letters written differently
+    # ("Clawdrey" / "C-L-A-W-D-R-E-Y") 0.5, both "equal"; another word, in
+    # place, 1 ("replace"); cutting or inserting one, 1. Ties prefer the
+    # pairing, then a change in place. Unlike difflib's longest
+    # matching runs, this never trades a respelling for a cut plus an insert
+    # when the respelling looks like a neighbour ("Quadri, C-L-A-W-D-R-E-Y"
+    # → "Clawdrey, C-L-A-W-D-R-E-Y"). Quadratic: for a paragraph, not a
+    # whole transcript.
+    def sub(x, y):
+        return 0 if x[0] == y[0] else 0.5 if x[1] == y[1] else 1
+
+    n, m = len(a), len(b)
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d[i][j] = min(d[i - 1][j - 1] + sub(a[i - 1], b[j - 1]), d[i - 1][j] + 1, d[i][j - 1] + 1)
+    steps, i, j = [], n, m
+    while i or j:
+        if i and j and d[i][j] == d[i - 1][j - 1] + sub(a[i - 1], b[j - 1]):
+            steps.append("equal" if sub(a[i - 1], b[j - 1]) < 1 else "replace")
+            i, j = i - 1, j - 1
+        elif i and d[i][j] == d[i - 1][j] + 1:
+            steps.append("delete")
+            i -= 1
+        else:
+            steps.append("insert")
+            j -= 1
+    ops, i, j = [], 0, 0
+    for op in reversed(steps):
+        di, dj = (0, 1) if op == "insert" else (1, 0) if op == "delete" else (1, 1)
+        if ops and ops[-1][0] == op:
+            ops[-1][2] += di
+            ops[-1][4] += dj
+        else:
+            ops.append([op, i, i + di, j, j + dj])
+        i, j = i + di, j + dj
+    return [tuple(o) for o in ops]
+
+
 def apply_text_edit(db, source, text, para=None):
     # Diff the edited text against the kept words, word by word, on their
     # letters (so punctuation alone never makes a cut):
@@ -2304,7 +2351,14 @@ def apply_text_edit(db, source, text, para=None):
             matched += blk.size
         ignored += len(typed) - matched
 
-    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+    # A paragraph (what the editor sends) is aligned by edit distance
+    # (align_words); the whole transcript, too long for that, by difflib.
+    def written(w):
+        return (w.lower().strip(".,;:!?\"'()[]—–…"), word_key(w))
+
+    ops = align_words([written(w[2]) for w in kept], [written(w) for w in new]) if para is not None else \
+        difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    for op, i1, i2, j1, j2 in ops:
         if op == "equal":
             for k in range(i2 - i1):
                 correct(kept[i1 + k], new[j1 + k])

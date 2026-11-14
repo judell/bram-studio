@@ -186,17 +186,35 @@
     // Did the main video play or pause because of you? Not if it is showing
     // a paragraph other than the current one (a pause from loading a new
     // file), nor if it did what its card is doing (applyClock following).
-    function videoTouched(playing) {
+    // Nor at its end (t within 0.1 s of it): a paragraph played to the end
+    // pauses the video before its card says so.
+    function videoTouched(playing, t) {
       if (videoPara !== currentPara) return false;
+      if (!playing && t !== undefined && paraVideo.duration && t >= paraVideo.duration - 0.1) return false;
       const c = paraClock;
       return !(leader === 'card' && c && c.para === currentPara && c.playing === playing);
+    }
+    function playRejected(why, err) {
+      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'clock', why, playRejected: String((err && err.message) || err) } });
     }
     function applyClock(why) {
       const c = paraClock;
       if (leader === 'video' || !c || c.para !== currentPara || !followItem()) return;
       const before = paraVideo.getCurrentTime();
       paraVideo.seek(c.t);
-      if (c.playing) paraVideo.play(); else paraVideo.pause();
+      // A play still pending when the video's file changes or the video is
+      // removed is rejected by the browser ("interrupted by load", "media
+      // was removed from the document"). Expected: a new file re-applies
+      // the clock once loaded. Logged, not shown.
+      if (c.playing) {
+        try {
+          const p = paraVideo.play();
+          if (p && typeof p.catch === 'function') p.catch((err) => playRejected(why, err));
+        } catch (err) {
+          playRejected(why, err);
+        }
+      } else paraVideo.pause();
       Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'clock', why, para: c.para, by: c.by, card: c.t, video: before,
                                 drift: Math.round((before - c.t) * 1000) / 1000, playing: c.playing } });
@@ -302,7 +320,7 @@
           onLoadedMetadata="videoPara = currentPara; applyClock('loaded')"
           onPlay="(e) => { if (videoTouched(true)) setLeader('video', 'video play'); }"
           onPause="(e) => {
-            if (!videoTouched(false)) return;
+            if (!videoTouched(false, e.currentTime)) return;
             setLeader('video', 'video pause');
             cardSeek = { para: currentPara, t: e.currentTime, n: Date.now() };
           }" />
@@ -418,6 +436,14 @@
         onClick="(e) => {
           if (view !== 'Edit text') return;
           const t = e &amp;&amp; e.target;
+          // A card redrawn under the click (a save gives the paragraph a
+          // new version, and rows are keyed by version) has taken the
+          // clicked element off the page: not a click outside.
+          if (t &amp;&amp; t.isConnected === false) {
+            Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                              body: { ev: 'pane-click', detached: true, tag: t.tagName, current: currentPara } });
+            return;
+          }
           const hit = !!(t &amp;&amp; t.closest &amp;&amp; t.closest('[data-automation-id*=para-card]'));
           Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                             body: { ev: 'pane-click', hit, tag: t ? t.tagName : null, current: currentPara } });
