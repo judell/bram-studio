@@ -1,0 +1,194 @@
+<!-- Final transcript (Main.xmlui's /final-transcript, a podcast project's
+     fourth nav link): the edit's words by speaker turn, timed in a final
+     video (components/FinalVideo.xmlui), which it needs first.
+
+     Make (or Remake) final transcript matches voices and saves a new
+     version (serve_media.py's POST /podcast/final-transcript,
+     make_final_transcript): your samples stay as they are, and every other
+     kept word goes to the speaker whose voice it matches (voiceprint.py,
+     ~1 min on aiw). Each version keeps a snapshot of every word's speaker
+     (media/exports/finals/), because the stored matches change with each
+     Remake. Progress arrives on /events ({matching: source, done, total}).
+     A turn marked (?) is one most of whose words matched no voice clearly.
+
+     Compare: two versions, word by word (GET
+     /podcast/final-transcript/compare): each stretch whose speaker changed,
+     with its time in the newer one's video, and words per speaker in each. The way
+     to see what more samples changed.
+
+     No player here (2026-11-14: "don't need video on this page"): the
+     times say where each turn is in the version's video, on the Final
+     video page. -->
+<Component name="FinalTranscript" var.source="{($props.sources || [])[0] || ''}" var.busy="{null}"
+  var.pick="{null}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
+
+  <DataSource id="ft" when="{!!source}"
+    url="{'http://127.0.0.1:8765/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '')}" />
+  <DataSource id="cmp" when="{comparing &amp;&amp; !!aVer() &amp;&amp; !!bVer()}"
+    url="{'http://127.0.0.1:8765/podcast/final-transcript/compare?source=' + encodeURIComponent(source) + '&amp;a=' + aVer() + '&amp;b=' + bVer()}" />
+
+  <EventSource url="http://127.0.0.1:8765/events"
+    onMessage="(m) => {
+      if (m.matching === source) {
+        if (m.error) { busy = null; toast.error('Matching voices: ' + m.error); }
+        else if (!m.finished) busy = m;
+        else busy = { writing: true };
+      }
+      else if (m.finalTranscript === source) {
+        busy = null;
+        pick = null;
+        cmpA = null;
+        cmpB = null;
+        ft.refetch();
+        if (m.error) toast.error('Final transcript: ' + m.error);
+      }
+      else if (m.final === source &amp;&amp; m.finished) ft.refetch();
+      else if (m.finalDeleted === source) { ft.refetch(); }
+      else if (m.changed === 'words') ft.refetch();
+    }" />
+
+  <script>
+    function stamp(s) {
+      const t = Math.floor(s || 0);
+      const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+      return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+    }
+    function progress() {
+      return busy || (ft.value ? ft.value.matching : null);
+    }
+    function all() {
+      return (ft.value && ft.value.versions) || [];
+    }
+    function shown() {
+      return ft.value ? ft.value.version : null;
+    }
+    // Compare: the older (a) and newer (b), by default the newest two.
+    function aVer() {
+      const vs = all();
+      return cmpA !== null ? cmpA : (vs[1] ? vs[1].n : null);
+    }
+    function bVer() {
+      const vs = all();
+      return cmpB !== null ? cmpB : (vs[0] ? vs[0].n : null);
+    }
+    function label(v) {
+      return 'v' + v.n + ' · ' + v.madeAt + ' · ' + v.turns + ' turns, ' + v.unsure + ' (?)';
+    }
+    function samplesLine(v) {
+      return v ? 'Samples: ' + v.samples.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.secs) + ' s').join(' · ')
+        + ' · timed by video v' + v.video : '';
+    }
+    function versionOf(n) {
+      return all().find((v) => v.n === n) || null;
+    }
+    function make() {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final-transcript', method: 'post', invalidates: [],
+                          body: { source } });
+        busy = { done: 0, total: 0 };
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function remove(n) {
+      confirmDelete = null;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final-transcript/delete', method: 'post', invalidates: [],
+                          body: { source, n } });
+        if (pick === n) pick = null;
+        if (cmpA === n) cmpA = null;
+        if (cmpB === n) cmpB = null;
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function line() {
+      const p = progress();
+      if (p) return p.writing ? 'Saving the transcript…'
+        : 'Matching voices' + (p.total ? ': ' + Math.round(100 * p.done / p.total) + '%' : '…');
+      const n = all().length;
+      return n ? n + (n === 1 ? ' version' : ' versions') : 'No final transcript yet.';
+    }
+    function cmpLine() {
+      const c = cmp.value;
+      if (!c) return '';
+      return 'v' + c.a + ' → v' + c.b + ': ' + c.changedWords + ' words changed speaker, in '
+        + c.changes.length + ' stretches'
+        + (c.onlyA || c.onlyB ? '; ' + c.onlyA + ' words only in v' + c.a + ', ' + c.onlyB + ' only in v' + c.b
+           + ' (the edit changed)' : '');
+    }
+  </script>
+
+  <VStack paddingVertical="$space-6" paddingHorizontal="$space-16" gap="$space-4" height="calc(100vh - 150px)">
+    <Select when="{($props.sources || []).length > 1}" width="420px"
+      data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
+      initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; cmpA = null; cmpB = null; } }" />
+    <HStack when="{!!(ft.value &amp;&amp; ft.value.needVideo)}" verticalAlignment="center">
+      <Text value="The transcript is timed by the final video, so make that first:" />
+      <Link to="/final-video">Final video</Link>
+    </HStack>
+    <HStack when="{!!(ft.value &amp;&amp; !ft.value.needVideo)}" verticalAlignment="center">
+      <Button size="sm" variant="outlined"
+        label="{all().length ? 'Remake final transcript' : 'Make final transcript'}"
+        enabled="{!progress() &amp;&amp; !(ft.value &amp;&amp; ft.value.upToDate)}"
+        tooltip="{ft.value &amp;&amp; ft.value.upToDate ? 'Up to date: made from the newest final video with the samples you have now. Add samples or remake the video first.' : ''}"
+        onClick="make()" />
+      <Spinner when="{!!progress()}" />
+      <Text variant="secondary" value="{line()}" />
+      <SpaceFiller />
+      <Switch when="{all().length > 1}" label="Compare" labelPosition="end" initialValue="{false}"
+        onDidChange="(v) => comparing = v" />
+    </HStack>
+    <!-- Why a Remake would differ from the newest version (a newer video,
+         changed samples), and whether the newest video still matches the
+         edit (if not, remake it first, or the times will be off). -->
+    <Text when="{!!(ft.value &amp;&amp; !progress() &amp;&amp; ft.value.remakeWhy &amp;&amp; ft.value.remakeWhy.length)}"
+      value="{ft.value &amp;&amp; ft.value.remakeWhy ? 'Remake would differ: ' + ft.value.remakeWhy.join('; ') + '.' : ''}" />
+    <Text when="{!!(ft.value &amp;&amp; !progress() &amp;&amp; ft.value.editChanged)}"
+      value="The edit has changed since the newest final video: remake the video first, so the transcript's times match the edit." />
+
+    <!-- One version: pick it, its samples, its Markdown, Delete. -->
+    <HStack when="{!!shown() &amp;&amp; !comparing}" verticalAlignment="center" wrapContent="true">
+      <Select width="640px" data="{all().map((v) => ({ value: v.n, label: label(v) + (v.n === all()[0].n ? ' (newest)' : '') }))}"
+        initialValue="{shown() ? shown().n : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
+      <Link when="{!!shown()}" to="{shown() ? shown().md : ''}" target="_blank">Download Markdown</Link>
+      <Button when="{confirmDelete === null}" size="sm" variant="ghost" label="Delete this version"
+        enabled="{!progress()}" onClick="confirmDelete = shown().n" />
+      <Text when="{confirmDelete !== null}" value="{'Delete v' + confirmDelete + '?'}" />
+      <Button when="{confirmDelete !== null}" size="sm" variant="outlined" themeColor="attention" label="Delete"
+        onClick="remove(confirmDelete)" />
+      <Button when="{confirmDelete !== null}" size="sm" variant="ghost" label="Keep" onClick="confirmDelete = null" />
+    </HStack>
+    <Text when="{!!shown() &amp;&amp; !comparing}" variant="secondary" value="{samplesLine(shown())}" />
+
+    <!-- Compare: two versions, older first. -->
+    <HStack when="{comparing}" verticalAlignment="center" wrapContent="true">
+      <Select width="560px" data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
+        initialValue="{aVer()}" onDidChange="(v) => cmpA = v" />
+      <Text value="→" />
+      <Select width="560px" data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
+        initialValue="{bVer()}" onDidChange="(v) => cmpB = v" />
+    </HStack>
+    <Text when="{comparing}" variant="secondary" value="{samplesLine(versionOf(aVer()))}" />
+    <Text when="{comparing}" variant="secondary" value="{samplesLine(versionOf(bVer()))}" />
+    <Text when="{comparing &amp;&amp; !!cmp.value}" value="{cmpLine()}" />
+    <Text when="{comparing &amp;&amp; !!cmp.value}" variant="secondary"
+      value="{'Words per speaker: ' + (cmp.value ? cmp.value.totals.map((t) => t.name.split(' ')[0] + ' ' + t.a + ' → ' + t.b).join(' · ') : '')}" />
+
+    <List when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}">
+      <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4">
+        <Text width="70px" variant="secondary" value="{stamp($item.at)}" />
+        <Text width="160px" variant="strong" color="{$item.color || '$textColor-secondary'}"
+          value="{$item.name + ($item.unsure ? ' (?)' : '')}" />
+        <Text width="*" value="{$item.text}" />
+      </HStack>
+    </List>
+    <List when="{comparing}" height="*" data="{cmp.value ? cmp.value.changes : []}">
+      <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4">
+        <Text width="70px" variant="secondary" value="{stamp($item.at)}" />
+        <Text width="240px" variant="strong" value="{$item.from + ' → ' + $item.to}" />
+        <Text width="*" value="{$item.text}" />
+      </HStack>
+    </List>
+  </VStack>
+</Component>

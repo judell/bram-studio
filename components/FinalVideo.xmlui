@@ -1,0 +1,103 @@
+<!-- Final video (Main.xmlui's /final-video, a podcast project's third nav
+     link): the whole edit as one video. Make (or Remake) asks the server for
+     a new version (serve_media.py's POST /podcast/final, make_final): every
+     paragraph with kept words, rendered as its card plays it, joined end to
+     end. Every version is kept (v1, v2..., media/exports/finals/); the
+     picker shows any of them, newest first, and Delete removes one (a video
+     is ~210 MB). The newest is also media/exports/<project>-final.mp4, which
+     the Exports page lists. Progress arrives on /events ({final: source,
+     done, total}). GET /podcast/final says whether the newest is current:
+     false once any paragraph's cuts have changed since. -->
+<Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}"
+  var.pick="{null}" var.confirmDelete="{null}">
+
+  <DataSource id="final" when="{!!source}"
+    url="{'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source)}" />
+
+  <EventSource url="http://127.0.0.1:8765/events"
+    onMessage="(m) => {
+      if (m.final === source) {
+        if (m.finished || m.error) {
+          making = null;
+          pick = null;
+          final.refetch();
+          if (m.error) toast.error('Final video: ' + m.error);
+        } else making = m;
+      }
+      else if (m.finalDeleted === source || m.changed === 'words') final.refetch();
+    }" />
+
+  <script>
+    function stamp(s) {
+      const t = Math.floor(s || 0);
+      const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+      return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+    }
+    function progress() {
+      return making || (final.value ? final.value.making : null);
+    }
+    function all() {
+      return (final.value && final.value.versions) || [];
+    }
+    // The version shown: the one picked, else the newest.
+    function shown() {
+      const vs = all();
+      return vs.find((v) => v.n === pick) || vs[0] || null;
+    }
+    function label(v) {
+      return 'v' + v.n + ' · ' + v.madeAt + ' · ' + stamp(v.secs);
+    }
+    function make() {
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final', method: 'post', invalidates: [], body: { source } });
+        making = { done: 0, total: 0 };
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function remove(n) {
+      confirmDelete = null;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final/delete', method: 'post', invalidates: [],
+                          body: { source, n } });
+        if (pick === n) pick = null;
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function line() {
+      const p = progress(), f = final.value;
+      if (p) return 'Making the final video' + (p.total ? ': paragraph ' + p.done + ' of ' + p.total : '…');
+      if (!f) return '';
+      if (!f.exists) return 'No final video yet.';
+      return all().length + (all().length === 1 ? ' version' : ' versions');
+    }
+  </script>
+
+  <VStack padding="$space-6" gap="$space-4">
+    <Select when="{($props.sources || []).length > 1}" width="420px"
+      data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
+      initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; } }" />
+    <HStack verticalAlignment="center">
+      <Button size="sm" variant="outlined"
+        label="{final.value &amp;&amp; final.value.exists ? 'Remake final video' : 'Make final video'}"
+        enabled="{!!source &amp;&amp; !progress()}" onClick="make()" />
+      <Spinner when="{!!progress()}" />
+      <Text variant="secondary" value="{line()}" />
+    </HStack>
+    <Text when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; !final.value.current &amp;&amp; !progress())}"
+      value="The edit has changed since the newest version was made: Remake to bring it up to date." />
+    <HStack when="{!!shown()}" verticalAlignment="center">
+      <Select width="420px" data="{all().map((v) => ({ value: v.n, label: label(v) + (v.n === all()[0].n ? ' (newest)' : '') }))}"
+        initialValue="{shown() ? shown().n : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
+      <Button when="{confirmDelete === null}" size="sm" variant="ghost" label="Delete this version"
+        enabled="{!progress()}" onClick="confirmDelete = shown().n" />
+      <Text when="{confirmDelete !== null}" value="{'Delete v' + confirmDelete + '?'}" />
+      <Button when="{confirmDelete !== null}" size="sm" variant="outlined" themeColor="attention" label="Delete"
+        onClick="remove(confirmDelete)" />
+      <Button when="{confirmDelete !== null}" size="sm" variant="ghost" label="Keep" onClick="confirmDelete = null" />
+    </HStack>
+    <MediaPlayer when="{!!shown()}" width="100%" maxWidth="1100px"
+      preload="metadata" src="{shown() ? shown().url : undefined}" />
+  </VStack>
+</Component>

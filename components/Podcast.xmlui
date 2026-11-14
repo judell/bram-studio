@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -52,10 +52,6 @@
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); speakerStats.refetch(); paras.refetch(); }
       else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); }
-      else if (m.matching) {
-        if (m.matching === source) matchProgress = m.finished ? null : m;
-        if (m.error) toast.error('Matching voices: ' + m.error);
-      }
       else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
@@ -133,14 +129,6 @@
         toast.error(e.message);
       }
     }
-    function startMatch() {
-      try {
-        post('/speakers/propagate', { source });
-        matchProgress = { done: 0, total: 0 };
-      } catch (e) {
-        toast.error(e.message);
-      }
-    }
     // A sample's speaker by id, for its hover; the row passes its roster in
     // (#3940: no component variables in the list).
     function nameOf(roster, id) {
@@ -157,9 +145,6 @@
       const st = speakerStats.value;
       if (!st || !st.speakers.length) return 'No speakers yet: add them in Settings › Speakers.';
       return 'Samples: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
-    }
-    function readyCount() {
-      return ((speakerStats.value && speakerStats.value.speakers) || []).filter((s) => s.ready).length;
     }
     function playUrl(item) {
       return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
@@ -219,6 +204,14 @@
                         body: { ev: 'clock', why, para: c.para, by: c.by, card: c.t, video: before,
                                 drift: Math.round((before - c.t) * 1000) / 1000, playing: c.playing } });
     }
+    function clipChanged(c) {
+      const prev = c ? c.prevValue : '', now = c ? c.newValue : '';
+      if (!prev || !now || prev.split(':')[0] !== now.split(':')[0]) return;
+      cardSeek = null;
+      paraClock = { para: currentPara, t: 0, playing: false, by: 'rerendered', n: Date.now() };
+      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'clock', why: 'rerendered', para: currentPara, was: prev, now } });
+    }
     function editLine() {
       const d = textDoc.value, c = cutList.value;
       if (!d) return '';
@@ -253,7 +246,7 @@
     }
   </script>
 
-  <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 100px)">
+  <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 150px)">
     <!-- The project's sources can change (another project opened, a source
          added): keep the chosen one if it's still there, else the first. -->
     <ChangeListener listenTo="{$props.sources}"
@@ -281,8 +274,8 @@
          (https://www.xmlui.org/docs/reference/components/Splitter,
          orientation horizontal: side by side). Each side scrolls on its own;
          the page doesn't: it sizes itself to the window (the root VStack's
-         height: the window less Studio's header and the page padding, ~100
-         px), and the splitter takes the height left (height="*" in a parent
+         height: the window less Studio's header, its nav row and the page
+         padding, ~150 px), and the splitter takes the height left (height="*" in a parent
          of fixed height). XMLUI's scrollWholePage is
          App-wide only; binding it to $pathname so only Podcast stopped
          scrolling didn't take (2026-11-13). The tabs hold only their
@@ -325,6 +318,13 @@
             cardSeek = { para: currentPara, t: e.currentTime, n: Date.now() };
           }" />
         <ChangeListener listenTo="{paraClock}" onDidChange="applyClock('clock')" />
+        <!-- The current paragraph re-rendered (Elide, Restore, Undo, an
+             edit: a new version, a redrawn card with a new clip): start over
+             at 0, paused. Carrying the old clip's place over put the video
+             past the new clip's end, and the first play stopped at once
+             (log, paragraph 53, 2026-11-14 09:22). -->
+        <ChangeListener listenTo="{followItem() ? followItem().para + ':' + followItem().v : ''}"
+          onDidChange="(c) => clipChanged(c)" />
         <MediaPlayer id="speakerPlayer" when="{!followItem()}" width="100%"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
@@ -343,9 +343,9 @@
              including one you're typing in. The list is virtualized, which
              is why a box saves when you leave it rather than on a button:
              a paragraph scrolled away is unmounted. -->
-        <Tabs keepMounted="true" onDidChange="(index, id, label) => view = label">
-          <TabItem label="Edit text">
-            <VStack gap="$space-2">
+        <!-- Which view, from the page (Main.xmlui's nav): Workspace is
+             Edit text, Raw transcript is Transcript. -->
+            <VStack when="{view === 'Edit text'}" gap="$space-2">
               <VStack gap="$space-2">
                 <HStack verticalAlignment="center">
                   <Button size="sm" variant="outlined" label="Undo"
@@ -375,17 +375,8 @@
                 <Switch label="Samples" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
                 <VStack when="{tagMode}" gap="$space-2">
                   <HStack verticalAlignment="center" wrapContent="true">
-                    <!-- Match voices (voiceprint.py) is hidden for now
-                         (2026-11-13): slower and more than tagging needs
-                         yet. Remove when="{false}" here and on its
-                         progress to bring it back. -->
-                    <Button when="{false}" size="sm" variant="outlined" label="Match voices"
-                      enabled="{readyCount() > 0 &amp;&amp; !matchProgress}"
-                      tooltip="Give every word you haven't tagged to the speaker whose voice it matches"
-                      onClick="startMatch()" />
-                    <Spinner when="{false &amp;&amp; !!matchProgress}" />
-                    <Text variant="secondary" when="{false &amp;&amp; !!matchProgress}"
-                      value="{'Matching voices' + (matchProgress &amp;&amp; matchProgress.total ? ': ' + Math.round(100 * matchProgress.done / matchProgress.total) + '%' : '…')}" />
+                    <!-- Matching voices (voiceprint.py) is part of Make
+                         final transcript (components/FinalTranscript.xmlui). -->
                     <Text variant="secondary" value="{taggedLine()}" />
                   </HStack>
                   <Text variant="secondary"
@@ -396,11 +387,8 @@
                            textDoc.value.redoLabel ? 'Redo would ' + textDoc.value.redoLabel : ''].filter((x) => x).join(' · ')}" />
               </VStack>
             </VStack>
-          </TabItem>
-          <TabItem label="Transcript">
-            <Text variant="secondary" value="whisper's segments, with their times: click a time to play from there." />
-          </TabItem>
-        </Tabs>
+        <Text when="{view === 'Transcript'}" variant="secondary"
+          value="whisper's segments, with their times: click a time to play from there." />
         <!-- The cuts, each with Restore: here under the
              controls so the first of them are in view (they were at the
              foot of the paragraph list). After the Tabs, not inside the

@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="vertical-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
+<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
   <!-- A header band over the main area and no nav: the open project decides
        what's on screen. Its genre (project.json's genre, served by /projects)
        picks the editor at /; everything else is behind the header's settings
@@ -544,10 +544,21 @@
         onClick="newProjectDialog.open()" />
       <!-- Settings, and back: away from the editor the same icon returns to it. -->
       <Button icon="cog" variant="ghost" size="sm"
-        tooltip="{$pathname === '/' ? 'Settings' : 'Back to the project'}"
-        onClick="navigate($pathname === '/' ? '/settings' : '/')" />
+        tooltip="{['/', '/raw', '/final-video', '/final-transcript'].includes($pathname) ? 'Settings' : 'Back to the project'}"
+        onClick="navigate(['/', '/raw', '/final-video', '/final-transcript'].includes($pathname) ? '/settings' : '/')" />
     </HStack>
   </AppHeader>
+  <!-- A podcast's steps, as a row under the header (layout
+       horizontal-sticky): the Workspace (the editor), whisper's raw
+       transcript, and what the edit makes, the final video and the final
+       transcript (components/FinalVideo.xmlui, FinalTranscript.xmlui). A
+       screencast project has no such steps, so no nav. -->
+  <NavPanel when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}">
+    <NavLink label="Workspace" to="/" />
+    <NavLink label="Raw transcript" to="/raw" />
+    <NavLink label="Final video" to="/final-video" />
+    <NavLink label="Final transcript" to="/final-transcript" />
+  </NavPanel>
   <Pages fallbackPath="/">
     <!-- Projects: a screencast each, a folder under projects/ (studio_paths.py).
          Open switches Studio to one; Create makes an empty one and opens it.
@@ -1081,6 +1092,23 @@
          leveled (what Export makes, and anything an editor saved there);
          Leveled exports is what Level wrote. The Takes page's Export button
          comes here, so the new file's "writing…" row is seen. -->
+    <!-- A podcast project's other three steps (the nav above); for any
+         other project they lead back to its editor. -->
+    <Page url="/raw">
+      <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}" view="Transcript"
+        sources="{projects.value ? (projects.value.sources || []) : []}" />
+      <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
+    </Page>
+    <Page url="/final-video">
+      <FinalVideo when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
+        sources="{projects.value ? (projects.value.sources || []) : []}" />
+      <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
+    </Page>
+    <Page url="/final-transcript">
+      <FinalTranscript when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
+        sources="{projects.value ? (projects.value.sources || []) : []}" />
+      <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
+    </Page>
     <Page url="/exports">
       <!-- One Theme around the lists, not one per row: small spinners
            (https://www.xmlui.org/docs/howto/scope-theme-outside-loops). A

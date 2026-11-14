@@ -2662,19 +2662,36 @@ def para_marks(db, source, para, duration):
     return marks
 
 
+def audio_versions(db, source):
+    # Each paragraph's sound version: a hash of which of its words are kept,
+    # all its render depends on besides the settings in its file name. Not
+    # paragraphs()' version, which also covers corrections and speakers, so
+    # that tagging or matching voices neither re-renders a paragraph nor makes
+    # the final video look out of date. {para: version}, paragraphs with any
+    # word kept only.
+    h, kept = {}, set()
+    for para, wid, k in db.execute("SELECT para, id, kept FROM words WHERE source = ? ORDER BY i", (source,)):
+        h.setdefault(para, hashlib.sha1()).update(f"{wid}:{k};".encode())
+        if k:
+            kept.add(para)
+    return {p: x.hexdigest()[:10] for p, x in h.items() if p in kept}
+
+
 def para_audio(db, source, para, duration):
     # A paragraph as edited, rendered from the source movie's own soundtrack:
     # its stretch of the source (from the cut edge before its first word to
     # the one after its last, aligned like any cut edge) less the cuts in it,
     # 10 ms fades at each join. The video is cut from the same pieces (hard
     # cuts, no fades), so one .mp4 is both the card's audio and the left
-    # pane's video, on one timeline. Named by the paragraph's version, so it
-    # is rendered once per edit; older renders of it are removed. Returns the
+    # pane's video, on one timeline. Named by the paragraph's sound version
+    # (audio_versions), so it is rendered once per change to its cuts; older renders of it are removed. Returns the
     # file name, or None when every word is cut.
     mine = [w[0] for w in db.execute("SELECT i FROM words WHERE source = ? AND para = ? ORDER BY i", (source, para))]
     if not mine:
         return None
-    version = next(p["v"] for p in paragraphs(db, source) if p["para"] == para)
+    version = audio_versions(db, source).get(para)
+    if version is None:
+        return None
     conf = podcast_settings()
     fade = conf["fadeMs"] / 1000
     stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
@@ -2708,6 +2725,366 @@ def para_audio(db, source, para, duration):
     print(f"para audio source={source} para={para} pieces={len(pieces)} video=1 "
           f"secs={sum(b - a for a, b in pieces):.1f} render={time.time() - t_start:.2f}", flush=True)
     return name
+
+
+finals = {}  # source -> {"done", "total"} while its final video is made (make_final)
+FINAL_LOCK = threading.Lock()
+
+
+def final_name(source):
+    # The final video's name in media/exports/, without extension: the
+    # project's folder name, and the source's when it differs (a project with
+    # several sources has a final per source).
+    slug = re.sub(r"[^\w.-]+", "_", os.path.basename(os.path.normpath(studio_paths.PROJECT)))
+    stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
+    return (slug if stem == slug else f"{slug}-{stem}") + "-final"
+
+
+# Every final video and final transcript made is kept, numbered v1, v2...,
+# in media/exports/finals/: <name>-v<N>.mp4 and .json (the video's clips),
+# <name>-transcript-v<N>.md and .json (a snapshot of every kept word's
+# speaker and time, the turns, the samples then, the video version it is
+# timed by). A snapshot, because the stored voice matches change with every
+# Remake: it is what two transcripts are compared by (compare_transcripts).
+# The newest video is also linked as media/exports/<name>.mp4, the one the
+# Exports page lists.
+def finals_dir():
+    return os.path.join(ROOT, "exports", "finals")
+
+
+def final_url(rel):
+    return f"http://127.0.0.1:{PORT}/exports/finals/{urllib.parse.quote(rel)}"
+
+
+def versions(source, kind):
+    # [(n, info)] newest first; kind "video" or "transcript".
+    base = final_name(source) + ("-transcript" if kind == "transcript" else "")
+    pat = re.compile(re.escape(base) + r"-v(\d+)\.json$")
+    out = []
+    for name in os.listdir(finals_dir()) if os.path.isdir(finals_dir()) else []:
+        m = pat.match(name)
+        if m:
+            try:
+                out.append((int(m.group(1)), json.load(open(os.path.join(finals_dir(), name)))))
+            except (OSError, ValueError):
+                pass
+    return sorted(out, key=lambda v: -v[0])
+
+
+def next_version(source, kind):
+    vs = versions(source, kind)
+    return (vs[0][0] if vs else 0) + 1
+
+
+def kept_paras(db, source):
+    # The paragraphs with kept words, in order: what the final video is made of.
+    return [r[0] for r in db.execute("SELECT para FROM words WHERE source = ? GROUP BY para "
+                                     "HAVING sum(kept) > 0 ORDER BY min(i)", (source,))]
+
+
+def link_latest_video(source):
+    # media/exports/<name>.mp4 is the newest video version (a hard link: no
+    # second copy), or nothing once every version is deleted.
+    base = final_name(source)
+    top = os.path.join(ROOT, "exports", base + ".mp4")
+    vs = versions(source, "video")
+    try:
+        os.remove(top)
+    except OSError:
+        pass
+    forget_studio_file(base + ".mp4")
+    if vs:
+        src = os.path.join(finals_dir(), f"{base}-v{vs[0][0]}.mp4")
+        tmp = os.path.join(ROOT, "exports", f".{base}.link.mp4")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        os.link(src, tmp)
+        record_studio_file(base + ".mp4", tmp, "export")
+        os.replace(tmp, top)
+
+
+def adopt_unversioned(db, source):
+    # Finals made before there were versions (2026-11-14, a few minutes'
+    # worth): media/exports/<name>.json and .mp4 become video v1, and
+    # <name>-transcript.md becomes transcript v1, its snapshot taken from the
+    # matches stored now (still that run's: only a Remake changes them).
+    base = final_name(source)
+    old_json = os.path.join(ROOT, "exports", base + ".json")
+    if not os.path.isfile(old_json) or versions(source, "video"):
+        return
+    os.makedirs(finals_dir(), exist_ok=True)
+    info = json.load(open(old_json))
+    info["n"] = 1
+    os.link(os.path.join(ROOT, "exports", base + ".mp4"), os.path.join(finals_dir(), f"{base}-v1.mp4"))
+    with open(os.path.join(finals_dir(), f"{base}-v1.json"), "w") as f:
+        json.dump(info, f)
+    os.remove(old_json)
+    old_md = os.path.join(ROOT, "exports", base + "-transcript.md")
+    had_md = os.path.isfile(old_md)
+    if had_md:
+        made = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(old_md)))
+        save_transcript_version(db, source, made_at=made)
+        os.remove(old_md)
+    print(f"final adopted source={source} video=v1 transcript={'v1' if had_md else '-'}",
+          flush=True)
+
+
+def make_final(source):
+    # The background half of POST /podcast/final: every paragraph with kept
+    # words rendered as the cards play it (para_audio, cached ones reused),
+    # joined end to end with a stream copy (the clips share one encoding)
+    # into the next video version. Its .json: each clip's paragraph, sound
+    # version and start in the video, which says whether the edit has
+    # changed since (final_state) and times the transcript's words. Stream
+    # copy, not one pass over the source with every cut: the joins are the
+    # cards' own, and 156 cached clips join in seconds (2026-11-13: 39:28,
+    # 1.15 s over text_cuts' keptSecs).
+    t_start = time.time()
+    try:
+        db = sqlite3.connect(DB)
+        duration = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()[0] or 0
+        order = kept_paras(db, source)
+        stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
+        clips = []
+        for n, para in enumerate(order):
+            with TEXT_LOCK:
+                name = para_audio(db, source, para, duration)
+            if name:
+                version = name[len(f"{stem}-p{para}-"):].split("-")[0]
+                path = os.path.join(PARA_AUDIO, name)
+                secs = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                             "-of", "csv=p=0", path], capture_output=True, text=True,
+                                            check=True).stdout)
+                clips.append({"para": para, "v": version, "path": path, "secs": secs})
+            finals[source] = {"done": n + 1, "total": len(order)}
+            push({"final": source, **finals[source]})
+        t_render = time.time()
+        os.makedirs(finals_dir(), exist_ok=True)
+        base = final_name(source)
+        num = next_version(source, "video")
+        part = os.path.join(finals_dir(), f".{base}-v{num}.part.mp4")
+        lst = os.path.join(finals_dir(), f".{base}.list.txt")
+        with open(lst, "w") as f:
+            for c in clips:
+                f.write("file '" + c["path"].replace("'", "'\\''") + "'\n")
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+                            "-c", "copy", "-movflags", "+faststart", part], capture_output=True, text=True)
+        os.remove(lst)
+        if r.returncode:
+            raise RuntimeError("join: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+        at = 0.0
+        for c in clips:
+            c["at"] = round(at, 3)
+            at += c["secs"]
+            del c["path"]
+        os.replace(part, os.path.join(finals_dir(), f"{base}-v{num}.mp4"))
+        with open(os.path.join(finals_dir(), f".{base}-v{num}.json.tmp"), "w") as f:
+            json.dump({"n": num, "source": source, "madeAt": datetime_now(), "secs": round(at, 3),
+                       "clips": clips}, f)
+        os.replace(os.path.join(finals_dir(), f".{base}-v{num}.json.tmp"),
+                   os.path.join(finals_dir(), f"{base}-v{num}.json"))
+        link_latest_video(source)
+        print(f"final video source={source} v={num} paras={len(clips)} secs={at:.1f} "
+              f"render={t_render - t_start:.1f} join={time.time() - t_render:.1f}", flush=True)
+        push({"final": source, "finished": True, "n": num})
+    except Exception as e:
+        print(f"final video failed source={source} error={e}", flush=True)
+        push({"final": source, "error": str(e)})
+    finally:
+        with FINAL_LOCK:
+            finals.pop(source, None)
+        notify("exports")
+
+
+def is_current(now, info):
+    # A video version is current while every kept paragraph's sound version
+    # is the one it was made from.
+    return now == {c["para"]: c["v"] for c in info["clips"]}
+
+
+def final_state(db, source):
+    # GET /podcast/final: the video versions, newest first, each with its
+    # address, length, when, and (the newest) whether it's current. The
+    # newest's fields also at the top level.
+    adopt_unversioned(db, source)
+    base = final_name(source)
+    now = audio_versions(db, source)
+    vs = []
+    for n, info in versions(source, "video"):
+        if os.path.isfile(os.path.join(finals_dir(), f"{base}-v{n}.mp4")):
+            vs.append({"n": n, "url": final_url(f"{base}-v{n}.mp4"), "secs": info["secs"],
+                       "madeAt": info["madeAt"], "current": is_current(now, info)})
+    out = {"making": finals.get(source), "versions": vs, "exists": bool(vs)}
+    if vs:
+        out.update({k: vs[0][k] for k in ("n", "url", "secs", "madeAt", "current")})
+    return out
+
+
+def video_info(source, n):
+    for m, info in versions(source, "video"):
+        if m == n:
+            return info
+    return None
+
+
+def final_words(db, source, info):
+    # The kept words of the paragraphs in a video version, each with its
+    # speaker as stored (your samples, then voiceprint matches) and its time
+    # in that video (its clip's start plus its place in the clip,
+    # para_marks): [[id, text, speaker, how, unsure, at]].
+    duration = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()[0] or 0
+    out = []
+    for clip in info["clips"]:
+        rows = db.execute("SELECT id, coalesce(shown, text), speaker_id, speaker_how, speaker_unsure FROM words "
+                          "WHERE source = ? AND para = ? AND kept = 1 ORDER BY i", (source, clip["para"])).fetchall()
+        marks = para_marks(db, source, clip["para"], duration)
+        for (wid, w, spk, how, unsure), (_, t) in zip(rows, marks):
+            out.append([wid, w, spk, how, 1 if (how != "tag" and (unsure or spk is None)) else 0,
+                        round(clip["at"] + t, 2)])
+    return out
+
+
+def turns_of(words, names, colors):
+    # Consecutive words with one speaker make a turn; a turn is unsure when
+    # most of its words' matches were.
+    turns = []
+    for wid, w, spk, how, unsure, at in words:
+        if not turns or turns[-1]["speaker"] != spk:
+            turns.append({"speaker": spk, "name": names.get(str(spk), "Unknown"), "color": colors.get(str(spk)),
+                          "at": at, "words": [], "u": 0})
+        turns[-1]["words"].append(w)
+        turns[-1]["u"] += unsure
+    return [{"speaker": t["speaker"], "name": t["name"], "color": t["color"], "at": t["at"],
+             "text": " ".join(t["words"]), "unsure": t["u"] * 2 > len(t["words"])} for t in turns]
+
+
+def clock(s):
+    s = int(s)
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def samples_now(db, source):
+    # Each speaker's seconds of samples, {speaker id: secs}: what a
+    # transcript version records, and what says a Remake would differ.
+    return {str(spk): round(secs, 1) for spk, secs in db.execute(
+        "SELECT speaker_id, sum(t1 - t0) FROM words WHERE source = ? AND speaker_how = 'tag' "
+        "GROUP BY speaker_id", (source,))}
+
+
+def save_transcript_version(db, source, made_at=None):
+    # The next transcript version: a snapshot of the words' speakers and
+    # times in the newest video version, its turns, and its Markdown.
+    # Returns its number, or None with no video.
+    vs = versions(source, "video")
+    if not vs:
+        return None
+    vnum, info = vs[0]
+    names = {str(i): n for i, n in db.execute("SELECT id, name FROM speakers")}
+    colors = {str(i): c for i, c in db.execute("SELECT id, color FROM speakers")}
+    samples = samples_now(db, source)
+    words = final_words(db, source, info)
+    turns = turns_of(words, names, colors)
+    num = next_version(source, "transcript")
+    base = final_name(source) + "-transcript"
+    snap = {"n": num, "source": source, "madeAt": made_at or datetime_now(), "video": vnum,
+            "videoSecs": info["secs"], "names": names, "colors": colors, "samples": samples,
+            "words": words, "turns": turns}
+    lines = [f"# {os.path.splitext(source)[0]}: final transcript v{num}", "",
+             f"Times are in final video v{vnum} ({clock(info['secs'])}, made {info['madeAt']}). "
+             "A turn marked (?) is one where the voice match was unsure for most of its words.", "",
+             "Samples: " + ", ".join(f"{names.get(k, k)} {v:g} s" for k, v in samples.items()), ""]
+    for tr in turns:
+        lines += [f"**{tr['name']}**{' (?)' if tr['unsure'] else ''} [{clock(tr['at'])}]", "", tr["text"], ""]
+    os.makedirs(finals_dir(), exist_ok=True)
+    for ext, body in ((".md", "\n".join(lines)), (".json", json.dumps(snap))):
+        path = os.path.join(finals_dir(), f"{base}-v{num}{ext}")
+        with open(path + ".tmp", "w") as f:
+            f.write(body)
+        os.replace(path + ".tmp", path)
+    return num
+
+
+def transcript_summary(source, snap, latest_video):
+    base = final_name(source)
+    names = snap["names"]
+    video = os.path.join(finals_dir(), f"{base}-v{snap['video']}.mp4")
+    return {"n": snap["n"], "madeAt": snap["madeAt"], "video": snap["video"],
+            "videoUrl": final_url(f"{base}-v{snap['video']}.mp4") if os.path.isfile(video) else None,
+            "turns": len(snap["turns"]), "unsure": sum(1 for t in snap["turns"] if t["unsure"]),
+            "samples": [{"name": names.get(k, k), "secs": v} for k, v in snap["samples"].items()],
+            "md": final_url(f"{base}-transcript-v{snap['n']}.md"),
+            "timedByLatest": latest_video is not None and snap["video"] == latest_video}
+
+
+def compare_transcripts(a, b):
+    # What changed from version a to version b, by word id (both snapshots
+    # hold every kept word): stretches whose speaker changed, in b's order,
+    # each with its time in b's video; words per speaker in each; and words
+    # in only one of them (the edit changed in between), counted.
+    sa = {w[0]: w for w in a["words"]}
+    names = {**a["names"], **b["names"]}
+    name = lambda s: names.get(str(s), "Unknown") if s is not None else "Unknown"
+    changes, run = [], None
+    for k, (wid, w, spk, how, unsure, at) in enumerate(b["words"]):
+        old = sa.get(wid)
+        if old is not None and old[2] != spk:
+            if run and run["_last"] == k - 1 and run["fromId"] == old[2] and run["toId"] == spk:
+                run["words"].append(w)
+            else:
+                run = {"at": at, "fromId": old[2], "toId": spk, "from": name(old[2]), "to": name(spk),
+                       "words": [w], "unsure": unsure}
+                changes.append(run)
+            run["_last"] = k
+        else:
+            run = None
+    count = lambda snap: collections.Counter(name(w[2]) for w in snap["words"])
+    ca, cb = count(a), count(b)
+    totals = [{"name": n, "a": ca.get(n, 0), "b": cb.get(n, 0)} for n in sorted(set(ca) | set(cb))]
+    ids_a, ids_b = set(sa), {w[0] for w in b["words"]}
+    return {"changes": [{"at": c["at"], "from": c["from"], "to": c["to"], "text": " ".join(c["words"]),
+                         "words": len(c["words"])} for c in changes],
+            "changedWords": sum(len(c["words"]) for c in changes), "totals": totals,
+            "onlyA": len(ids_a - ids_b), "onlyB": len(ids_b - ids_a)}
+
+
+def make_final_transcript(source):
+    # The background half of POST /podcast/final-transcript: match voices
+    # (match_speakers, as Match voices did: your samples stay, the other
+    # words get the speaker whose voice they match), then a new version.
+    t_start = time.time()
+    match_speakers(source)
+    try:
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            num = save_transcript_version(db, source)
+        snap = dict(versions(source, "transcript")).get(num) if num else None
+        print(f"final transcript source={source} v={num} turns={len(snap['turns']) if snap else 0} "
+              f"unsure={sum(1 for t in snap['turns'] if t['unsure']) if snap else 0} "
+              f"secs={time.time() - t_start:.1f}", flush=True)
+        push({"finalTranscript": source, "finished": True, "n": num})
+    except Exception as e:
+        print(f"final transcript failed source={source} error={e}", flush=True)
+        push({"finalTranscript": source, "error": str(e)})
+
+
+def delete_final(source, kind, n):
+    # One version, its files; a deleted video's transcripts keep their text
+    # but lose their player. Returns whether it existed.
+    base = final_name(source) + ("-transcript" if kind == "transcript" else "")
+    exts = (".md", ".json") if kind == "transcript" else (".mp4", ".json")
+    found = False
+    for ext in exts:
+        try:
+            os.remove(os.path.join(finals_dir(), f"{base}-v{n}{ext}"))
+            found = True
+        except OSError:
+            pass
+    if kind == "video":
+        link_latest_video(source)
+    print(f"final deleted source={source} kind={kind} v={n} found={found}", flush=True)
+    return found
 
 
 CHECK_WINDOW = 1.5  # seconds of the edit either side of a join where a mismatch counts against it
@@ -2995,6 +3372,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.play_para()
         if self.path.startswith("/transcripts/marks"):
             return self.para_marks_route()
+        if self.path.startswith("/podcast/final-transcript"):
+            return self.final_transcript_route()
+        if self.path.startswith("/podcast/final"):
+            return self.final_route()
         super().do_GET()
 
     def stream_events(self):
@@ -3154,6 +3535,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.tag_words()
         if self.path == "/speakers/propagate":
             return self.start_matching()
+        if self.path == "/podcast/final":
+            return self.start_final()
+        if self.path == "/podcast/final-transcript":
+            return self.start_final_transcript()
+        if self.path in ("/podcast/final/delete", "/podcast/final-transcript/delete"):
+            return self.delete_final_route()
         self.send_json(404, {"error": "not found"})
 
     def query_source(self):
@@ -3314,6 +3701,118 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         threading.Thread(target=match_speakers, args=(source,), daemon=True).start()
         push({"matching": source, "done": 0, "total": 0})
         self.send_json(200, {"source": source, "matching": True})
+
+    def start_final(self):
+        # {source}: the final video in the background (make_final), one per
+        # source at a time; progress on /events as {"final": source, done, total}.
+        source = self.json_body().get("source") or ""
+        db = sqlite3.connect(DB)
+        if not db.execute("SELECT 1 FROM words WHERE source = ? AND kept = 1 LIMIT 1", (source,)).fetchone():
+            return self.send_json(404, {"error": f"nothing kept in {source!r}"})
+        with FINAL_LOCK:
+            if source in finals:
+                return self.send_json(409, {"error": "the final video is already being made"})
+            finals[source] = {"done": 0, "total": 0}
+        threading.Thread(target=make_final, args=(source,), daemon=True).start()
+        push({"final": source, "done": 0, "total": 0})
+        self.send_json(200, {"source": source, "making": True})
+
+    def final_route(self):
+        # GET /podcast/final?source=: final_state, less the clip list.
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            state = final_state(db, source)
+        self.send_json(200, state)
+
+    def final_transcript_route(self):
+        # GET /podcast/final-transcript?source=&n=: the transcript versions
+        # (newest first) and one of them (n, else the newest) with its turns.
+        # needVideo when there's no final video to time it by.
+        # GET /podcast/final-transcript/compare?source=&a=&b=: what changed
+        # from version a to b (compare_transcripts).
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            state = final_state(db, source)
+        snaps = dict(versions(source, "transcript"))
+        if self.path.startswith("/podcast/final-transcript/compare"):
+            try:
+                a, b = int(query.get("a", [""])[0]), int(query.get("b", [""])[0])
+            except ValueError:
+                return self.send_json(400, {"error": "expected a and b"})
+            if a not in snaps or b not in snaps:
+                return self.send_json(404, {"error": "no such version"})
+            base = final_name(source)
+            video = os.path.join(finals_dir(), f"{base}-v{snaps[b]['video']}.mp4")
+            return self.send_json(200, {**compare_transcripts(snaps[a], snaps[b]), "a": a, "b": b,
+                                        "videoUrl": final_url(f"{base}-v{snaps[b]['video']}.mp4")
+                                        if os.path.isfile(video) else None})
+        latest = state["n"] if state["exists"] else None
+        listed = [transcript_summary(source, snaps[n], latest) for n in sorted(snaps, reverse=True)]
+        try:
+            pick = int(query.get("n", [""])[0])
+        except ValueError:
+            pick = listed[0]["n"] if listed else None
+        chosen = next((v for v in listed if v["n"] == pick), listed[0] if listed else None)
+        # Would a Remake differ from the newest version? Not if it was made
+        # from the newest video with the samples there are now.
+        stale = []
+        if snaps:
+            newest = snaps[max(snaps)]
+            if state["exists"] and newest["video"] != state["n"]:
+                stale.append(f"the final video is newer (v{state['n']}) than the one this transcript is timed by "
+                             f"(v{newest['video']})")
+            if newest["samples"] != samples_now(db, source):
+                stale.append("samples have changed since it was made")
+        self.send_json(200, {"needVideo": not state["exists"], "versions": listed, "version": chosen,
+                             "remakeWhy": stale, "upToDate": bool(snaps) and not stale,
+                             "editChanged": bool(state["exists"] and not state["current"]),
+                             "turns": snaps[chosen["n"]]["turns"] if chosen else [],
+                             "videoCurrent": bool(state["exists"] and state["current"]),
+                             "matching": matching.get(source)})
+
+    def delete_final_route(self):
+        # POST /podcast/final/delete or /podcast/final-transcript/delete
+        # {source, n}: one version (delete_final).
+        body = self.json_body()
+        source, kind = body.get("source") or "", "transcript" if "transcript" in self.path else "video"
+        try:
+            n = int(body.get("n"))
+        except (TypeError, ValueError):
+            return self.send_json(400, {"error": "expected n"})
+        if kind == "video" and source in finals:
+            return self.send_json(409, {"error": "a final video is being made"})
+        if not delete_final(source, kind, n):
+            return self.send_json(404, {"error": f"no {kind} v{n}"})
+        notify("exports")
+        push({"finalDeleted": source, "kind": kind, "n": n})
+        self.send_json(200, {"deleted": n, "kind": kind})
+
+    def start_final_transcript(self):
+        # {source}: match voices, then the final transcript's Markdown
+        # (make_final_transcript), in the background. Needs a final video
+        # (its times) and the speaker model; one match at a time, as before.
+        source = self.json_body().get("source") or ""
+        db = sqlite3.connect(DB)
+        if not versions(source, "video"):
+            return self.send_json(409, {"error": "make the final video first: the transcript is timed by it"})
+        if not (os.path.isfile(SPEECH_PYTHON) and os.path.isfile(SPEAKER_MODEL)):
+            return self.send_json(409, {"error": f"the speaker model isn't installed ({SPEAKER_MODEL})"})
+        if not db.execute("SELECT 1 FROM words WHERE source = ? AND speaker_how = 'tag' LIMIT 1", (source,)).fetchone():
+            return self.send_json(409, {"error": "no samples yet: mark some of each speaker's voice in the Workspace"})
+        with TRANSCRIBE_LOCK:
+            if matching:
+                return self.send_json(409, {"error": "voices are already being matched"})
+            matching[source] = {"done": 0, "total": 0}
+        threading.Thread(target=make_final_transcript, args=(source,), daemon=True).start()
+        push({"matching": source, "done": 0, "total": 0})
+        self.send_json(200, {"source": source, "making": True})
 
     def start_check(self):
         # {source, t0, t1}: the round-trip check (check_text) over that
