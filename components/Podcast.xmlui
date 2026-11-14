@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}">
+  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}" var.paraClock="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
@@ -164,6 +164,25 @@
       return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
         + '&para=' + item.para + '&v=' + item.v;
     }
+    // The paragraph the left pane's video follows: the current one, on Edit
+    // text, if any of it is kept.
+    function followItem() {
+      if (view !== 'Edit text' || currentPara === null || !paras.value) return null;
+      const p = paras.value.find((x) => x.para === currentPara);
+      return p && p.kept > 0 ? p : null;
+    }
+    // Put the video where the card's player is (paraClock), playing or not.
+    // Logs the video's time before the move: how far it had drifted.
+    function applyClock(why) {
+      const c = paraClock;
+      if (!c || c.para !== currentPara || !followItem()) return;
+      const before = paraVideo.getCurrentTime();
+      paraVideo.seek(c.t);
+      if (c.playing) paraVideo.play(); else paraVideo.pause();
+      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'clock', why, para: c.para, by: c.by, card: c.t, video: before,
+                                drift: Math.round((before - c.t) * 1000) / 1000, playing: c.playing } });
+    }
     function editLine() {
       const d = textDoc.value, c = cutList.value;
       if (!d) return '';
@@ -247,7 +266,19 @@
                 ? 'Transcribed ' + transcript.value[0].finished_at + ' with ' + transcript.value[0].model
                 : 'Transcript ' + transcript.value[0].status)
             : ''}" />
-        <MediaPlayer id="speakerPlayer" width="100%"
+        <!-- On Edit text, the left pane shows the current paragraph as
+             edited: the same .mp4 its card plays as audio
+             (/transcripts/play), muted, following the card's player. The
+             card's play, pause and seek set paraClock, applied here
+             (applyClock), and again once a newly chosen paragraph's video
+             has loaded. Rows don't call paraVideo themselves: a List row
+             reaching a component's player has been unreliable
+             (xmlui-org/xmlui#3940). Elsewhere, the original recording. -->
+        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="true" controls="false"
+          preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
+          onLoadedMetadata="applyClock('loaded')" />
+        <ChangeListener listenTo="{paraClock}" onDidChange="applyClock('clock')" />
+        <MediaPlayer id="speakerPlayer" when="{!followItem()}" width="100%"
           src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
         <!-- Edit text: the podcast edited as its text, a paragraph at a
@@ -433,14 +464,19 @@
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
               " />
+            <!-- Its play, pause and seek set paraClock, which the left
+                 pane's video follows. -->
             <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
-              onPlay="
+              onPause="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: false, by: 'pause', n: Date.now() }"
+              onSeeked="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: !paraPlayer.paused, by: 'seek', n: Date.now() }"
+              onPlay="(e) => {
+                paraClock = { para: $item.para, t: e.currentTime, playing: true, by: 'play', n: Date.now() };
                 if (currentPara !== $item.para) {
                   currentPara = $item.para;
                   Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                                     body: { ev: 'current', para: $item.para, by: 'play', readBack: currentPara } });
                 }
-              " />
+              }" />
             <HStack verticalAlignment="center" gap="$space-2">
               <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
               <Text variant="secondary" when="{$item.ticsCut > 0}"

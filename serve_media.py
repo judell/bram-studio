@@ -2602,8 +2602,10 @@ def para_audio(db, source, para, duration):
     # A paragraph as edited, rendered from the source movie's own soundtrack:
     # its stretch of the source (from the cut edge before its first word to
     # the one after its last, aligned like any cut edge) less the cuts in it,
-    # 10 ms fades at each join. Named by the paragraph's version, so it is
-    # rendered once per edit; older renders of it are removed. Returns the
+    # 10 ms fades at each join. The video is cut from the same pieces (hard
+    # cuts, no fades), so one .mp4 is both the card's audio and the left
+    # pane's video, on one timeline. Named by the paragraph's version, so it
+    # is rendered once per edit; older renders of it are removed. Returns the
     # file name, or None when every word is cut.
     mine = [w[0] for w in db.execute("SELECT i FROM words WHERE source = ? AND para = ? ORDER BY i", (source, para))]
     if not mine:
@@ -2614,29 +2616,32 @@ def para_audio(db, source, para, duration):
     stem = re.sub(r"[^\w.-]+", "_", os.path.splitext(source)[0])
     # The settings that shape the render are in its name, so changing one
     # renders anew.
-    name = f"{stem}-p{para}-{version}-a{conf['pauseMs']}-f{conf['fadeMs']}.m4a"
+    name = f"{stem}-p{para}-{version}-a{conf['pauseMs']}-f{conf['fadeMs']}.mp4"
     path = os.path.join(PARA_AUDIO, name)
     if os.path.isfile(path):
         return name
     start, end, pieces = para_pieces(db, source, mine, duration)
     if not pieces:
         return None
-    graph = ";".join(f"[0:a]atrim={a - start:.3f}:{b - start:.3f},asetpts=PTS-STARTPTS"
+    graph = ";".join(f"[0:v]trim={a - start:.3f}:{b - start:.3f},setpts=PTS-STARTPTS[v{n}];"
+                     + f"[0:a]atrim={a - start:.3f}:{b - start:.3f},asetpts=PTS-STARTPTS"
                      + (f",afade=t=in:d={fade},afade=t=out:st={max(b - a - fade, 0):.3f}:d={fade}" if fade else "")
                      + f"[p{n}]" for n, (a, b) in enumerate(pieces))
-    graph += ";" + "".join(f"[p{n}]" for n in range(len(pieces))) + f"concat=n={len(pieces)}:v=0:a=1[out]"
+    graph += ";" + "".join(f"[v{n}][p{n}]" for n in range(len(pieces))) + f"concat=n={len(pieces)}:v=1:a=1[vout][out]"
     os.makedirs(PARA_AUDIO, exist_ok=True)
     t_start = time.time()
     r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
-                        "-i", source_paths()[source], "-filter_complex", graph, "-map", "[out]",
-                        "-c:a", "aac", "-b:a", "192k", path + ".tmp.m4a"], capture_output=True, text=True)
+                        "-i", source_paths()[source], "-filter_complex", graph, "-map", "[vout]", "-map", "[out]",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", path + ".tmp.mp4"],
+                       capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("render: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
-    os.replace(path + ".tmp.m4a", path)
+    os.replace(path + ".tmp.mp4", path)
     for old in os.listdir(PARA_AUDIO):
         if old.startswith(f"{stem}-p{para}-") and old != name:
             os.remove(os.path.join(PARA_AUDIO, old))
-    print(f"para audio source={source} para={para} pieces={len(pieces)} "
+    print(f"para audio source={source} para={para} pieces={len(pieces)} video=1 "
           f"secs={sum(b - a for a, b in pieces):.1f} render={time.time() - t_start:.2f}", flush=True)
     return name
 
