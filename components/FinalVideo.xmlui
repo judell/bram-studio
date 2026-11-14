@@ -133,7 +133,11 @@
         onClick="remove(confirmDelete)" />
       <Button when="{confirmDelete !== null}" size="sm" variant="ghost" label="Keep" onClick="confirmDelete = null" />
     </HStack>
-    <MediaPlayer when="{!!shown()}" width="100%" maxWidth="1100px"
+    <!-- Sized to the window: as wide as the page allows, and no taller than
+         what's left under the header, nav and the rows above (~360 px), so
+         the whole video and its controls are in view. The browser keeps
+         its proportions within both limits. -->
+    <MediaPlayer when="{!!shown()}" width="100%" maxHeight="calc(100vh - 360px)"
       preload="metadata" src="{shown() ? shown().url : undefined}" />
   </VStack>
 </Component>
