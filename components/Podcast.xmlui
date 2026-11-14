@@ -140,6 +140,12 @@
         toast.error(e.message);
       }
     }
+    // A sample's speaker by id, for its hover; the row passes its roster in
+    // (#3940: no component variables in the list).
+    function nameOf(roster, id) {
+      const x = (roster || []).find((r) => r.id === id);
+      return x ? x.name : 'a deleted speaker';
+    }
     // A word inside the row's selection (word ids rise with position).
     function inRange(id, a, b) {
       if (a === null) return false;
@@ -149,7 +155,7 @@
     function taggedLine() {
       const st = speakerStats.value;
       if (!st || !st.speakers.length) return 'No speakers yet: add them in Settings › Speakers.';
-      return 'Tagged: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
+      return 'Samples: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
     }
     function readyCount() {
       return ((speakerStats.value && speakerStats.value.speakers) || []).filter((s) => s.ready).length;
@@ -283,12 +289,12 @@
                 </HStack>
                 <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
                 <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
-                <!-- Tag speakers: each paragraph's words become clickable;
-                     click where a speaker starts, then where they stop, to
-                     tag the stretch as the speaker chosen here. Tagged
-                     stretches are the voiceprints' examples; Match voices
-                     carries them to the rest (voiceprint.py). -->
-                <Switch label="Tag speakers" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
+                <!-- Samples: a few stretches of each speaker's voice, marked
+                     in the text (an underline; hover for whose). Later, and
+                     optionally, they identify who's who: Match voices
+                     (voiceprint.py, hidden) or a transcript formatted by
+                     speaker. -->
+                <Switch label="Samples" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
                 <VStack when="{tagMode}" gap="$space-2">
                   <HStack verticalAlignment="center" wrapContent="true">
                     <!-- Match voices (voiceprint.py) is hidden for now
@@ -305,7 +311,7 @@
                     <Text variant="secondary" value="{taggedLine()}" />
                   </HStack>
                   <Text variant="secondary"
-                    value="Click the first word of a stretch, then the last, then who said it." />
+                    value="Drag across a stretch (or double-click a word), then pick whose voice it is. Underlined words are samples: hover for whose." />
                 </VStack>
                 <Text variant="secondary" when="{!!(textDoc.value &amp;&amp; (textDoc.value.undoLabel || textDoc.value.redoLabel))}"
                   value="{[textDoc.value.undoLabel ? 'Undo would ' + textDoc.value.undoLabel : '',
@@ -326,40 +332,48 @@
                2026-11-13: editingPara and paraDraft read back null in
                the same handler that set them; xmlui-org/xmlui#3940
                reaches further than its workaround). -->
-          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}">
-            <!-- Tag mode: the paragraph as clickable words, each in its
-                 speaker's color. A first click starts a selection
-                 (anchor), a second ends it (focus); then "Who said it?"
-                 under the paragraph tags it. Selection is the row's own,
-                 like draft. Each click is logged (podcast-page: word). -->
+          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
+            var.roster="{$item.speakers || []}">
+            <!-- Samples: the paragraph as plain words, ordinary color. A
+                 word in a sample (tagged: h is 'tag') has a faint underline
+                 and a hover naming whose it is (nameOf, from the row's roster:
+                 the word's own $item hides the paragraph's); voiceprint matches show nothing. Dragging
+                 across words (or double-clicking one) selects a stretch:
+                 Items reports its end words (textSelectionDidChange,
+                 xmlui-org/xmlui#3959, a candidate build in vendor/), which
+                 become the row's anchor and focus, and the line under the
+                 paragraph offers the speakers. Plain Text, not Link: links
+                 drag instead of selecting. Each selection is logged
+                 (podcast-page: select). -->
             <HStack when="{tagMode}" wrapContent="true" gap="$space-1">
-              <Items data="{$item.wl || []}">
-                <Link noIndicator
-                  onClick="
-                    Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                      body: { ev: 'word', id: $item.id, anchor, focus } });
-                    if (anchor === null || focus !== null) { anchor = $item.id; focus = null; }
-                    else { focus = $item.id; }
-                  ">
-                  <Text value="{$item.w}" color="{$item.c || '$textColor-primary'}"
-                    fontWeight="{$item.h === 'tag' ? 'bold' : 'normal'}"
-                    fontStyle="{$item.u ? 'italic' : 'normal'}"
-                    backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
-                </Link>
+              <Items data="{$item.wl || []}"
+                onTextSelectionDidChange="(sel) => {
+                  if (!sel || !(sel.text || '').trim() || sel.startIndex === null || !sel.startItem || !sel.endItem) return;
+                  anchor = sel.startItem.id;
+                  focus = sel.endItem.id;
+                  Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                    body: { ev: 'select', from: anchor, to: focus, text: sel.text } });
+                }">
+                <Text value="{$item.w}"
+                  textDecorationLine="{$item.h === 'tag' &amp;&amp; $item.s !== null ? 'underline' : 'none'}"
+                  textDecorationColor="$textColor-secondary" textDecorationThickness="1px" textUnderlineOffset="4px"
+                  tooltip="{$item.h === 'tag' &amp;&amp; $item.s !== null ? 'Sample: ' + nameOf(roster, $item.s) : undefined}"
+                  backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
               </Items>
             </HStack>
-            <HStack when="{tagMode &amp;&amp; anchor !== null}" verticalAlignment="center" wrapContent="true">
-              <Text variant="secondary" value="{focus === null ? 'Now click the last word.' : 'Who said it?'}" />
+            <HStack when="{tagMode &amp;&amp; anchor !== null &amp;&amp; focus !== null}" verticalAlignment="center" wrapContent="true">
+              <Text variant="secondary" value="Sample for:" />
               <Items data="{$item.speakers || []}">
-                <Button size="xs" variant="outlined" label="{$item.name}" enabled="{focus !== null}"
+                <Button size="xs" variant="outlined" label="{$item.name}"
                   onClick="
                     Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
                                       body: { ev: 'tag', speaker: $item.id, anchor, focus } });
                     tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
                   " />
               </Items>
-              <Button size="xs" variant="ghost" label="Clear" enabled="{focus !== null}"
-                tooltip="Take the speaker off these words"
+              <Button size="xs" variant="ghost" label="Not a sample"
+                when="{($item.wl || []).some((w) => w.h === 'tag' &amp;&amp; inRange(w.id, anchor, focus))}"
+                tooltip="Take these words out of any sample"
                 onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
               <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
             </HStack>
