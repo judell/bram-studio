@@ -206,11 +206,6 @@
     // Export: join all scenes into one video. The server first burns in the
     // items of any scene whose items changed since last burned, so what each scene's
     // list shows is what goes out.
-    function startExport() {
-      navigate('/exports');
-      exportTakes.execute();
-      exports.refetch();
-    }
     // Open a scene in the editor (its name's link in the scenes list), paused
     // at its start: nothing plays by itself. SceneEditor starts its
     // per-scene state over.
@@ -357,6 +352,14 @@
         + ' from the Trash into ' + folder + ' and click Refresh.'
         + (p.safekeeping.copy_exists ? ' Its safekeeping copy in ' + p.safekeeping.copy_path + ' stays where it is.' : '');
     }
+    // Manage › Delete this project: the server opens another project and
+    // moves this one to the Trash as it restarts on that one.
+    function deleteOpenQuestion(p) {
+      return deleteProjectQuestion(p) + ' Studio will open the project you changed most recently instead.';
+    }
+    function deleteOpenProject(p) {
+      switchProject('delete-open', { slug: p.slug }, 'another project');
+    }
     function deleteProject(p) {
       try {
         const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/delete', method: 'post',
@@ -467,10 +470,6 @@
   <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <!-- The Projects page's drag order, saved to projects/.order. -->
-  <APICall id="reorderProjects" method="post" url="http://127.0.0.1:8765/projects/reorder"
-    body="{$param}" invalidates="{[]}"
-    errorNotificationMessage="{$error.message}" />
   <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
     body="{{ id: $param }}"
     invalidates="{[]}"
@@ -544,27 +543,33 @@
         onClick="newProjectDialog.open()" />
       <!-- Settings, and back: away from the editor the same icon returns to it. -->
       <Button icon="cog" variant="ghost" size="sm"
-        tooltip="{['/', '/raw', '/final-video', '/final-transcript'].includes($pathname) ? 'Settings' : 'Back to the project'}"
-        onClick="navigate(['/', '/raw', '/final-video', '/final-transcript'].includes($pathname) ? '/settings' : '/')" />
+        tooltip="{['/', '/raw', '/final-video', '/final-transcript', '/manage'].includes($pathname) ? 'Settings' : 'Back to the project'}"
+        onClick="navigate(['/', '/raw', '/final-video', '/final-transcript', '/manage'].includes($pathname) ? '/settings' : '/')" />
     </HStack>
   </AppHeader>
-  <!-- A podcast's steps, as a row under the header (layout
-       horizontal-sticky): the Workspace (the editor), whisper's raw
-       transcript, and what the edit makes, the final video and the final
-       transcript (components/FinalVideo.xmlui, FinalTranscript.xmlui). A
-       screencast project has no such steps, so no nav. -->
-  <NavPanel when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}">
+  <!-- A project's steps, as a row under the header (layout
+       horizontal-sticky). A podcast: the Workspace (the editor), whisper's
+       raw transcript, what the edit makes (the final video and the final
+       transcript: components/FinalVideo.xmlui, FinalTranscript.xmlui), and
+       Manage. A screencast: the Workspace (the scenes), its final video
+       (Export), and Manage. Manage is the open project's own: disk use and
+       clean-up, safekeeping, rename, delete; there's no page of all
+       projects (2026-11-14: "the management stuff only exists on a per
+       project basis"). -->
+  <NavPanel when="{projects.loaded}">
     <NavLink label="Workspace" to="/" />
-    <NavLink label="Raw transcript" to="/raw" />
+    <NavLink when="{projects.value.genre === 'podcast'}" label="Raw transcript" to="/raw" />
     <NavLink label="Final video" to="/final-video" />
-    <NavLink label="Final transcript" to="/final-transcript" />
+    <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript" to="/final-transcript" />
+    <NavLink label="Manage" to="/manage" />
   </NavPanel>
   <Pages fallbackPath="/">
-    <!-- Projects: a screencast each, a folder under projects/ (studio_paths.py).
-         Open switches Studio to one; Create makes an empty one and opens it.
-         Both go through switchProject (above). Rows are laid out like the
-         Exports page's. -->
-    <Page url="/projects">
+    <!-- Manage: the open project's own disk use and clean-up, safekeeping,
+         rename and delete, and the stray items in the folders all projects
+         share. (It was a page of every project, Settings › Manage projects;
+         2026-11-14: "the management stuff only exists on a per project
+         basis". Opening and making projects are the header's.) -->
+    <Page url="/manage">
       <!-- A clean-up's confirmation, opened with {action, plan}
            (https://www.xmlui.org/docs/howto/choose-between-imperative-and-state-driven-modal-dialogs):
            the plan's summary counts what means something (sessions, takes,
@@ -612,38 +617,19 @@
            whenever the server's change stream says takes, exports or a
            project folder changed (the EventSource above), so there is no
            Refresh button. -->
-      <Text variant="secondary" when="{projects.value &amp;&amp; projects.value.projects.length === 0}"
-        value="No projects yet: this Studio keeps its scenes in the repo itself (see README, Where things are kept). Create one below to start a new screencast." />
-      <!-- Each project is one line, so the page can be scanned: an expander
-           (https://www.xmlui.org/docs/reference/components/ExpandableItem)
-           whose summary is the project's row, closed until clicked. Inside:
-           what its disk space is for, one line a category, then anything in
-           its folder that isn't Studio's (an editor's project folder, a stray
-           file), each with Delete. Open sits beside the expander, not in its
-           summary, so clicking it doesn't also toggle the details. The inner
-           lists have their own $item
-           (https://www.xmlui.org/docs/reference/components/Items), so a stray
-           row carries its project's slug itself. The list is a drag list like
-           the Takes list (DndItems, the xmlui-dnd-list extension): only the
-           grip drags, and the order is saved to projects/.order. -->
-      <DndItems data="{projects.value ? projects.value.projects : []}" dragHandle="true"
-        onReorder="(newOrder) => {
-          reorderProjects.execute({ slugs: newOrder.map(p => p.slug) });
-          projects.refetch();
-        }">
+      <!-- The open project (the list filtered to it): its facts, then what
+           its disk space is for, one line a category, then anything in its
+           folder that isn't Studio's (an editor's project folder, a stray
+           file), each with Delete, then safekeeping. The inner lists have
+           their own $item (https://www.xmlui.org/docs/reference/components/Items),
+           so a stray row carries its project's slug itself. -->
+      <Items data="{projects.value ? projects.value.projects.filter((p) => p.open) : []}">
         <HStack verticalAlignment="start" width="100%">
-        <ExpandableItem width="*" iconPosition="start" fullWidthSummary="true">
-          <property name="summary">
-            <!-- One run of text, not columns: spaced out, the facts read as
-                 headers for the rows below, which they aren't. The facts
-                 take what the name leaves (width="*") and wrap there, not
-                 under the pencil, Open and Delete
-                 (https://www.xmlui.org/docs/layout#hstack). -->
-            <HStack verticalAlignment="center" width="100%" gap="$space-2">
-              <Text value="{$item.name}" variant="{$item.open ? 'strong' : 'inherit'}" />
-              <Text variant="secondary" value="{projectFacts($item)}" width="*" />
-            </HStack>
-          </property>
+        <!-- No expander or name: the header's picker says which project
+             this is (2026-11-14: "selector is redundant, the selection is
+             made in the header"). The facts, then the details. -->
+        <VStack width="*" gap="$space-2">
+          <Text variant="secondary" value="{projectFacts($item)}" paddingTop="$space-2" />
         <!-- Rows are parted by a light rule and a little padding, not a gap
              (borderBottom, as in
              https://www.xmlui.org/docs/howto/dock-elements-to-panel-edges). -->
@@ -737,7 +723,7 @@
           </HStack>
         </VStack>
         </VStack>
-        </ExpandableItem>
+        </VStack>
         <!-- Rename: the pencil turns into a text box that saves the name when
              it loses focus (TextBox has no Enter event:
              https://www.xmlui.org/docs/reference/components/TextBox), if
@@ -765,31 +751,23 @@
               }
             " />
         </HStack>
-        <!-- The summary's own top padding (padding-summary-ExpandableItem),
-             so this lines up with it. -->
-        <HStack width="90px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
-          <Text when="{$item.open}" variant="secondary" value="open" />
-          <Button when="{!$item.open}" label="Open" variant="outlined" size="sm"
-            enabled="{!opening}"
-            tooltip="Switch Studio to this project"
-            onClick="switchProject('open', { slug: $item.slug }, $item.name)" />
-        </HStack>
-        <!-- Delete, last on the row: the whole project folder to the Trash,
-             under its own name, so dragging it back into projects/ restores
-             it (delete_project in serve_media.py). Asks first
-             (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete).
-             Not the open project, which Studio is running on. -->
-        <HStack width="80px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
-          <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
-            enabled="{!$item.open &amp;&amp; !opening &amp;&amp; !copyingProject}"
-            tooltip="{$item.open ? 'This is the open project: open another one to delete it' : 'Move this project to the Trash'}"
+        <!-- Delete this project: Studio runs on the open project, so the
+             server opens the other project changed most recently and moves
+             this one to the Trash as it starts on that one
+             (delete_open_project, finish_pending_delete). Under its own
+             name, so dragging it back into projects/ restores it. Asks
+             first, naming where you'll be. -->
+        <HStack width="170px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
+          <Button label="Delete this project" variant="outlined" size="sm" themeColor="attention"
+            enabled="{!opening &amp;&amp; !copyingProject &amp;&amp; projects.value.projects.length > 1}"
+            tooltip="{projects.value.projects.length > 1 ? 'Move this project to the Trash and open another' : 'It is the only project: make another one first'}"
             onClick="
-              const yes = confirm('Delete a project', deleteProjectQuestion($item), 'Move to Trash', 'Keep');
-              if (yes) deleteProject($item);
+              const yes = confirm('Delete this project', deleteOpenQuestion($item), 'Move to Trash', 'Keep');
+              if (yes) deleteOpenProject($item);
             " />
         </HStack>
         </HStack>
-      </DndItems>
+      </Items>
       <!-- The same for what projects share: sources/ and the repo's media/. -->
       <H3 when="{projects.value &amp;&amp; projects.value.shared_stray.length > 0}">Stray items in shared folders</H3>
       <Items data="{projects.value ? projects.value.shared_stray : []}">
@@ -837,10 +815,6 @@
               toast.error(e.message);
             }
           " />
-        <Button label="Export" variant="outlined" size="sm"
-          tooltip="Join all scenes, in list order, into one video (any scene whose items changed has them burned in first)"
-          enabled="{!exportTakes.inProgress &amp;&amp; !!takes.value &amp;&amp; takes.value.length > 0}"
-          onClick="startExport()" />
       </HStack>
       <!-- Scene callouts' confirmation: every scene, the callout it has (and
            whether it is applied), the one it would get, and any exact copies
@@ -867,10 +841,7 @@
             onClick="calloutsDialog.close()" />
         </HStack>
       </ModalDialog>
-      <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
-        <Spinner />
-        <Text value="Exporting scenes…" />
-      </HStack>
+      <!-- Export (joining the scenes) is on the Final video page. -->
       <!-- Capture: a take is a stretch of a source movie (/takes/clip), to be
            sequenced and then edited in the take editor (narration, pauses,
            annotations, cuts). The slider's two handles and the nudges set the
@@ -1102,10 +1073,11 @@
         sources="{projects.value ? (projects.value.sources || []) : []}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
+    <!-- The final video, for either genre: a podcast's edit, or a
+         screencast's scenes joined (Export). -->
     <Page url="/final-video">
-      <FinalVideo when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
+      <FinalVideo when="{projects.loaded}" genre="{projects.value.genre === 'podcast' ? 'podcast' : 'screencast'}"
         sources="{projects.value ? (projects.value.sources || []) : []}" />
-      <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <Page url="/final-transcript">
       <!-- ?n=<version>&turn=<index>: back where you were, from the

@@ -79,11 +79,10 @@
   <VStack padding="$space-6" gap="$space-5">
     <H2>Settings</H2>
     <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
-    <!-- What the header used to carry: the open project's exports, and the
-         Projects page (rename, delete, disk use, safekeeping, order). -->
+    <!-- The open project's exports. Rename, delete, disk use and
+         safekeeping are the project's own Manage page (the nav), not here. -->
     <HStack verticalAlignment="center">
       <Link to="/exports" label="Exports" />
-      <Link to="/projects" label="Manage projects" />
     </HStack>
     <!-- Speakers in the open project: add, rename (the pencil; the row keeps
          its own draft), delete (its words and segments go back to no

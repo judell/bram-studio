@@ -7,12 +7,19 @@
      is ~210 MB). The newest is also media/exports/<project>-final.mp4, which
      the Exports page lists. Progress arrives on /events ({final: source,
      done, total}). GET /podcast/final says whether the newest is current:
-     false once any paragraph's cuts have changed since. -->
-<Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}"
-  var.pick="{null}" var.confirmDelete="{null}">
+     false once any paragraph's cuts have changed since.
 
-  <DataSource id="final" when="{!!source}"
-    url="{'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source)}" />
+     genre="screencast" (a screencast project's Final video): Make runs
+     Export (POST /export: any scene whose items changed is burned in, then
+     all scenes are joined in list order into media/exports/<stamp>-takes.mp4)
+     and waits for it. The versions are Studio's exports, newest first (GET
+     /screencast/final), each current or not by the scenes it was made from;
+     Delete is the Exports page's (/exports/delete). -->
+<Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}"
+  var.pick="{null}" var.confirmDelete="{null}" var.genre="{$props.genre || 'podcast'}">
+
+  <DataSource id="final" when="{genre === 'screencast' || !!source}"
+    url="{genre === 'screencast' ? 'http://127.0.0.1:8765/screencast/final' : 'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source)}" />
 
   <EventSource url="http://127.0.0.1:8765/events"
     onMessage="(m) => {
@@ -25,6 +32,7 @@
         } else making = m;
       }
       else if (m.finalDeleted === source || m.changed === 'words') final.refetch();
+      else if (genre === 'screencast' &amp;&amp; (m.changed === 'exports' || m.changed === 'takes')) final.refetch();
     }" />
 
   <script>
@@ -48,6 +56,18 @@
       return 'v' + v.n + ' · ' + v.madeAt + ' · ' + stamp(v.secs);
     }
     function make() {
+      if (genre === 'screencast') {
+        making = { exporting: true };
+        try {
+          Actions.callApi({ url: 'http://127.0.0.1:8765/export', method: 'post', invalidates: [], body: {} });
+          pick = null;
+        } catch (e) {
+          toast.error(e.message);
+        }
+        making = null;
+        final.refetch();
+        return;
+      }
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final', method: 'post', invalidates: [], body: { source } });
         making = { done: 0, total: 0 };
@@ -57,6 +77,18 @@
     }
     function remove(n) {
       confirmDelete = null;
+      if (genre === 'screencast') {
+        const v = all().find((x) => x.n === n);
+        try {
+          if (v) Actions.callApi({ url: 'http://127.0.0.1:8765/exports/delete', method: 'post', invalidates: [],
+                                   body: { name: v.name, where: 'exports' } });
+          if (pick === n) pick = null;
+        } catch (e) {
+          toast.error(e.message);
+        }
+        final.refetch();
+        return;
+      }
       try {
         Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final/delete', method: 'post', invalidates: [],
                           body: { source, n } });
@@ -67,6 +99,7 @@
     }
     function line() {
       const p = progress(), f = final.value;
+      if (p && p.exporting) return 'Exporting the scenes…';
       if (p) return 'Making the final video' + (p.total ? ': paragraph ' + p.done + ' of ' + p.total : '…');
       if (!f) return '';
       if (!f.exists) return 'No final video yet.';
@@ -75,21 +108,23 @@
   </script>
 
   <VStack padding="$space-6" gap="$space-4">
-    <Select when="{($props.sources || []).length > 1}" width="420px"
+    <Select when="{genre !== 'screencast' &amp;&amp; ($props.sources || []).length > 1}" width="420px"
       data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
       initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; } }" />
     <HStack verticalAlignment="center">
       <Button size="sm" variant="outlined"
         label="{final.value &amp;&amp; final.value.exists ? 'Remake final video' : 'Make final video'}"
-        enabled="{!!source &amp;&amp; !progress()}" onClick="make()" />
+        enabled="{(genre === 'screencast' || !!source) &amp;&amp; !progress()}" onClick="make()" />
       <Spinner when="{!!progress()}" />
       <Text variant="secondary" value="{line()}" />
     </HStack>
-    <Text when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; !final.value.current &amp;&amp; !progress())}"
-      value="The edit has changed since the newest version was made: Remake to bring it up to date." />
+    <Text when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === false &amp;&amp; !progress())}"
+      value="{genre === 'screencast' ? 'The scenes have changed since the newest version was made: Remake to bring it up to date.' : 'The edit has changed since the newest version was made: Remake to bring it up to date.'}" />
     <HStack when="{!!shown()}" verticalAlignment="center">
       <Select width="420px" data="{all().map((v) => ({ value: v.n, label: label(v) + (v.n === all()[0].n ? ' (newest)' : '') }))}"
         initialValue="{shown() ? shown().n : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
+      <Link when="{confirmDelete === null}" to="{shown() ? shown().url + (shown().url.indexOf('?') &gt;= 0 ? '&amp;' : '?') + 'download=1' : ''}"
+        target="_blank">Download video</Link>
       <Button when="{confirmDelete === null}" size="sm" variant="ghost" label="Delete this version"
         enabled="{!progress()}" onClick="confirmDelete = shown().n" />
       <Text when="{confirmDelete !== null}" value="{'Delete v' + confirmDelete + '?'}" />

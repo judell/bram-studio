@@ -879,6 +879,32 @@ def migrate_all_genres():
 DEFAULT_PROJECT = "My project"
 
 
+PENDING_DELETE = os.path.join(studio_paths.PROJECTS, ".delete-pending")
+
+
+def finish_pending_delete():
+    # At startup: a project deleted from its own Manage page
+    # (delete_open_project) goes to the Trash now that it isn't open, under
+    # its own name as delete_project does, so dragging it back restores it.
+    try:
+        slug = open(PENDING_DELETE).read().strip()
+    except OSError:
+        return
+    folder = os.path.join(studio_paths.PROJECTS, slug)
+    try:
+        if slug and os.path.basename(slug) == slug and folder != studio_paths.PROJECT and os.path.isdir(folder):
+            dest = trash_path(slug)
+            plain = os.path.join(os.path.dirname(dest), slug)
+            if not os.path.lexists(plain):
+                dest = plain
+            os.rename(folder, dest)
+            write_order([s for s in read_order() if s != slug])
+            print(f"project deleted slug={slug} (pending) to={dest}", flush=True)
+        os.remove(PENDING_DELETE)
+    except OSError as e:
+        print(f"project delete failed slug={slug} (pending) error={e}", flush=True)
+
+
 def ensure_open_project():
     # At startup, before anything opens the database: make sure a project
     # under projects/ is open. With STUDIO_PROJECT given (PROJECT_GIVEN: this
@@ -2899,6 +2925,78 @@ def kept_paras(db, source):
                                      "HAVING sum(kept) > 0 ORDER BY min(i)", (source,))]
 
 
+def scenes_key(db):
+    # What a screencast's final video is made of, now: every scene in list
+    # order, its take file's size and time, and the state of its items
+    # (overlay.APPLIED_SQL). Export records it beside each export
+    # (.<name>.scenes.json); a different key means the scenes have changed
+    # since.
+    h = hashlib.sha1()
+    for tid, f in db.execute("SELECT id, file FROM takes ORDER BY position, created_at DESC").fetchall():
+        try:
+            st = os.stat(os.path.join(ROOT, f))
+            stat = f"{st.st_size}:{st.st_mtime_ns}"
+        except OSError:
+            stat = "-"
+        applied = db.execute(overlay.APPLIED_SQL, (tid,)).fetchone()[0]
+        h.update(f"{tid}:{f}:{stat}:{applied};".encode())
+    return h.hexdigest()[:12]
+
+
+def screencast_finals(db):
+    # GET /screencast/final: the exports Studio made (kind "export"),
+    # numbered v1, v2... by age and listed newest first, each with whether
+    # it matches the scenes now (null for one made before Export kept a
+    # record). The newest's fields also at the top level, as /podcast/final.
+    outdir = os.path.join(ROOT, "exports")
+    files = studio_files()
+    found = []
+    for name in os.listdir(outdir) if os.path.isdir(outdir) else []:
+        path = os.path.join(outdir, name)
+        if name.startswith(".") or not name.endswith("-takes.mp4") or not os.path.isfile(path):
+            continue
+        if studio_kind(name, os.stat(path), files) != "export":
+            continue
+        found.append((os.path.getmtime(path), name, path))
+    found.sort()
+    key = scenes_key(db)
+    vs = []
+    # A version's number is fixed when it's made (its record's n), so
+    # deleting one never renumbers the rest; an export from before records
+    # gets the next number by age, saved the first time it's listed.
+    k = 0
+    for mtime, name, path in found:
+        try:
+            rec = json.load(open(os.path.join(outdir, f".{name}.scenes.json")))
+        except (OSError, ValueError):
+            rec = {}
+        if not rec.get("n"):
+            # The first listing fixes an older export's number for good:
+            # saved in its record, with no scenes (so it has no current/out
+            # of date mark).
+            rec["n"] = max(k, max((v["n"] for v in vs), default=0)) + 1
+            try:
+                with open(os.path.join(outdir, f".{name}.scenes.json"), "w") as fh:
+                    json.dump(rec, fh)
+            except OSError:
+                pass
+        k = n = rec["n"]
+        secs = rec.get("secs")
+        if secs is None:
+            try:
+                secs = round(float(probe(path, "format=duration") or 0), 1)
+            except Exception:
+                secs = 0
+        vs.append({"n": n, "name": name, "url": f"http://127.0.0.1:{PORT}/exports/{urllib.parse.quote(name)}",
+                   "secs": secs, "madeAt": rec.get("madeAt") or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+                   "current": (rec["scenes"] == key) if "scenes" in rec else None})
+    vs.reverse()
+    out = {"making": {"exporting": True} if exporting.locked() else None, "versions": vs, "exists": bool(vs)}
+    if vs:
+        out.update({k: vs[0][k] for k in ("n", "url", "secs", "madeAt", "current")})
+    return out
+
+
 def link_latest_video(source):
     # media/exports/<name>.mp4 is the newest video version (a hard link: no
     # second copy), or nothing once every version is deleted.
@@ -3450,6 +3548,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Access-Control-Allow-Origin", "*")
+        # ?download=1 on a served file: saved, not shown (the Final video
+        # page's Download video, the final transcript's Download Markdown).
+        parsed = urllib.parse.urlparse(self.path)
+        if "download=1" in parsed.query.split("&"):
+            name = os.path.basename(urllib.parse.unquote(parsed.path))
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
         super().end_headers()
 
     # The app runs on Bram's origin, so its POSTs here are cross-origin and
@@ -3510,6 +3614,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.play_para()
         if self.path.startswith("/transcripts/marks"):
             return self.para_marks_route()
+        if self.path.startswith("/screencast/final"):
+            return self.send_json(200, screencast_finals(sqlite3.connect(DB)))
         if self.path.startswith("/podcast/final-transcript"):
             return self.final_transcript_route()
         if self.path.startswith("/podcast/final"):
@@ -3566,6 +3672,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def route_post(self):
         if self.path == "/projects/open":
             return self.open_project()
+        if self.path == "/projects/delete-open":
+            return self.delete_open_project()
         if self.path == "/projects/rename":
             return self.rename_project()
         if self.path == "/projects/new":
@@ -4205,6 +4313,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         shutil.move(src, dest)
         forget_studio_file(name)
         set_export_note(note_key(name, body.get("where")), "")
+        try:
+            os.remove(os.path.join(os.path.dirname(src), f".{name}.scenes.json"))
+        except OSError:
+            pass
         report = os.path.join(os.path.dirname(src), f".{name}.json")
         if os.path.exists(report):
             shutil.move(report, os.path.join(trash, f".{os.path.basename(dest)}.json"))
@@ -4372,6 +4484,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             os.replace(out, final)
             out = final
             seconds = float(probe(out, "format=duration") or 0)
+            # What it was made from, for the Final video page's "the scenes
+            # have changed since" (scenes_key, after any burn-in above).
+            prior = [v["n"] for v in screencast_finals(db)["versions"] if v["name"] != name]
+            with open(os.path.join(outdir, f".{name}.scenes.json"), "w") as fh:
+                json.dump({"scenes": scenes_key(db), "madeAt": datetime_now(), "secs": round(seconds, 1),
+                           "n": max(prior, default=0) + 1}, fh)
             self.send_json(200, {"url": f"http://127.0.0.1:{PORT}/exports/{name}", "file": f"exports/{name}",
                                  "takes": len(files), "seconds": round(seconds, 1), "copied": copied})
         finally:
@@ -5857,6 +5975,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"opened": slug, "restarting": True})
         threading.Thread(target=restart).start()
 
+    def delete_open_project(self):
+        # {slug}: delete the project you're in (Manage › Delete this
+        # project). Studio runs on the open project, so: record it in
+        # projects/.delete-pending, open the other project changed most
+        # recently (its studio.db), and the restarted server moves the
+        # pending one to the Trash at startup (finish_pending_delete).
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        slug = body.get("slug")
+        if not slug or os.path.join(studio_paths.PROJECTS, str(slug)) != studio_paths.PROJECT:
+            return self.send_json(409, {"error": "only the open project is deleted this way"})
+        if SAFE_LOCK.locked():
+            return self.send_json(409, {"error": "A safekeeping copy is running"})
+        others = []
+        for n in os.listdir(studio_paths.PROJECTS):
+            folder = os.path.join(studio_paths.PROJECTS, n)
+            if n != slug and not n.startswith(".") and os.path.isfile(os.path.join(folder, "project.json")):
+                db_file = os.path.join(folder, "studio.db")
+                others.append((os.path.getmtime(db_file if os.path.isfile(db_file) else folder), n))
+        if not others:
+            return self.send_json(409, {"error": "It's the only project: make another one first"})
+        why = self.busy()
+        if why:
+            return self.send_json(409, {"error": f"Can't delete the project now: {why}"})
+        with open(PENDING_DELETE, "w") as f:
+            f.write(slug + "\n")
+        print(f"projects: delete pending slug={slug}, opening {max(others)[1]}", flush=True)
+        return self.open_project(max(others)[1])
+
     def delete_stray(self):
         # {slug, path}: move one stray item (a project's, or with slug "" a
         # shared folder's) to the macOS Trash. Only something the listing
@@ -6282,6 +6428,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 ensure_open_project()
+finish_pending_delete()
 migrate_all_genres()
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
