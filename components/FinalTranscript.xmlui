@@ -20,7 +20,9 @@
      times say where each turn is in the version's video, on the Final
      video page. -->
 <Component name="FinalTranscript" var.source="{($props.sources || [])[0] || ''}" var.busy="{null}"
-  var.pick="{null}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
+  var.pick="{$props.n !== undefined &amp;&amp; $props.n !== null &amp;&amp; $props.n !== '' ? Number($props.n) : null}"
+  var.cameBack="{$props.turn !== undefined &amp;&amp; $props.turn !== null &amp;&amp; $props.turn !== '' ? Number($props.turn) : null}"
+  var.scrolledBack="{false}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
 
   <DataSource id="ft" when="{!!source}"
     url="{'http://127.0.0.1:8765/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '')}" />
@@ -175,9 +177,23 @@
     <Text when="{comparing &amp;&amp; !!cmp.value}" variant="secondary"
       value="{'Words per speaker: ' + (cmp.value ? cmp.value.totals.map((t) => t.name.split(' ')[0] + ' ' + t.a + ' → ' + t.b).join(' · ') : '')}" />
 
-    <List when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}">
-      <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4">
-        <Text width="70px" variant="secondary" value="{stamp($item.at)}" />
+    <!-- Edit opens the Workspace on the turn's paragraph, with a link back
+         here (?n=&turn=); coming back, the list scrolls to that turn and
+         tints it, once. -->
+    <ChangeListener listenTo="{ft.value &amp;&amp; cameBack !== null &amp;&amp; !scrolledBack ? ft.value.turns.length : 0}"
+      onDidChange="() => {
+        if (scrolledBack || cameBack === null || !ft.value || ft.value.turns.length <= cameBack) return;
+        scrolledBack = true;
+        turnsList.scrollToIndex(cameBack);
+      }" />
+    <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}">
+      <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4"
+        backgroundColor="{$item.i === cameBack ? '$color-primary-50' : undefined}">
+        <VStack width="70px" gap="0">
+          <Text variant="secondary" value="{stamp($item.at)}" />
+          <Link when="{$item.para !== null &amp;&amp; $item.para !== undefined}"
+            to="{{ pathname: '/', queryParams: { para: $item.para, back: '/final-transcript?n=' + (shown() ? shown().n : '') + '&amp;turn=' + $item.i } }}">Edit</Link>
+        </VStack>
         <Text width="160px" variant="strong" color="{$item.color || '$textColor-secondary'}"
           value="{$item.name + ($item.unsure ? ' (?)' : '')}" />
         <Text width="*" value="{$item.text}" />

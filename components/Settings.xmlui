@@ -67,7 +67,8 @@
                                              paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value,
                                              fillers: fillersBox.value, repeatsToKeep: keepBox.value,
                                              vpWindowS: vpWindowBox.value, vpStepS: vpStepBox.value,
-                                             vpMinTurnS: vpTurnBox.value, vpMinTaggedS: vpTaggedBox.value } } });
+                                             vpMinTurnS: vpTurnBox.value, vpMinTaggedS: vpTaggedBox.value,
+                                             vpEdgeS: vpEdgeBox.value } } });
         toast.success('Podcast editing settings saved.');
       } catch (e) {
         toast.error(e.message);
@@ -152,30 +153,52 @@
               initialValue="{settings.value.podcast.paragraphWords}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.paragraphWords}" />
           </HStack>
-          <HStack when="{false}" verticalAlignment="center">
+          <!-- Who's speaking (voiceprint.py): how Make final transcript
+               decides whose voice each word is. Each setting says what
+               you'd notice, and how to see it: Remake, then Compare. -->
+          <Text variant="strong" value="Who's speaking (Make final transcript)" />
+          <Text variant="secondary"
+            value="To see what a change does: on Final transcript, Remake, then turn on Compare to see what moved since the version before." />
+          <HStack verticalAlignment="center">
             <Text value="Voiceprint length (s)" width="250px" />
             <NumberBox id="vpWindowBox" width="140px" minValue="0.5" maxValue="5" step="0.5"
               initialValue="{settings.value.podcast.vpWindowS}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpWindowS}" />
           </HStack>
-          <HStack when="{false}" verticalAlignment="center">
+          <Text variant="secondary"
+            value="How much speech each judgment of a voice hears. Shorter: changes of speaker land closer to the right word, but similar voices get mixed up more (at 0.75 s on aiw, nearly three times as many unsure words)." />
+          <HStack verticalAlignment="center">
             <Text value="Voiceprint every (s)" width="250px" />
             <NumberBox id="vpStepBox" width="140px" minValue="0.1" maxValue="2" step="0.1"
               initialValue="{settings.value.podcast.vpStepS}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpStepS}" />
           </HStack>
-          <HStack when="{false}" verticalAlignment="center">
+          <Text variant="secondary"
+            value="How often a judgment is made. Smaller: finer placement of who said what, and a slower Make." />
+          <HStack verticalAlignment="center">
             <Text value="Shortest turn (s)" width="250px" />
             <NumberBox id="vpTurnBox" width="140px" minValue="0" maxValue="10" step="0.5"
               initialValue="{settings.value.podcast.vpMinTurnS}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpMinTurnS}" />
           </HStack>
-          <HStack when="{false}" verticalAlignment="center">
-            <Text value="Tagged speech needed per speaker (s)" width="250px" />
+          <Text variant="secondary"
+            value="A run of words shorter than this joins the speaker next to it. Lower keeps short interjections (“Yeah. Right.”) as their own turns, and lets stray single words through." />
+          <HStack verticalAlignment="center">
+            <Text value="Edge search (s)" width="250px" />
+            <NumberBox id="vpEdgeBox" width="140px" minValue="0" maxValue="5" step="0.5"
+              initialValue="{settings.value.podcast.vpEdgeS}" />
+            <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpEdgeS}" />
+          </HStack>
+          <Text variant="secondary"
+            value="How far a change of speaker may move to land on a pause or a sentence end, where people usually hand over. 0 turns this off, and the first or last word of a turn often goes to the wrong speaker." />
+          <HStack verticalAlignment="center">
+            <Text value="Samples needed per speaker (s)" width="250px" />
             <NumberBox id="vpTaggedBox" width="140px" minValue="2" maxValue="120" step="1"
               initialValue="{settings.value.podcast.vpMinTaggedS}" />
             <Text variant="secondary" value="{'default ' + settings.value.podcastDefaults.vpMinTaggedS}" />
           </HStack>
+          <Text variant="secondary"
+            value="A speaker with less than this in samples isn't matched; their words go to others. More, and clean, samples help: one with someone else in it hurts (Workspace › Samples flags those)." />
           <HStack verticalAlignment="center">
             <Text value="Fillers (Elide tics cuts these)" width="250px" />
             <TextBox id="fillersBox" width="*" initialValue="{settings.value.podcast.fillers}" />

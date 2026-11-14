@@ -813,9 +813,12 @@
       <!-- The open project's editor, by its genre (fixed when the project was
            made): a podcast opens the Podcast editor on the project's sources,
            anything else the screencast (scenes) editor. Nothing shows until
-           /projects has answered, so the wrong editor never flashes. -->
+           /projects has answered, so the wrong editor never flashes.
+           ?para=N opens it on that paragraph, and ?back=<path> shows a link
+           back (the final transcript's Edit links). -->
       <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
-        sources="{projects.value ? (projects.value.sources || []) : []}" />
+        sources="{projects.value ? (projects.value.sources || []) : []}"
+        para="{$queryParams.para}" back="{$queryParams.back}" />
       <Fragment when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}">
       <HStack verticalAlignment="center">
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
@@ -1105,8 +1108,11 @@
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <Page url="/final-transcript">
+      <!-- ?n=<version>&turn=<index>: back where you were, from the
+           Workspace's "Back to final transcript". -->
       <FinalTranscript when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
-        sources="{projects.value ? (projects.value.sources || []) : []}" />
+        sources="{projects.value ? (projects.value.sources || []) : []}"
+        n="{$queryParams.n}" turn="{$queryParams.turn}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <Page url="/exports">

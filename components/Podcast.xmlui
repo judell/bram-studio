@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.openCut="{null}" var.openSample="{null}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
@@ -267,6 +267,22 @@
   </script>
 
   <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 150px)">
+    <!-- Opened from the final transcript's Edit (?para=&back=): that
+         paragraph is selected and scrolled to, once its list has loaded, and
+         a link goes back to where you were in the transcript. -->
+    <Link when="{!!$props.back}" to="{$props.back || ''}">← Back to final transcript</Link>
+    <ChangeListener listenTo="{paras.value &amp;&amp; !jumped &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== '' ? paras.value.length : 0}"
+      onDidChange="() => {
+        if (jumped || !paras.value || $props.para === undefined || $props.para === null || $props.para === '') return;
+        const n = Number($props.para);
+        const k = paras.value.findIndex((p) => p.para === n);
+        if (k &lt; 0) return;
+        jumped = true;
+        currentPara = n;
+        paraList.scrollToIndex(k);
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'current', para: n, by: 'final-transcript' } });
+      }" />
     <!-- The project's sources can change (another project opened, a source
          added): keep the chosen one if it's still there, else the first. -->
     <ChangeListener listenTo="{$props.sources}"

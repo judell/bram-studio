@@ -630,6 +630,9 @@ PODCAST_SETTINGS = {
     "vpStepS": (0.5, 0.1, 2.0),
     "vpMinTurnS": (1.0, 0.0, 10.0),
     "vpMinTaggedS": (10.0, 2.0, 120.0),
+    # How far a change of speaker may move to land on a pause or a sentence
+    # end (voiceprint.py's edge pass); 0 turns the pass off.
+    "vpEdgeS": (2.0, 0.0, 5.0),
 }
 
 
@@ -2061,6 +2064,7 @@ def check_samples(source):
             conf = podcast_settings()
             env = {**os.environ, "VP_WINDOW": str(conf["vpWindowS"]), "VP_STEP": str(conf["vpStepS"]),
                    "VP_MIN_TURN": str(conf["vpMinTurnS"]), "VP_MIN_TAGGED": str(conf["vpMinTaggedS"]),
+               "VP_EDGE": str(conf["vpEdgeS"]),
                    "SPEAKER_MODEL": SPEAKER_MODEL}
             r = subprocess.run([SPEECH_PYTHON, os.path.join(HERE, "voiceprint.py"),
                                 os.path.join(transcript_folder(source), "audio-16k.wav"), DB, source, "--check"],
@@ -2149,6 +2153,7 @@ def match_speakers(source):
         conf = podcast_settings()
         env = {**os.environ, "VP_WINDOW": str(conf["vpWindowS"]), "VP_STEP": str(conf["vpStepS"]),
                "VP_MIN_TURN": str(conf["vpMinTurnS"]), "VP_MIN_TAGGED": str(conf["vpMinTaggedS"]),
+               "VP_EDGE": str(conf["vpEdgeS"]),
                "SPEAKER_MODEL": SPEAKER_MODEL}
         proc = subprocess.Popen([SPEECH_PYTHON, os.path.join(HERE, "voiceprint.py"),
                                  os.path.join(transcript_folder(source), "audio-16k.wav"), DB, source],
@@ -2176,7 +2181,9 @@ def match_speakers(source):
                        [(spk, unsure, wid) for wid, spk, unsure in result["assign"]])
         db.commit()
         unsure = sum(1 for a in result["assign"] if a[2])
+        edges = result.get("edges") or {}
         print(f"match source={source} speakers={json.dumps(result['speakers'])} windows={result['windows']} "
+              f"edges moved={edges.get('moved', 0)} of {edges.get('total', 0)} "
               f"words={len(result['assign'])} unsure={unsure} secs={time.time() - t_start:.1f}", flush=True)
     except Exception as e:
         print(f"match failed source={source} error={e}", flush=True)
@@ -3063,16 +3070,30 @@ def turns_of(words, names, colors):
     for wid, w, spk, how, unsure, at in words:
         if not turns or turns[-1]["speaker"] != spk:
             turns.append({"speaker": spk, "name": names.get(str(spk), "Unknown"), "color": colors.get(str(spk)),
-                          "at": at, "words": [], "u": 0})
+                          "at": at, "words": [], "u": 0, "w0": wid})
         turns[-1]["words"].append(w)
         turns[-1]["u"] += unsure
-    return [{"speaker": t["speaker"], "name": t["name"], "color": t["color"], "at": t["at"],
+    return [{"speaker": t["speaker"], "name": t["name"], "color": t["color"], "at": t["at"], "w0": t["w0"],
              "text": " ".join(t["words"]), "unsure": t["u"] * 2 > len(t["words"])} for t in turns]
 
 
 def clock(s):
     s = int(s)
     return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def voice_settings():
+    # The Settings that shape who's speaking (voiceprint.py), recorded with
+    # each transcript version: a change to one is a reason to Remake.
+    # And the matcher itself (a hash of voiceprint.py): a new version of it
+    # is a reason to Remake too.
+    conf = podcast_settings()
+    try:
+        matcher = hashlib.sha1(open(os.path.join(HERE, "voiceprint.py"), "rb").read()).hexdigest()[:10]
+    except OSError:
+        matcher = None
+    return {**{k: conf[k] for k in ("vpWindowS", "vpStepS", "vpMinTurnS", "vpMinTaggedS", "vpEdgeS")},
+            "matcher": matcher}
 
 
 def samples_now(db, source):
@@ -3100,6 +3121,7 @@ def save_transcript_version(db, source, made_at=None):
     base = final_name(source) + "-transcript"
     snap = {"n": num, "source": source, "madeAt": made_at or datetime_now(), "video": vnum,
             "videoSecs": info["secs"], "names": names, "colors": colors, "samples": samples,
+            "settings": voice_settings(),
             "words": words, "turns": turns}
     lines = [f"# {os.path.splitext(source)[0]}: final transcript v{num}", "",
              f"Times are in final video v{vnum} ({clock(info['secs'])}, made {info['madeAt']}). "
@@ -3917,10 +3939,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              f"(v{newest['video']})")
             if newest["samples"] != samples_now(db, source):
                 stale.append("samples have changed since it was made")
+            if newest.get("settings") != voice_settings():
+                stale.append("the who's-speaking Settings or the matcher have changed since it was made")
+        # The turns, rebuilt from the version's words (older versions too),
+        # each with its first word's paragraph: the Edit link's target.
+        turns = []
+        if chosen:
+            snap = snaps[chosen["n"]]
+            turns = turns_of(snap["words"], snap["names"], snap["colors"])
+            ids = [t["w0"] for t in turns]
+            para_of = dict(db.execute(f"SELECT id, para FROM words WHERE id IN ({','.join('?' * len(ids))})", ids)) \
+                if ids else {}
+            for k, t in enumerate(turns):
+                t["para"], t["i"] = para_of.get(t["w0"]), k
         self.send_json(200, {"needVideo": not state["exists"], "versions": listed, "version": chosen,
                              "remakeWhy": stale, "upToDate": bool(snaps) and not stale,
                              "editChanged": bool(state["exists"] and not state["current"]),
-                             "turns": snaps[chosen["n"]]["turns"] if chosen else [],
+                             "turns": turns,
                              "videoCurrent": bool(state["exists"] and state["current"]),
                              "matching": matching.get(source)})
 
