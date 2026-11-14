@@ -407,7 +407,26 @@
           </Items>
         </ExpandableItem>
       </VStack>
-      <VStack height="100%" overflowY="auto" paddingLeft="$space-4">
+      <!-- A click in the right pane outside every card (between cards,
+           below the last) deselects: currentPara null, so the tint goes,
+           a playing card stops and the left pane shows the original
+           recording. Cards carry automationId="para-card" (rendered as
+           data-automation-id, possibly prefixed, hence *=); the click's
+           target says whether it landed in one. Logged
+           (podcast-page: pane-click). -->
+      <VStack height="100%" overflowY="auto" paddingLeft="$space-4"
+        onClick="(e) => {
+          if (view !== 'Edit text') return;
+          const t = e &amp;&amp; e.target;
+          const hit = !!(t &amp;&amp; t.closest &amp;&amp; t.closest('[data-automation-id*=para-card]'));
+          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                            body: { ev: 'pane-click', hit, tag: t ? t.tagName : null, current: currentPara } });
+          if (!hit &amp;&amp; currentPara !== null) {
+            currentPara = null;
+            Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                              body: { ev: 'current', para: null, by: 'outside', readBack: currentPara } });
+          }
+        }">
       <VStack when="{view === 'Edit text'}" gap="$space-2">
         <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
           <!-- draft is the row's own: assignments to the component's
@@ -434,7 +453,7 @@
             onDidChange="if (leader === 'video' &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
           <ChangeListener listenTo="{cardSeek}"
             onDidChange="if (cardSeek &amp;&amp; cardSeek.para === $item.para &amp;&amp; $item.kept > 0) paraPlayer.seek(cardSeek.t);" />
-          <VStack gap="$space-1" padding="$space-3" borderRadius="$space-2"
+          <VStack automationId="para-card" gap="$space-1" padding="$space-3" borderRadius="$space-2"
             backgroundColor="{currentPara === $item.para ? '$color-primary-50' : '$color-surface-50'}"
             onClick="
               if (currentPara !== $item.para) {
