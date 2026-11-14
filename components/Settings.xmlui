@@ -76,7 +76,7 @@
       settings.refetch();
     }
   </script>
-  <VStack padding="$space-6" gap="$space-5">
+  <VStack paddingHorizontal="$space-6" paddingTop="$space-6" gap="$space-5">
     <H2>Settings</H2>
     <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
     <!-- The open project's exports. Rename, delete, disk use and
@@ -248,22 +248,24 @@
         </HStack>
       </ExpandableItem>
     </Theme>
-    <ModalDialog id="speakersInfo" title="Speakers">
-      <Text value="The people in this project's recordings, for tagging who says what on the Podcast page. Unlike the rest of Settings, which is this machine's, speakers belong to the open project: opening another project shows its own." />
-      <Text value="Deleting a speaker leaves the words tagged with them untagged; the words themselves stay." />
-    </ModalDialog>
-    <ModalDialog id="podcastInfo" title="Podcast editing">
-      <Text value="Pause between words: how long quiet must last to count as a pause. A cut is placed in the pause between the last word kept and the first word cut. Shorter dips happen inside words (the stop in 'be-tween'), so a value too small can put a cut inside a word; too large, and quick speech has no pause to cut in." />
-      <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
-      <Text value="Paragraph breaks: a sentence that ends in a pause at least this long ends a paragraph, and so does any sentence once a paragraph is this long. Changing either re-splits the paragraphs on the Edit text tab; your cuts and corrections are kept (they belong to words, not paragraphs)." />
-      <Text value="Changing the pause or the fade re-renders a paragraph's audio the next time you play it." />
-      <Text when="{false}" value="Voiceprints (Tag speakers, Match voices on the Podcast page): each voiceprint is taken from this length of audio, one every so often along the recording; a run of words shorter than the shortest turn joins its neighbors; a speaker needs this much tagged speech before their voice is matched." />
-      <Text value="Fillers and Repeats to keep: words separated by commas, matched ignoring case and punctuation. Elide tics (Edit text tab) cuts every filler still kept, and every word said twice in a row, keeping the second, unless it's a repeat to keep or a number. Run it again after changing the lists: it only cuts what's still kept." />
-    </ModalDialog>
-    <ModalDialog id="safeInfo" title="Safekeeping">
-      <Text value="Safekeeping copies a project (its takes, re-mix ingredients, exports and logs, with its database) to a folder you choose, such as one OneDrive keeps in the cloud. Copy to safekeeping is on the Projects page." />
-      <Text value="The default folder here is for every project that has no location of its own. Each project goes into its own subfolder, named after it: ~/OneDrive/BramStudio/issue-433, and so on." />
-      <Text value="A project's own location (Change, on the Projects page) overrides the default. Clearing it falls back to the default." />
-    </ModalDialog>
   </VStack>
+  <!-- The info dialogs, outside the column so they take no space in it
+       (inside, they spaced the Audio section away from Diagnostics). -->
+  <ModalDialog id="speakersInfo" title="Speakers">
+    <Text value="The people in this project's recordings, for tagging who says what on the Podcast page. Unlike the rest of Settings, which is this machine's, speakers belong to the open project: opening another project shows its own." />
+    <Text value="Deleting a speaker leaves the words tagged with them untagged; the words themselves stay." />
+  </ModalDialog>
+  <ModalDialog id="podcastInfo" title="Podcast editing">
+    <Text value="Pause between words: how long quiet must last to count as a pause. A cut is placed in the pause between the last word kept and the first word cut. Shorter dips happen inside words (the stop in 'be-tween'), so a value too small can put a cut inside a word; too large, and quick speech has no pause to cut in." />
+    <Text value="Fade at each cut: how long the sound fades out and back in at each join, so a cut doesn't click. 0 for none." />
+    <Text value="Paragraph breaks: a sentence that ends in a pause at least this long ends a paragraph, and so does any sentence once a paragraph is this long. Changing either re-splits the paragraphs on the Edit text tab; your cuts and corrections are kept (they belong to words, not paragraphs)." />
+    <Text value="Changing the pause or the fade re-renders a paragraph's audio the next time you play it." />
+    <Text when="{false}" value="Voiceprints (Tag speakers, Match voices on the Podcast page): each voiceprint is taken from this length of audio, one every so often along the recording; a run of words shorter than the shortest turn joins its neighbors; a speaker needs this much tagged speech before their voice is matched." />
+    <Text value="Fillers and Repeats to keep: words separated by commas, matched ignoring case and punctuation. Elide tics (Edit text tab) cuts every filler still kept, and every word said twice in a row, keeping the second, unless it's a repeat to keep or a number. Run it again after changing the lists: it only cuts what's still kept." />
+  </ModalDialog>
+  <ModalDialog id="safeInfo" title="Safekeeping">
+    <Text value="Safekeeping copies a project (its takes, re-mix ingredients, exports and logs, with its database) to a folder you choose, such as one OneDrive keeps in the cloud. Copy to safekeeping is on the Projects page." />
+    <Text value="The default folder here is for every project that has no location of its own. Each project goes into its own subfolder, named after it: ~/OneDrive/BramStudio/issue-433, and so on." />
+    <Text value="A project's own location (Change, on the Projects page) overrides the default. Clearing it falls back to the default." />
+  </ModalDialog>
 </Component>
