@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text">
+  var.tagMode="{false}" var.matchProgress="{null}" var.view="Edit text" var.currentPara="{null}">
 
   <DataSource id="transcript" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
@@ -332,8 +332,28 @@
                2026-11-13: editingPara and paraDraft read back null in
                the same handler that set them; xmlui-org/xmlui#3940
                reaches further than its workaround). -->
-          <VStack gap="$space-1" paddingBottom="$space-4" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
+          <!-- Each paragraph is a card: its words, player and counts in one
+               faintly tinted container; the current paragraph (currentPara:
+               the one last clicked into, or whose player last started) a
+               shade stronger. When another paragraph becomes current, this
+               one's player stops, so one plays at a time. currentPara is the
+               component's, assigned from in here: #3940 broke that under
+               Tabs, and this list has been outside the Tabs since the
+               splitter layout. Each assignment logs what it reads back
+               (podcast-page: current). -->
+          <VStack paddingBottom="$space-3" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
             var.roster="{$item.speakers || []}">
+          <ChangeListener listenTo="{currentPara}"
+            onDidChange="if (currentPara !== $item.para &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
+          <VStack gap="$space-1" padding="$space-3" borderRadius="$space-2"
+            backgroundColor="{currentPara === $item.para ? '$color-primary-50' : '$color-surface-50'}"
+            onClick="
+              if (currentPara !== $item.para) {
+                currentPara = $item.para;
+                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'current', para: $item.para, by: 'click', readBack: currentPara } });
+              }
+            ">
             <!-- Samples: the paragraph as plain words, ordinary color. A
                  word in a sample (tagged: h is 'tag') has a faint underline
                  and a hover naming whose it is (nameOf, from the row's roster:
@@ -402,8 +422,9 @@
                                   body: { ev: 'caret', para: $item.para, at: sel.start, t, player: paraPlayer.getCurrentTime() } });
               }"
               onGotFocus="
+                if (currentPara !== $item.para) currentPara = $item.para;
                 Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                                  body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length } });
+                                  body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length, current: currentPara } });
               "
               onDidChange="(v) => draft = v"
               onLostFocus="
@@ -412,7 +433,14 @@
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
               " />
-            <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}" />
+            <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
+              onPlay="
+                if (currentPara !== $item.para) {
+                  currentPara = $item.para;
+                  Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                                    body: { ev: 'current', para: $item.para, by: 'play', readBack: currentPara } });
+                }
+              " />
             <HStack verticalAlignment="center" gap="$space-2">
               <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
               <Text variant="secondary" when="{$item.ticsCut > 0}"
@@ -427,6 +455,7 @@
             </HStack>
             <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
               value="⚠ Check joins flagged a join here: listen" />
+          </VStack>
           </VStack>
         </List>
         <ExpandableItem iconPosition="start" fullWidthSummary="true"
