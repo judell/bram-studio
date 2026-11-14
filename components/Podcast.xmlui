@@ -399,8 +399,9 @@
                     tooltip="Render the edit, listen to it, and flag joins that don't sound like the text"
                     onClick="startCheck()" />
                   <Spinner when="{false &amp;&amp; checkBusy}" />
-                  <Text variant="secondary" value="{editLine()}" />
                 </HStack>
+                <!-- Its own line: beside Undo and Redo it ran off a narrow pane. -->
+                <Text variant="secondary" value="{editLine()}" />
                 <Text variant="secondary" when="{false &amp;&amp; !!checkLine()}" value="{checkLine()}" />
                 <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
                 <!-- Samples: a few stretches of each speaker's voice, marked
