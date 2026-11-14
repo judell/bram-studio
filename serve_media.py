@@ -2385,28 +2385,38 @@ def elide_tics(db, source, dry=False, para=None):
     # only says what it would cut (and which words: ids); with para, only in
     # that paragraph (stutters are still found across its edges).
     conf = podcast_settings()
-    fillers = {word_key(w) for w in conf["fillers"].split(",") if word_key(w)}
+    # A filler can be a phrase ("you know"): its words, matched as
+    # consecutive kept words (words already cut between them don't count),
+    # longest phrase first. A match cuts all its words.
+    phrases = sorted({tuple(k for k in map(word_key, f.split()) if k) for f in conf["fillers"].split(",")} - {()},
+                     key=len, reverse=True)
     keep = {word_key(w) for w in conf["repeatsToKeep"].split(",") if word_key(w)}
     kept = db.execute("SELECT id, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 ORDER BY i",
                       (source,)).fetchall()
     keys = [word_key(w) for _, w in kept]
-    filler_ids = [kept[n][0] for n, k in enumerate(keys) if k in fillers]
+    groups, n = [], 0  # each filler match: the indices (into kept) of its words
+    while n < len(keys):
+        hit = next((p for p in phrases if tuple(keys[n:n + len(p)]) == p), None)
+        if hit:
+            groups.append(list(range(n, n + len(hit))))
+            n += len(hit)
+        else:
+            n += 1
+    in_filler = {m for g in groups for m in g}
     # Stutters on the words left once fillers go, so "and, uh, and" counts.
-    rest = [(n, k) for n, k in enumerate(keys) if k not in fillers and k]
-    stutter_ids = [kept[rest[m][0]][0] for m in range(len(rest) - 1)
-                   if rest[m][1] == rest[m + 1][1] and rest[m][1] not in keep and not rest[m][1].isdigit()]
+    rest = [(n, k) for n, k in enumerate(keys) if n not in in_filler and k]
+    stutters = [m for m in range(len(rest) - 1)
+                if rest[m][1] == rest[m + 1][1] and rest[m][1] not in keep and not rest[m][1].isdigit()]
     if para is not None:
+        # A phrase belongs to the paragraph its first word is in.
         mine = {r[0] for r in db.execute("SELECT id FROM words WHERE source = ? AND para = ?", (source, para))}
-        filler_ids = [i for i in filler_ids if i in mine]
-        stutter_ids = [i for i in stutter_ids if i in mine]
-        chosen = set(filler_ids) | set(stutter_ids)
-        kept = [k for k in kept if k[0] in mine]
-        keys = [word_key(w) for _, w in kept]
-        rest = [(n, k) for n, k in enumerate(keys) if k not in fillers and k]
-    found = {"fillers": len(filler_ids), "stutters": len(stutter_ids), "ids": filler_ids + stutter_ids,
-             "examples": [kept[n][1] for n, k in enumerate(keys) if k in fillers][:5]
-             + [kept[rest[m][0]][1] + " " + kept[rest[m + 1][0]][1] for m in range(len(rest) - 1)
-                if kept[rest[m][0]][0] in set(stutter_ids)][:5]}
+        groups = [g for g in groups if kept[g[0]][0] in mine]
+        stutters = [m for m in stutters if kept[rest[m][0]][0] in mine]
+    filler_ids = [kept[m][0] for g in groups for m in g]
+    stutter_ids = [kept[rest[m][0]][0] for m in stutters]
+    found = {"fillers": len(groups), "stutters": len(stutter_ids), "ids": filler_ids + stutter_ids,
+             "examples": [" ".join(kept[m][1] for m in g) for g in groups][:5]
+             + [kept[rest[m][0]][1] + " " + kept[rest[m + 1][0]][1] for m in stutters][:5]}
     if not dry:
         record_text_change(db, source, {"cut": filler_ids + stutter_ids, "restored": [], "corrected": []},
                            reason="tic")
