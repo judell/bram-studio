@@ -191,6 +191,23 @@
       const c = paraClock;
       return !(leader === 'card' && c && c.para === currentPara && c.playing === playing);
     }
+    // A click in a pane deselects the current card unless it landed in
+    // something marked (automationId, rendered as data-automation-id,
+    // possibly prefixed, hence *=): a card on the right, the main video on
+    // the left (it is the selected card's video). Logged (podcast-page:
+    // pane-click, then current ... by=outside).
+    function deselectOutside(e, side, marker) {
+      if (view !== 'Edit text') return;
+      const t = e && e.target;
+      const hit = !!(t && t.closest && t.closest('[data-automation-id*=' + marker + ']'));
+      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'pane-click', side, hit, tag: t ? t.tagName : null, current: currentPara } });
+      if (!hit && currentPara !== null) {
+        currentPara = null;
+        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'current', para: null, by: 'outside', side, readBack: currentPara } });
+      }
+    }
     function applyClock(why) {
       const c = paraClock;
       if (leader === 'video' || !c || c.para !== currentPara || !followItem()) return;
@@ -271,7 +288,10 @@
          controls; which list the right side shows follows the tab (view). -->
     <Splitter when="{!!source}" orientation="horizontal" height="*"
       initialPrimarySize="40%" minPrimarySize="20%" maxPrimarySize="-320px">
-      <VStack height="100%" overflowY="auto" gap="$space-4" paddingRight="$space-4">
+      <!-- A click here deselects the current card, except on the main
+           video (deselectOutside). -->
+      <VStack height="100%" overflowY="auto" gap="$space-4" paddingRight="$space-4"
+        onClick="(e) => deselectOutside(e, 'left', 'para-video')">
         <!-- Which recording, only when the project has more than one; then
              when and how it was transcribed. -->
         <Select when="{($props.sources || []).length > 1}" width="100%"
@@ -297,7 +317,7 @@
              over (leader 'video', setLeader): it unmutes, the cards stop,
              and pausing it moves its card's player to the same place
              (cardSeek). Playing a card hands it back. -->
-        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="{leader !== 'video'}"
+        <MediaPlayer id="paraVideo" automationId="para-video" when="{!!followItem()}" width="100%" muted="{leader !== 'video'}"
           preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
           onLoadedMetadata="videoPara = currentPara; applyClock('loaded')"
           onPlay="(e) => { if (videoTouched(true)) setLeader('video', 'video play'); }"
@@ -410,23 +430,9 @@
       <!-- A click in the right pane outside every card (between cards,
            below the last) deselects: currentPara null, so the tint goes,
            a playing card stops and the left pane shows the original
-           recording. Cards carry automationId="para-card" (rendered as
-           data-automation-id, possibly prefixed, hence *=); the click's
-           target says whether it landed in one. Logged
-           (podcast-page: pane-click). -->
+           recording (deselectOutside; cards carry automationId="para-card"). -->
       <VStack height="100%" overflowY="auto" paddingLeft="$space-4"
-        onClick="(e) => {
-          if (view !== 'Edit text') return;
-          const t = e &amp;&amp; e.target;
-          const hit = !!(t &amp;&amp; t.closest &amp;&amp; t.closest('[data-automation-id*=para-card]'));
-          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                            body: { ev: 'pane-click', hit, tag: t ? t.tagName : null, current: currentPara } });
-          if (!hit &amp;&amp; currentPara !== null) {
-            currentPara = null;
-            Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
-                              body: { ev: 'current', para: null, by: 'outside', readBack: currentPara } });
-          }
-        }">
+        onClick="(e) => deselectOutside(e, 'right', 'para-card')">
       <VStack when="{view === 'Edit text'}" gap="$space-2">
         <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
           <!-- draft is the row's own: assignments to the component's
