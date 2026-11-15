@@ -633,7 +633,12 @@
   <VStack when="{serverUp === true &amp;&amp; projects.loaded &amp;&amp; !projects.value.open}"
     horizontalAlignment="center" gap="1rem" paddingTop="4rem">
     <H1>Bram Studio</H1>
-    <Text>No projects yet. Click <Text variant="strong">New project</Text> in the header to start your first.</Text>
+    <!-- A project starts from a source movie (new_project refuses without
+         one), so when the picker would be empty, say what to do about it.
+         The sources list polls, so a file dropped on the Desktop updates
+         this line by itself. -->
+    <Text when="{!sources.value || sources.value.length > 0}">No projects yet. Click <Text variant="strong">New project</Text> in the header to start your first.</Text>
+    <Text when="{sources.value &amp;&amp; sources.value.length === 0}">No projects yet. Studio starts from a recording you already have: put an <Text variant="code">.mp4</Text>, <Text variant="code">.mov</Text> or <Text variant="code">.m4v</Text> on your Desktop, then click <Text variant="strong">New project</Text> in the header.</Text>
   </VStack>
   <Pages when="{serverUp === true &amp;&amp; !(projects.loaded &amp;&amp; !projects.value.open)}" fallbackPath="/">
     <!-- Manage: the open project's own disk use and clean-up, safekeeping,
