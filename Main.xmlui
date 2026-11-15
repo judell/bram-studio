@@ -146,6 +146,14 @@
         serverUp = true;
         projects.refetch(); takes.refetch(); sources.refetch(); exports.refetch();
         devices.refetch(); voiceTests.refetch();
+        // Once per load: how long index.html's port read took, for
+        // serve_media.log (page-load-port-fetch-timing).
+        try {
+          Actions.callApi({ url: window.STUDIO_API + '/page/health', method: 'post', invalidates: [],
+                            body: { ...window.studioPageHealth(), portFetch: window.__studioPortTiming || null } });
+        } catch (e) {
+          // A missing log line is no reason to bother the user.
+        }
       } else if (serverUp === null || conflict !== '') {
         serverUp = false;
       }

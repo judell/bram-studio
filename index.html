@@ -15,20 +15,35 @@
          No file (the server's never run here) means 8765. The welcome
          probe calls studioReadApi() again while the server is down and
          reloads the page if a newly started server chose another port. -->
+    <!-- The load-time read is timed (page-load-port-fetch-timing): one
+         2026-11-15 load sat blank 23 s, this request reaching Bram that long
+         after it was sent. __studioPortTiming goes to serve_media.log once
+         the server answers (Main.xmlui's probe), to tell a browser hold-up
+         from Bram's server against Bram's self-probe. -->
     <script>
-      window.studioReadApi = function () {
+      window.studioReadApi = function (timing) {
+        var started = Date.now();
+        var status = "error";
         try {
           var x = new XMLHttpRequest();
-          x.open("GET", "/studio-port.json?t=" + Date.now(), false);
+          x.open("GET", "/studio-port.json?t=" + started, false);
           x.send();
+          status = x.status;
           if (x.status === 200) {
             var port = JSON.parse(x.responseText).port;
             if (port) return "http://127.0.0.1:" + port;
           }
-        } catch (e) {}
+        } catch (e) {
+        } finally {
+          if (timing) {
+            window.__studioPortTiming = {
+              sentAt: new Date(started).toISOString(), ms: Date.now() - started, status: status
+            };
+          }
+        }
         return "http://127.0.0.1:8765";
       };
-      window.STUDIO_API = window.studioReadApi();
+      window.STUDIO_API = window.studioReadApi(true);
     </script>
     <script src="/__shell/dictation.js"></script>
     <script src="/studio-dictation.js"></script>

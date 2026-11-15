@@ -6098,6 +6098,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         print(f"page-health: uptime={body.get('uptimeS')}s "
               f"heap={'-' if heap is None else str(heap) + 'MB'} "
               f"videos={body.get('videos')} nodes={body.get('nodes')}", flush=True)
+        # Once per page load (the probe's first success): how long
+        # index.html's synchronous studio-port.json read took. Read against
+        # Bram's [http] op=self-probe-slow to tell a browser hold-up from
+        # Bram's server (page-load-port-fetch-timing; the 23 s stall of
+        # 2026-11-15).
+        pf = body.get("portFetch")
+        if isinstance(pf, dict):
+            print(f"page-load: port-fetch ms={pf.get('ms')} status={pf.get('status')} "
+                  f"sentAt={pf.get('sentAt')}", flush=True)
         self.send_json(200, {"logged": 1})
 
     def run_voicetest(self):
