@@ -55,6 +55,50 @@
          recorded on window and Main.xmlui polls it with a short Timer. On an
          older Bram this script 404s, BramDoorway is undefined, and the page
          falls back to the clipboard. -->
+    <!-- Temporary measurement (manage-blurb-width): the Manage page's
+         category descriptions wrap at about a third of their row, and two
+         markup fixes didn't change it. Once per load, when a Manage page is
+         showing, log the "Undo history" row's description (that row always
+         shows) and its ancestors (width,
+         display, flex, max-width) and the row's columns to serve_media.log
+         as "podcast-page: manage-widths …", so the fix comes from evidence.
+         Remove with the fix. -->
+    <script>
+      (function () {
+        var tries = 0;
+        var timer = setInterval(function () {
+          if (++tries > 120) return clearInterval(timer);
+          var nodes = document.querySelectorAll("body *");
+          var el = null;
+          for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].childElementCount === 0 && /^what the History tab can still restore/.test(nodes[i].textContent || "")) {
+              el = nodes[i];
+              break;
+            }
+          }
+          if (!el || !window.STUDIO_API) return;
+          clearInterval(timer);
+          var chain = [];
+          for (var n = el, k = 0; n && k < 7; n = n.parentElement, k++) {
+            var cs = getComputedStyle(n);
+            chain.push({ tag: n.tagName, cls: (n.className && String(n.className).split(" ")[0]) || "",
+                         w: n.offsetWidth, display: cs.display, flex: cs.flex, width: cs.width,
+                         maxW: cs.maxWidth, kids: n.childElementCount });
+          }
+          var row = el.parentElement;
+          var cols = [];
+          for (var c = row && row.firstElementChild; c; c = c.nextElementSibling) {
+            var s = getComputedStyle(c);
+            cols.push({ w: c.offsetWidth, flex: s.flex, width: s.width, maxW: s.maxWidth,
+                        text: (c.textContent || "").slice(0, 20) });
+          }
+          fetch(window.STUDIO_API + "/podcast/log", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ev: "manage-widths", viewport: innerWidth, chain: chain, cols: cols })
+          }).catch(function () {});
+        }, 1000);
+      })();
+    </script>
     <script src="/__shell/doorway.js"></script>
     <script>
       window.studioDoorway = function () {
