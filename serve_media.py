@@ -3578,7 +3578,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # "no such table" from the repo's bare studio.db. /projects/new is the
     # way out: it creates the first project and restarts the server into it.
     NO_PROJECT_GET = ("/projects", "/sources", "/devices", "/dictation/status",
-                      "/dictation/engine", "/narrate/status", "/events", "/trace")
+                      "/dictation/engine", "/narrate/status", "/events", "/trace",
+                      "/identity")
     NO_PROJECT_POST = ("/projects/new", "/page/health", "/audition/log", "/trace")
 
     def no_project_refused(self, allowed):
@@ -3595,6 +3596,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/settings":
             return self.send_json(200, {**read_settings(), "podcast": podcast_settings(),
                                         "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS}})
+        if self.path == "/identity":
+            # Whose server is this? The page compares bramPort (the Bram
+            # instance recorded in this checkout's .bram/.bram-port.json)
+            # with its own origin port: same checkout, same Bram. An orphan
+            # server from another checkout answers with that checkout's
+            # Bram port, and the page treats it as down rather than show an
+            # editor backed by the wrong repo (probe-checks-server-identity).
+            try:
+                with open(os.path.join(HERE, ".bram", ".bram-port.json")) as f:
+                    bram_port = json.load(f).get("port")
+            except (OSError, ValueError):
+                bram_port = None
+            return self.send_json(200, {"root": HERE, "bramPort": bram_port})
         if self.path == "/devices":
             return self.send_json(200, [{"name": n} for n in voicetest.devices()])
         if self.path == "/sources":
