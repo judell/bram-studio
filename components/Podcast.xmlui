@@ -436,7 +436,22 @@
                      optionally, they identify who's who: Match voices
                      (voiceprint.py, hidden) or a transcript formatted by
                      speaker. -->
-                <Switch label="Samples" labelPosition="end" initialValue="{false}" onDidChange="(v) => tagMode = v" />
+                <!-- Mark the card first, restore after the re-render
+                     (index.html: studioMarkCard / studioRestoreCard); when
+                     the list didn't draw it, bring it into view by index. -->
+                <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
+                  <Switch label="Samples" labelPosition="end" initialValue="{false}"
+                    onDidChange="(v) => {
+                      window.studioMarkCard(currentPara);
+                      tagMode = v;
+                      const r = window.studioRestoreCard();
+                      if (r &amp;&amp; !r.found &amp;&amp; r.para !== null &amp;&amp; paras.value) {
+                        const k = paras.value.findIndex((p) => p.para === r.para);
+                        if (k >= 0) paraList.scrollToIndex(k);
+                      }
+                    }" />
+                  <Button icon="info" size="xs" variant="ghost" tooltip="About samples" onClick="samplesInfo.open()" />
+                </HStack>
                 <VStack when="{tagMode}" gap="$space-2">
                   <HStack verticalAlignment="center" wrapContent="true">
                     <!-- Matching voices (voiceprint.py) is part of Make
@@ -609,7 +624,7 @@
             onDidChange="if (leader === 'video' &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
           <ChangeListener listenTo="{cardSeek}"
             onDidChange="if (cardSeek &amp;&amp; cardSeek.para === $item.para &amp;&amp; $item.kept > 0) paraPlayer.seek(cardSeek.t);" />
-          <VStack automationId="para-card" gap="$space-1" padding="$space-3" borderRadius="$space-2"
+          <VStack automationId="{'para-card-' + $item.para}" gap="$space-1" padding="$space-3" borderRadius="$space-2"
             backgroundColor="{currentPara === $item.para ? '$color-primary-50' : '$color-surface-50'}"
             onClick="
               if (currentPara !== $item.para) {
@@ -743,4 +758,11 @@
       </VStack>
     </Splitter>
   </VStack>
+  <ModalDialog id="samplesInfo" title="Samples">
+    <Text value="Samples are short stretches of each speaker's voice. Studio uses them to tell who is talking when it makes the final transcript. The names you pick from come from Settings, under Speakers in this project." />
+    <Text value="Turning Samples on shows the text word by word, so a selection covers a range of whole words rather than a sweep of characters. Drag across a stretch, or double-click a word, then pick whose voice it is." />
+    <Text value="It's especially helpful to isolate a speaker inside a paragraph where two people talk. Whole paragraphs where only one person speaks are useful too." />
+    <Text value="Aim for at least 30 seconds of samples for each speaker, chosen from anywhere in the recording. The samples list shows each one's length." />
+    <Text value="You can always clear a sample (its Clear button) or add more, then Remake final transcript on the Final transcript page." />
+  </ModalDialog>
 </Component>

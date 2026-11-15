@@ -83,6 +83,82 @@
         };
       };
     </script>
+    <!-- Podcast page, Samples switch: turning Samples on or off lays the
+         words out differently, so card heights change and the list jumps.
+         studioMarkCard(para) records where a paragraph card sits (the
+         selected one, or with para null the topmost one in view);
+         studioRestoreCard() runs after the re-render, finds the card
+         again and scrolls so it sits where it was. It resolves to
+         {found}: false means the virtualized list didn't render the card,
+         and Podcast.xmlui falls back to paraList.scrollToIndex. Each
+         restore is logged (podcast-page: samples-toggle) to
+         serve_media.log. -->
+    <script>
+      (function () {
+        var mark = null;
+        function cards() {
+          return Array.prototype.slice.call(
+            document.querySelectorAll('[data-automation-id*="para-card-"]'));
+        }
+        function paraOf(el) {
+          var m = /para-card-(\d+)/.exec(el.getAttribute("data-automation-id") || "");
+          return m ? Number(m[1]) : null;
+        }
+        function scroller(el) {
+          for (var p = el.parentElement; p; p = p.parentElement) {
+            var oy = getComputedStyle(p).overflowY;
+            if ((oy === "auto" || oy === "scroll") && p.scrollHeight > p.clientHeight) return p;
+          }
+          return document.scrollingElement;
+        }
+        function log(body) {
+          try {
+            fetch(window.STUDIO_API + "/podcast/log", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }).catch(function () {});
+          } catch (e) {}
+        }
+        window.studioMarkCard = function (para) {
+          mark = null;
+          var all = cards(), el = null;
+          if (para !== null && para !== undefined) {
+            el = all.find(function (c) { return paraOf(c) === para; }) || null;
+          }
+          if (!el) {
+            // None selected (or it isn't drawn): the topmost card in view.
+            var sc = all.length ? scroller(all[0]) : null;
+            var top = sc && sc !== document.scrollingElement ? sc.getBoundingClientRect().top : 0;
+            el = all.find(function (c) { return c.getBoundingClientRect().bottom > top; }) || null;
+          }
+          if (el) mark = { para: paraOf(el), top: el.getBoundingClientRect().top };
+        };
+        window.studioRestoreCard = function () {
+          var m = mark;
+          mark = null;
+          if (!m) {
+            log({ ev: "samples-toggle", para: null, found: false, note: "no card marked" });
+            return Promise.resolve({ found: false, para: null });
+          }
+          return new Promise(function (resolve) {
+            requestAnimationFrame(function () {
+              requestAnimationFrame(function () {
+                var el = cards().find(function (c) { return paraOf(c) === m.para; });
+                if (!el) {
+                  log({ ev: "samples-toggle", para: m.para, found: false, fallback: true });
+                  resolve({ found: false, para: m.para });
+                  return;
+                }
+                var moved = el.getBoundingClientRect().top - m.top;
+                scroller(el).scrollTop += moved;
+                log({ ev: "samples-toggle", para: m.para, found: true, moved: Math.round(moved), fallback: false });
+                resolve({ found: true, para: m.para });
+              });
+            });
+          });
+        };
+      })();
+    </script>
     <!-- XMLUI build with render:pass trace events plus xmlui-org/xmlui#3941 candidate 4, which includes candidates 1-3 (a3429e8 + 47c7d3a + 3c100b0 + candidate 2's patch 6aec1cbb…ecb9 + candidate 3's patch a7a1bd1f…86ce; sha256 e4ec32fc…5aaf); revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
     <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after
