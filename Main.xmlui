@@ -780,12 +780,58 @@
            their own $item (https://www.xmlui.org/docs/reference/components/Items),
            so a stray row carries its project's slug itself. -->
       <Items data="{projects.value ? projects.value.projects.filter((p) => p.open) : []}">
-        <HStack verticalAlignment="start" width="100%">
-        <!-- No expander or name: the header's picker says which project
-             this is (2026-11-14: "selector is redundant, the selection is
-             made in the header"). The facts, then the details. -->
-        <VStack width="*" gap="$space-2">
-          <Text variant="secondary" value="{projectFacts($item)}" paddingTop="$space-2" />
+        <!-- The facts and the project's actions (rename, delete) on one row
+             above the table, so the table spans the page: as a side column
+             they took ~228 px, and with the clean-up column the descriptions
+             got 245 px of a 1,039 px window (manage-blurb-width). hasClean:
+             whether any category has a clean-up button, so the rows reserve
+             that column all or none. -->
+        <VStack width="100%" gap="$space-2"
+          var.hasClean="{$item.categories.some((c) => c.actions &amp;&amp; c.actions.length > 0)}">
+        <HStack verticalAlignment="center" width="100%" paddingTop="$space-2">
+          <!-- No expander or name: the header's picker says which project
+               this is (2026-11-14: "selector is redundant, the selection is
+               made in the header"). -->
+          <Text variant="secondary" value="{projectFacts($item)}" width="*" />
+          <!-- Rename: the pencil turns into a text box that saves the name when
+               it loses focus (TextBox has no Enter event:
+               https://www.xmlui.org/docs/reference/components/TextBox), if
+               changed and not empty, as a scene's name does on the Scenes
+               page (/projects/rename: only project.json's name changes, not
+               the folder). -->
+          <Button icon="pencil" size="xs" variant="ghost" when="{renamingProject !== $item.slug}"
+            tooltip="Rename this project" enabled="{!opening}"
+            onClick="projectDraft = $item.name; renamingProject = $item.slug;" />
+          <TextBox when="{renamingProject === $item.slug}" width="220px" initialValue="{$item.name}" autoFocus="true"
+            onDidChange="(v) => projectDraft = v"
+            onLostFocus="
+              const name = projectDraft.trim();
+              renamingProject = '';
+              if (name &amp;&amp; name !== $item.name) {
+                try {
+                  Actions.callApi({ url: window.STUDIO_API + '/projects/rename', method: 'post', invalidates: [],
+                                    body: { slug: $item.slug, name: name } });
+                } catch (e) {
+                  toast.error(e.message);
+                }
+                projects.refetch();
+              }
+            " />
+          <!-- Delete this project: Studio runs on the open project, so the
+               server opens the other project changed most recently and moves
+               this one to the Trash as it starts on that one
+               (delete_open_project, finish_pending_delete). Under its own
+               name, so dragging it back into projects/ restores it. Asks
+               first, naming where you'll be. -->
+          <Button label="Delete this project" variant="outlined" size="sm" themeColor="attention"
+            enabled="{!opening &amp;&amp; !copyingProject &amp;&amp; projects.value.projects.length > 1}"
+            tooltip="{projects.value.projects.length > 1 ? 'Move this project to the Trash and open another' : 'It is the only project: make another one first'}"
+            onClick="
+              const yes = confirm('Delete this project', deleteOpenQuestion($item), 'Move to Trash', 'Keep');
+              if (yes) deleteOpenProject($item);
+            " />
+        </HStack>
+        <VStack width="100%" gap="$space-2">
         <!-- Rows are parted by a light rule and a little padding, not a gap
              (borderBottom, as in
              https://www.xmlui.org/docs/howto/dock-elements-to-panel-edges). -->
@@ -806,7 +852,7 @@
                  buttons stack rather than sit side by side, which kept the
                  column narrow enough for a narrow window. The server sends
                  only buttons that would remove something now. -->
-            <VStack width="210px" horizontalAlignment="end" gap="$space-1">
+            <VStack when="{hasClean}" width="210px" horizontalAlignment="end" gap="$space-1">
               <Items data="{$item.actions}">
                 <Button label="{$item.label}" variant="outlined" size="sm" themeColor="attention"
                   tooltip="Move these to the Trash"
@@ -903,49 +949,7 @@
         </VStack>
         </VStack>
         </VStack>
-        <!-- Rename: the pencil turns into a text box that saves the name when
-             it loses focus (TextBox has no Enter event:
-             https://www.xmlui.org/docs/reference/components/TextBox), if
-             changed and not empty, as a scene's name does on the Scenes
-             page (/projects/rename: only project.json's name changes, not the
-             folder). Beside the expander, not in its summary, so clicking it
-             doesn't toggle the details. -->
-        <HStack horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
-          <Button icon="pencil" size="xs" variant="ghost" when="{renamingProject !== $item.slug}"
-            tooltip="Rename this project" enabled="{!opening}"
-            onClick="projectDraft = $item.name; renamingProject = $item.slug;" />
-          <TextBox when="{renamingProject === $item.slug}" width="220px" initialValue="{$item.name}" autoFocus="true"
-            onDidChange="(v) => projectDraft = v"
-            onLostFocus="
-              const name = projectDraft.trim();
-              renamingProject = '';
-              if (name &amp;&amp; name !== $item.name) {
-                try {
-                  Actions.callApi({ url: window.STUDIO_API + '/projects/rename', method: 'post', invalidates: [],
-                                    body: { slug: $item.slug, name: name } });
-                } catch (e) {
-                  toast.error(e.message);
-                }
-                projects.refetch();
-              }
-            " />
-        </HStack>
-        <!-- Delete this project: Studio runs on the open project, so the
-             server opens the other project changed most recently and moves
-             this one to the Trash as it starts on that one
-             (delete_open_project, finish_pending_delete). Under its own
-             name, so dragging it back into projects/ restores it. Asks
-             first, naming where you'll be. -->
-        <HStack width="170px" horizontalAlignment="end" verticalAlignment="center" paddingTop="$space-2">
-          <Button label="Delete this project" variant="outlined" size="sm" themeColor="attention"
-            enabled="{!opening &amp;&amp; !copyingProject &amp;&amp; projects.value.projects.length > 1}"
-            tooltip="{projects.value.projects.length > 1 ? 'Move this project to the Trash and open another' : 'It is the only project: make another one first'}"
-            onClick="
-              const yes = confirm('Delete this project', deleteOpenQuestion($item), 'Move to Trash', 'Keep');
-              if (yes) deleteOpenProject($item);
-            " />
-        </HStack>
-        </HStack>
+        </VStack>
       </Items>
       <!-- The same for what projects share: sources/ and the repo's media/. -->
       <H3 when="{projects.value &amp;&amp; projects.value.shared_stray.length > 0}">Stray items in shared folders</H3>
