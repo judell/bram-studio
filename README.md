@@ -18,10 +18,79 @@ transcript** for a podcast.
 Built with and inside [Bram](https://github.com/judell/bram);
 macOS only for now (the voice recorder uses AVFoundation).
 
-Along the way we have needed, built, and are shipping new core XMLUI components:
-`MediaPlayer` ([xmlui-org/xmlui#3913](https://github.com/xmlui-org/xmlui/issues/3913)) and
-`PointerLayer` ([#3919](https://github.com/xmlui-org/xmlui/issues/3919)), with anchors that
-place content at picture coordinates ([#3922](https://github.com/xmlui-org/xmlui/issues/3922)).
+<details>
+<summary><b>Getting started</b></summary>
+
+No experience needed. You'll get an AI assistant, run a few lines in Terminal, and from
+then on the assistant helps with the rest.
+
+**Before you start**
+
+1. **What you need:** a Mac; an AI assistant plan, either **Claude** (Pro or Max) or
+   **ChatGPT** (for Codex); a screen recording or podcast recording, sitting on your Mac's
+   Desktop as an `.mp4` file; and about half an hour the first time, mostly downloads.
+2. **Open Terminal:** press ⌘ Space, type **Terminal**, press Return. A window with a
+   text prompt opens. For each command below, paste it into that window and press Return.
+3. **Let Terminal find what you install.** Paste this, then close the Terminal window and
+   open a new one. Do this even if you're not sure you need it; running it again does no
+   harm.
+
+   ```sh
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+   ```
+
+4. **Install your assistant**, the one that matches your plan. **Skip this if you already
+   use Claude Code or Codex.**
+   - **Claude (Claude Code):** paste this, then type `claude` and follow its sign-in.
+     Type `/exit` when it's ready.
+
+     ```sh
+     curl -fsSL https://claude.ai/install.sh | bash
+     ```
+
+   - **ChatGPT (Codex):** Codex comes through Homebrew, a standard installer for tools
+     like this, so install that first with the command published at
+     [brew.sh](https://brew.sh):
+
+     ```sh
+     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+     ```
+
+     It asks for your **Mac login password**, and nothing appears as you type; that's
+     normal. When it finishes it shows **Next steps** with a line or two to paste; paste
+     them. Then paste `brew install --cask codex`, then type `codex` and choose **Sign in
+     with ChatGPT**. Press Ctrl-C when you're signed in.
+
+**Get Bram Studio running.** One line at a time:
+
+```sh
+curl -fsSL https://github.com/judell/bram/releases/latest/download/install.sh | bash
+cd ~
+git clone https://github.com/judell/bram-studio.git
+cd bram-studio
+bram
+```
+
+- The first line installs Bram. **Skip it if you already have Bram.** Running it again is
+  harmless; it just updates to the latest version.
+- `cd ~` goes to your home folder, so Bram Studio lands in a known place.
+- `git clone` downloads Bram Studio into a folder named `bram-studio`. If a window offers
+  to install "command line developer tools", click **Install**, wait for it to finish,
+  then paste the `git clone` line again.
+- `cd bram-studio` goes into that folder.
+- `bram` starts Bram there. If its window asks **Which agent do you use?**, click
+  **Claude** or **Codex**, whichever you use.
+
+**Hand it to the assistant.** Bram Studio opens in your browser. Click **Get me going**:
+Bram's window comes forward with a message ready, and you press Return. The assistant
+takes it from there. It checks your Mac, installs what's missing with you (it asks first,
+and tells you when and where to type your Mac password), and helps you start your first
+podcast.
+
+**Next time:** open Terminal and run `cd ~/bram-studio`, then `bram`.
+**Stuck?** Ask the assistant in Bram's window, in plain words.
+
+</details>
 
 <details>
 <summary><b>Screencast in detail</b></summary>
@@ -186,5 +255,15 @@ A Studio from before projects keeps working from the repo's own `studio.db`, `me
   serves `/__shell/dictation.js` ([judell/bram#417](https://github.com/judell/bram/issues/417)).
   It listens on the browser's default microphone and transcribes with `whisper-server`
   (whisper.cpp): Bram's when it is running, otherwise one Studio starts with the model above.
+
+</details>
+
+<details>
+<summary><b>Notes</b></summary>
+
+Along the way we have needed, built, and are shipping new core XMLUI components:
+`MediaPlayer` ([xmlui-org/xmlui#3913](https://github.com/xmlui-org/xmlui/issues/3913)) and
+`PointerLayer` ([#3919](https://github.com/xmlui-org/xmlui/issues/3919)), with anchors that
+place content at picture coordinates ([#3922](https://github.com/xmlui-org/xmlui/issues/3922)).
 
 </details>
