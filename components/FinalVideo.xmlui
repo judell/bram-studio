@@ -47,13 +47,39 @@
     function all() {
       return (final.value && final.value.versions) || [];
     }
-    // The version shown: the one picked, else the newest.
+    // Every video the picker offers (screencast-exports-coherent): Studio's
+    // versions, newest first, then (a screencast's Exports tab) every other
+    // video in its exports, edited elsewhere or leveled, so each file is
+    // listed once. key: 'v<n>' for a version, 'f:<name>' for another file.
+    function videos() {
+      const vs = all().map((v) => ({ ...v, key: 'v' + v.n, version: true }));
+      const others = ((final.value && final.value.others) || [])
+        .map((o) => ({ ...o, key: 'f:' + o.name, version: false }));
+      return vs.concat(others);
+    }
+    // The video shown: the one picked, else the newest version (or file).
     function shown() {
-      const vs = all();
-      return vs.find((v) => v.n === pick) || vs[0] || null;
+      const list = videos();
+      return list.find((v) => v.key === pick) || list[0] || null;
     }
     function label(v) {
-      return 'v' + v.n + ' · ' + v.madeAt + ' · ' + stamp(v.secs);
+      if (!v.version) {
+        return v.name + ' · ' + (v.leveled ? 'leveled' : 'edited elsewhere') + ' · ' + v.madeAt
+          + (v.secs ? ' · ' + stamp(v.secs) : '');
+      }
+      return 'v' + v.n + ' · ' + v.madeAt + ' · ' + stamp(v.secs) + (all()[0] && v.n === all()[0].n ? ' (newest)' : '');
+    }
+    // A file's note (screencast), saved when the box loses focus; an empty
+    // note removes it (POST /exports/note).
+    function saveNote(v, text) {
+      if (!v || text === (v.note || '')) return;
+      try {
+        Actions.callApi({ url: window.STUDIO_API + '/exports/note', method: 'post', invalidates: [],
+                          body: { name: v.name, where: v.where || 'exports', note: text } });
+      } catch (e) {
+        toast.error(e.message);
+      }
+      final.refetch();
     }
     function make() {
       if (genre === 'screencast') {
@@ -75,14 +101,17 @@
         toast.error(e.message);
       }
     }
-    function remove(n) {
+    // Delete the video with this key: a screencast's file (version or not)
+    // through the Exports delete, a podcast version through its own.
+    function remove(key) {
       confirmDelete = null;
+      const v = videos().find((x) => x.key === key);
+      if (!v) return;
       if (genre === 'screencast') {
-        const v = all().find((x) => x.n === n);
         try {
-          if (v) Actions.callApi({ url: window.STUDIO_API + '/exports/delete', method: 'post', invalidates: [],
-                                   body: { name: v.name, where: 'exports' } });
-          if (pick === n) pick = null;
+          Actions.callApi({ url: window.STUDIO_API + '/exports/delete', method: 'post', invalidates: [],
+                          body: { name: v.name, where: v.where || 'exports' } });
+          if (pick === key) pick = null;
         } catch (e) {
           toast.error(e.message);
         }
@@ -91,8 +120,8 @@
       }
       try {
         Actions.callApi({ url: window.STUDIO_API + '/podcast/final/delete', method: 'post', invalidates: [],
-                          body: { source, n } });
-        if (pick === n) pick = null;
+                          body: { source, n: v.n } });
+        if (pick === key) pick = null;
       } catch (e) {
         toast.error(e.message);
       }
@@ -103,8 +132,10 @@
       if (p) return 'Making the final video' + (p.total ? ': paragraph ' + p.done + ' of ' + p.total : '…');
       if (!f) return '';
       if (f.noTranscript) return 'Nothing to make yet: transcribe the recording in the Workspace first.';
-      if (!f.exists) return 'No final video yet.';
-      return all().length + (all().length === 1 ? ' version' : ' versions');
+      const others = (f.others || []).length;
+      const more = others ? ' · ' + others + (others === 1 ? ' other video' : ' other videos') : '';
+      if (!f.exists) return 'No final video yet.' + more;
+      return all().length + (all().length === 1 ? ' version' : ' versions') + more;
     }
   </script>
 
@@ -113,22 +144,30 @@
       data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
       initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; } }" />
     <HStack verticalAlignment="center">
+      <!-- Dimmed when the newest version is known to be current: nothing
+           would change (screencast-exports-coherent). Unknown (made before
+           Studio recorded what went into a version) stays enabled. -->
       <Button size="sm" variant="outlined"
         label="{final.value &amp;&amp; final.value.exists ? 'Remake final video' : 'Make final video'}"
-        enabled="{(genre === 'screencast' || !!source) &amp;&amp; !progress() &amp;&amp; !(final.value &amp;&amp; final.value.noTranscript)}" onClick="make()" />
+        tooltip="{final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === true ? 'Nothing has changed since the newest version' : ''}"
+        enabled="{(genre === 'screencast' || !!source) &amp;&amp; !progress() &amp;&amp; !(final.value &amp;&amp; final.value.noTranscript) &amp;&amp; !(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === true)}" onClick="make()" />
       <Spinner when="{!!progress()}" />
       <Text variant="secondary" value="{line()}" />
     </HStack>
     <Text when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === false &amp;&amp; !progress())}"
       value="{genre === 'screencast' ? 'The scenes have changed since the newest version was made: Remake to bring it up to date.' : 'The edit has changed since the newest version was made: Remake to bring it up to date.'}" />
+    <Text variant="secondary" when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === null &amp;&amp; !progress())}"
+      value="Studio can’t tell whether this version is up to date: it was made before Studio kept track of what goes into each version. Remake once, and from then on Remake is dimmed whenever nothing has changed." />
     <HStack when="{!!shown()}" verticalAlignment="center">
-      <Select width="420px" data="{all().map((v) => ({ value: v.n, label: label(v) + (v.n === all()[0].n ? ' (newest)' : '') }))}"
-        initialValue="{shown() ? shown().n : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
+      <Select width="420px" data="{videos().map((v) => ({ value: v.key, label: label(v) }))}"
+        initialValue="{shown() ? shown().key : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
       <Link when="{confirmDelete === null}" to="{shown() ? shown().url + (shown().url.indexOf('?') &gt;= 0 ? '&amp;' : '?') + 'download=1' : ''}"
         target="_blank">Download video</Link>
-      <Button when="{confirmDelete === null}" size="sm" variant="ghost" label="Delete this version"
-        enabled="{!progress()}" onClick="confirmDelete = shown().n" />
-      <Text when="{confirmDelete !== null}" value="{'Delete v' + confirmDelete + '?'}" />
+      <Button when="{confirmDelete === null}" size="sm" variant="ghost"
+        label="{shown() &amp;&amp; shown().version ? 'Delete this version' : 'Delete this video'}"
+        enabled="{!progress()}" onClick="confirmDelete = shown().key" />
+      <Text when="{confirmDelete !== null}"
+        value="{'Delete ' + (shown() &amp;&amp; shown().version ? 'v' + shown().n : (shown() ? shown().name : '')) + '?'}" />
       <Button when="{confirmDelete !== null}" size="sm" variant="outlined" themeColor="attention" label="Delete"
         onClick="remove(confirmDelete)" />
       <Button when="{confirmDelete !== null}" size="sm" variant="ghost" label="Keep" onClick="confirmDelete = null" />
@@ -139,5 +178,15 @@
          its proportions within both limits. -->
     <MediaPlayer when="{!!shown()}" width="100%" maxHeight="calc(100vh - 360px)"
       preload="metadata" src="{shown() ? shown().url : undefined}" />
+    <!-- The shown file's note (a screencast's Exports tab): what it is,
+         since names can't say. Saved when the box loses focus; keyed by the
+         file so switching files shows each one's own note. Typed only: the
+         Exports list's 🎤 dictation lived in Main.xmlui's scope. -->
+    <ChangeListener listenTo="{shown() ? shown().key + '|' + (shown().note || '') : ''}"
+      onDidChange="if (genre === 'screencast' &amp;&amp; shown()) noteBox.setValue(shown().note || '');" />
+    <TextBox when="{genre === 'screencast' &amp;&amp; !!shown()}" id="noteBox" width="100%"
+      placeholder="A note on this video, e.g. what's in it or where it went"
+      initialValue="{shown() ? (shown().note || '') : ''}"
+      onLostFocus="saveNote(shown(), (noteBox.value || '').trim())" />
   </VStack>
 </Component>

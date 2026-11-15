@@ -3106,7 +3106,20 @@ def screencast_finals(db):
                    "secs": secs, "madeAt": rec.get("madeAt") or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
                    "current": (rec["scenes"] == key) if "scenes" in rec else None})
     vs.reverse()
-    out = {"making": {"exporting": True} if exporting.locked() else None, "versions": vs, "exists": bool(vs)}
+    # Every other video in media/exports/ (edited elsewhere, leveled), so the
+    # Exports tab lists each file once, in one picker; and every file's note
+    # (screencast-exports-coherent).
+    listed = list_exports()
+    notes = {e["name"]: e.get("note", "") for e in listed["exports"] + listed["leveled"]}
+    for v in vs:
+        v["note"], v["where"] = notes.get(v["name"], ""), "exports"
+    names = {v["name"] for v in vs}
+    others = [{"name": e["name"], "url": e["url"], "secs": e["seconds"], "madeAt": e["created"],
+               "note": e.get("note", ""), "where": e["where"], "leveled": e in listed["leveled"]}
+              for e in listed["exports"] + listed["leveled"] if e["name"] not in names]
+    others.sort(key=lambda e: e["madeAt"], reverse=True)
+    out = {"making": {"exporting": True} if exporting.locked() else None, "versions": vs, "exists": bool(vs),
+           "others": others}
     if vs:
         out.update({k: vs[0][k] for k in ("n", "url", "secs", "madeAt", "current")})
     return out
