@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
+  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -30,6 +30,12 @@
   <DataSource id="segments" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT g.id, g.t0, g.t1, g.text, g.speaker_id, s.name, s.color FROM segments g LEFT JOIN speakers s ON s.id = g.speaker_id WHERE g.source = ? ORDER BY g.t0',
              params: [source] }}" />
+  <!-- Raw transcript opened from the Workspace (para=N): where paragraph N
+       starts in the original recording, so the segment holding it can be
+       scrolled to and tinted. -->
+  <DataSource id="paraStart" when="{view === 'Transcript' &amp;&amp; !!source &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== ''}"
+    url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT min(t0) AS t0 FROM words WHERE source = ? AND para = ?', params: [source, Number($props.para)] }}" />
 
   <!-- The text to edit and the cut list (serve_media.py's /transcripts/text
        and /transcripts/cuts). These and the paragraphs and samples wait for a
@@ -298,9 +304,9 @@
          paragraph is selected and scrolled to, once its list has loaded, and
          a link goes back to where you were in the transcript. -->
     <Link when="{!!$props.back}" to="{$props.back || ''}">← Back to final transcript</Link>
-    <ChangeListener listenTo="{paras.value &amp;&amp; !jumped &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== '' ? paras.value.length : 0}"
+    <ChangeListener listenTo="{view === 'Edit text' &amp;&amp; paras.value &amp;&amp; !jumped &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== '' ? paras.value.length : 0}"
       onDidChange="() => {
-        if (jumped || !paras.value || $props.para === undefined || $props.para === null || $props.para === '') return;
+        if (view !== 'Edit text' || jumped || !paras.value || $props.para === undefined || $props.para === null || $props.para === '') return;
         const n = Number($props.para);
         const k = paras.value.findIndex((p) => p.para === n);
         if (k &lt; 0) return;
@@ -308,7 +314,30 @@
         currentPara = n;
         paraList.scrollToIndex(k);
         Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                          body: { ev: 'current', para: n, by: 'final-transcript' } });
+                          body: { ev: 'current', para: n, by: $props.back ? 'final-transcript' : 'return' } });
+      }" />
+    <!-- The Workspace's selection leaves the page by emitting it: Main.xmlui
+         keeps it (workspacePara) for the Final transcript, Final video and
+         Raw transcript tabs, and hands it back when this page reopens. -->
+    <ChangeListener listenTo="{view === 'Edit text' ? currentPara : null}"
+      onDidChange="(c) => { if (c.newValue !== c.prevValue) emitEvent('paraChange', c.newValue); }" />
+    <!-- Raw transcript, given the Workspace's paragraph: once the segments and
+         the paragraph's start are in, scroll to the last segment starting at
+         or before it and tint it (rawPlace, apart from currentId, which
+         tracks playback). Once only. -->
+    <ChangeListener listenTo="{view === 'Transcript' &amp;&amp; rawPlace === null &amp;&amp; segments.value &amp;&amp; paraStart.value ? segments.value.length : 0}"
+      onDidChange="() => {
+        if (rawPlace !== null || !segments.value || !paraStart.value) return;
+        const t = paraStart.value[0] ? paraStart.value[0].t0 : null;
+        const segs = segments.value;
+        let k = -1;
+        if (t !== null &amp;&amp; t !== undefined) {
+          for (let j = 0; j &lt; segs.length; j++) { if (segs[j].t0 &lt;= t) k = j; }
+        }
+        rawPlace = k >= 0 ? segs[k].id : -1;
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'raw-place', para: Number($props.para), t0: t, segment: k >= 0 ? segs[k].id : null } });
+        if (k >= 0) transcriptList.scrollToIndex(k);
       }" />
     <!-- The project's sources can change (another project opened, a source
          added): keep the chosen one if it's still there, else the first. -->
@@ -747,7 +776,7 @@
       <List id="transcriptList" when="{view === 'Transcript'}" data="{segments}"
         dataRefreshMode="preserve-state">
         <HStack verticalAlignment="start" gap="$space-2"
-          backgroundColor="{$item.id === currentId ? '$color-primary-100' : undefined}">
+          backgroundColor="{$item.id === currentId ? '$color-primary-100' : ($item.id === rawPlace ? '$color-primary-50' : undefined)}">
           <Button size="xs" variant="ghost" label="{stamp($item.t0)}" tooltip="Play from here"
             onClick="playFrom($item.t0)" />
           <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"

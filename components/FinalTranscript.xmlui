@@ -180,11 +180,39 @@
     <!-- Edit opens the Workspace on the turn's paragraph, with a link back
          here (?n=&turn=); coming back, the list scrolls to that turn and
          tints it, once. -->
-    <ChangeListener listenTo="{ft.value &amp;&amp; cameBack !== null &amp;&amp; !scrolledBack ? ft.value.turns.length : 0}"
+    <ChangeListener listenTo="{ft.value &amp;&amp; ft.value.turns &amp;&amp; cameBack !== null &amp;&amp; !scrolledBack ? ft.value.turns.length : 0}"
       onDidChange="() => {
         if (scrolledBack || cameBack === null || !ft.value || ft.value.turns.length <= cameBack) return;
         scrolledBack = true;
         turnsList.scrollToIndex(cameBack);
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'final-transcript-back', turn: cameBack, n: $props.n } });
+      }" />
+    <!-- Opened by the nav with ?para=N (the Workspace's selection) and no
+         turn: the turn holding that paragraph, the last whose first
+         paragraph is at or before it. It becomes cameBack, so the same
+         scroll and tint as coming back from Edit apply. -->
+    <ChangeListener
+      listenTo="{ft.value &amp;&amp; ft.value.turns &amp;&amp; cameBack === null &amp;&amp; !scrolledBack &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== '' ? ft.value.turns.length : 0}"
+      onDidChange="() => {
+        if (scrolledBack || cameBack !== null || !ft.value || !ft.value.turns || $props.para === undefined || $props.para === null || $props.para === '') return;
+        const n = Number($props.para);
+        const turns = ft.value.turns;
+        // The first turn starting in that paragraph; with none, the turn it
+        // continues (the last starting before it). Not the last turn
+        // starting in it: a paragraph can hold several.
+        let k = turns.findIndex((t) => t.para === n);
+        if (k &lt; 0) {
+          for (let j = 0; j &lt; turns.length; j++) {
+            if (turns[j].para !== null &amp;&amp; turns[j].para !== undefined &amp;&amp; turns[j].para &lt; n) k = j;
+          }
+        }
+        scrolledBack = true;
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'final-transcript-place', para: n, turn: k >= 0 ? turns[k].i : null, found: k >= 0 } });
+        if (k &lt; 0) return;
+        cameBack = turns[k].i;
+        turnsList.scrollToIndex(k);
       }" />
     <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}">
       <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4"

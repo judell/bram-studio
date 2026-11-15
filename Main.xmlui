@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied="" var.staging="{false}"
+<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied="" var.staging="{false}" var.workspacePara="{null}"
   onReady="probeServer()"
   onError="(error, event) => { if (serverUp !== true || (projects.loaded &amp;&amp; projects.value &amp;&amp; !projects.value.open)) event.preventDefault(); }">
   <!-- A header band over the main area and no nav: the open project decides
@@ -683,7 +683,8 @@
          page carries the Final video controls
          (tabs-by-genre-exports-final-video). -->
     <NavLink when="{projects.value.genre === 'podcast'}" label="Final video" to="/final-video" />
-    <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript" to="/final-transcript" />
+    <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript"
+      to="{workspacePara !== null &amp;&amp; workspacePara !== undefined ? '/final-transcript?para=' + workspacePara : '/final-transcript'}" />
     <!-- Exports, a screencast's (exports-tab-in-nav): it was reachable only
          from a link in Settings, so it read as no page at all. -->
     <NavLink when="{projects.value.genre !== 'podcast'}" label="Exports" to="/exports" />
@@ -979,7 +980,8 @@
            back (the final transcript's Edit links). -->
       <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
         sources="{projects.value ? (projects.value.sources || []) : []}"
-        para="{$queryParams.para}" back="{$queryParams.back}" project="{projects.value ? projects.value.open : ''}" />
+        para="{$queryParams.para || workspacePara}" back="{$queryParams.back}"
+        onParaChange="(n) => workspacePara = n" project="{projects.value ? projects.value.open : ''}" />
       <Fragment when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}">
       <HStack verticalAlignment="center">
         <!-- Scene callouts (/scenes/callouts): each scene gets at most one
@@ -1252,7 +1254,7 @@
     <!-- A podcast project's other three steps (the nav above); for any
          other project they lead back to its editor. -->
     <Page url="/raw">
-      <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}" view="Transcript"
+      <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}" view="Transcript" para="{workspacePara}"
         sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
@@ -1260,6 +1262,7 @@
          screencast's scenes joined (Export). -->
     <Page url="/final-video">
       <FinalVideo when="{projects.loaded}" genre="{projects.value.genre === 'podcast' ? 'podcast' : 'screencast'}"
+        para="{workspacePara}"
         sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
     </Page>
     <Page url="/final-transcript">
@@ -1267,7 +1270,7 @@
            Workspace's "Back to final transcript". -->
       <FinalTranscript when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}"
         sources="{projects.value ? (projects.value.sources || []) : []}"
-        n="{$queryParams.n}" turn="{$queryParams.turn}" project="{projects.value ? projects.value.open : ''}" />
+        n="{$queryParams.n}" turn="{$queryParams.turn}" para="{$queryParams.para}" project="{projects.value ? projects.value.open : ''}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
     <Page url="/exports">

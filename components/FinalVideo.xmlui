@@ -21,6 +21,13 @@
   <DataSource id="final" when="{genre === 'screencast' || !!source}"
     url="{genre === 'screencast' ? window.STUDIO_API + '/screencast/final' : window.STUDIO_API + '/podcast/final?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
+  <!-- Opened from the Workspace's selection (para=N): where that paragraph
+       starts in the newest version (serve_media.py's GET /final/at). The
+       player is cued there, not played; another picked version starts at 0:00,
+       the time belonging to the newest. -->
+  <DataSource id="at" when="{genre === 'podcast' &amp;&amp; !!source &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== ''}"
+    url="{window.STUDIO_API + '/final/at?source=' + encodeURIComponent(source) + '&amp;para=' + encodeURIComponent($props.para) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+
   <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => {
       if (m.final === source) {
@@ -126,6 +133,17 @@
         toast.error(e.message);
       }
     }
+    // The cue: the time in the newest version, when it's the one shown.
+    function cueAt() {
+      const a = at.value, vs = all();
+      if (!a || a.at === null || a.at === undefined || !vs[0] || !shown() || shown().key !== 'v' + vs[0].n) return null;
+      return a.at;
+    }
+    function cue() {
+      const t = cueAt();
+      if (t === null) return;
+      try { player.seek(t); } catch (e) { /* the player isn't up yet: its metadata event cues */ }
+    }
     function line() {
       const p = progress(), f = final.value;
       if (p && p.exporting) return 'Exporting the scenes…';
@@ -176,8 +194,17 @@
          what's left under the header, nav and the rows above (~360 px), so
          the whole video and its controls are in view. The browser keeps
          its proportions within both limits. -->
-    <MediaPlayer when="{!!shown()}" width="100%" maxHeight="calc(100vh - 360px)"
-      preload="metadata" src="{shown() ? shown().url : undefined}" />
+    <MediaPlayer id="player" when="{!!shown()}" width="100%" maxHeight="calc(100vh - 360px)"
+      preload="metadata" src="{shown() ? shown().url : undefined}" onLoadedMetadata="cue()" />
+    <Text variant="secondary" when="{cueAt() !== null}"
+      value="{'Cued to ' + stamp(cueAt()) + ', where your selected paragraph starts'}" />
+    <ChangeListener listenTo="{at.value ? at.value.at + '|' + at.value.n : ''}"
+      onDidChange="() => {
+        if (!at.value) return;
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'final-video-place', para: Number($props.para), n: at.value.n, at: at.value.at } });
+        try { if (player.duration) cue(); } catch (e) { }
+      }" />
     <!-- The shown file's note (a screencast's Exports tab): what it is,
          since names can't say. Saved when the box loses focus; keyed by the
          file so switching files shows each one's own note. Typed only: the

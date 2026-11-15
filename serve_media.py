@@ -3289,6 +3289,25 @@ def final_words(db, source, info):
     return out
 
 
+def final_at(db, source, para):
+    # Where paragraph para starts in the newest final video: {n, at}. A
+    # paragraph that isn't in that video falls back to the nearest earlier
+    # one that is; {n, at: None} when none is (or n None with no video).
+    vs = versions(source, "video")
+    if not vs:
+        return {"n": None, "at": None}
+    n, info = vs[0]
+    earlier = [c for c in info["clips"] if c["para"] <= para]
+    if not earlier:
+        return {"n": n, "at": None}
+    clip = max(earlier, key=lambda c: c["para"])
+    duration = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+    marks = para_marks(db, source, clip["para"], (duration[0] if duration else 0) or 0)
+    if not marks:
+        return {"n": n, "at": round(clip["at"], 2)}
+    return {"n": n, "at": round(clip["at"] + marks[0][1], 2)}
+
+
 def turns_of(words, names, colors):
     # Consecutive words with one speaker make a turn; a turn is unsure when
     # most of its words' matches were.
@@ -3851,6 +3870,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.para_marks_route()
         if self.path.startswith("/screencast/final"):
             return self.send_json(200, screencast_finals(sqlite3.connect(DB)))
+        if self.path.startswith("/final/at"):
+            return self.final_at_route()
         if self.path.startswith("/podcast/final-transcript"):
             return self.final_transcript_route()
         if self.path.startswith("/podcast/final"):
@@ -4243,6 +4264,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(200, {"exists": False, "versions": [], "making": None, "noTranscript": True})
             state = final_state(db, source)
         self.send_json(200, state)
+
+    def final_at_route(self):
+        # GET /final/at?source=&para=N: the newest final video's version and
+        # the time in it where paragraph N starts (final_at).
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        try:
+            para = int(query.get("para", [""])[0])
+        except ValueError:
+            return self.send_json(400, {"error": "expected para"})
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(200, {"n": None, "at": None})
+            self.send_json(200, final_at(db, source, para))
 
     def final_transcript_route(self):
         # GET /podcast/final-transcript?source=&n=: the transcript versions
