@@ -630,9 +630,9 @@
   </ModalDialog>
   <AppHeader when="{serverUp === true}">
     <!-- Clean and minimal: the title (back to the open project's editor),
-         the project picker, New project and a settings icon. Everything else
-         (Exports, Manage projects, Audio, trace and Inspector) is on the
-         Settings page, which belongs to the open project. -->
+         the project picker, New project and a settings icon. The project's
+         own pages are the nav's tabs (Exports last); Audio, trace and
+         Inspector are on the Settings page. -->
     <HStack verticalAlignment="center" width="100%">
       <Link to="/"><H3>Bram Studio</H3></Link>
       <!-- The open project, as a picker on every page, each labeled with its
@@ -650,8 +650,8 @@
         onClick="newProjectDialog.open()" />
       <!-- Settings, and back: away from the editor the same icon returns to it. -->
       <Button icon="cog" variant="ghost" size="sm"
-        tooltip="{['/', '/raw', '/final-video', '/final-transcript', '/manage'].includes($pathname) ? 'Settings' : 'Back to the project'}"
-        onClick="navigate(['/', '/raw', '/final-video', '/final-transcript', '/manage'].includes($pathname) ? '/settings' : '/')" />
+        tooltip="{['/', '/raw', '/final-video', '/final-transcript', '/manage', '/exports'].includes($pathname) ? 'Settings' : 'Back to the project'}"
+        onClick="navigate(['/', '/raw', '/final-video', '/final-transcript', '/manage', '/exports'].includes($pathname) ? '/settings' : '/')" />
     </HStack>
   </AppHeader>
   <!-- A project's steps, as a row under the header (layout
@@ -669,6 +669,9 @@
     <NavLink label="Final video" to="/final-video" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript" to="/final-transcript" />
     <NavLink label="Manage" to="/manage" />
+    <!-- Exports, the last tab (exports-tab-in-nav): it was reachable only
+         from a link in Settings, so it read as no page at all. -->
+    <NavLink label="Exports" to="/exports" />
   </NavPanel>
   <!-- The server's down (serverUp false): a welcome face instead of the
        editor. Get me going copies a prompt for the agent in Bram's window;
