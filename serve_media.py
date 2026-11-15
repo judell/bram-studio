@@ -231,7 +231,7 @@ def push(message):
 USAGE = (("takes", "Takes", "the takes, their clean copies, their lossless audio, replaced narration audio, "
           "previews"),
          ("remix", "Re-mix ingredients", "sessions and tracks of the takes in the list"),
-         ("exports", "Exports", "Final video versions and other exported videos (the Exports tab)"),
+         ("exports", "Exports", "Final videos and other exported videos (the Exports tab)"),
          ("transcripts", "Transcripts", "whisper's transcripts and the audio it heard, one folder per source; "
           "Transcribe remakes them"),
          ("logs", "Logs", "logs Studio wrote, kept for tracing what happened"),
@@ -509,6 +509,8 @@ def project_usage(folder):
     if info.get("genre") == "podcast":
         labels["takes"] = ("Project files", "this project's database (the transcript, your edits, speakers) "
                            "and previews Studio rebuilds as needed")
+        # A podcast has no Exports tab (tabs-by-genre-exports-final-video).
+        labels["exports"] = ("Exports", "Final video versions (the Final video tab)")
     return {"bytes": sum(size.values()),
             "categories": [{"key": k, "label": labels[k][0], "about": labels[k][1], "bytes": size[k],
                             "files": count[k]} for k, _, _ in USAGE],

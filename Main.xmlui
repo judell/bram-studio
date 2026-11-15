@@ -679,12 +679,16 @@
   <NavPanel when="{serverUp === true &amp;&amp; projects.loaded &amp;&amp; !!projects.value.open}">
     <NavLink label="Workspace" to="/" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Raw transcript" to="/raw" />
-    <NavLink label="Final video" to="/final-video" />
+    <!-- Final video for a podcast, Exports for a screencast, whose Exports
+         page carries the Final video controls
+         (tabs-by-genre-exports-final-video). -->
+    <NavLink when="{projects.value.genre === 'podcast'}" label="Final video" to="/final-video" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript" to="/final-transcript" />
-    <NavLink label="Manage" to="/manage" />
-    <!-- Exports, the last tab (exports-tab-in-nav): it was reachable only
+    <!-- Exports, a screencast's (exports-tab-in-nav): it was reachable only
          from a link in Settings, so it read as no page at all. -->
-    <NavLink label="Exports" to="/exports" />
+    <NavLink when="{projects.value.genre !== 'podcast'}" label="Exports" to="/exports" />
+    <!-- Manage last, in both genres. -->
+    <NavLink label="Manage" to="/manage" />
   </NavPanel>
   <!-- The server's down (serverUp false): a welcome face instead of the
        editor. Get me going copies a prompt for the agent in Bram's window;
@@ -1269,6 +1273,11 @@
            waits to offer Level. -->
       <Theme size-Spinner="1em">
       <H2>Exports</H2>
+      <!-- A screencast's final video is made here: it has no Final video
+           tab (tabs-by-genre-exports-final-video). The list below still
+           shows each export with its note, versions included. -->
+      <FinalVideo when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" genre="screencast"
+        sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
       <HStack verticalAlignment="center" when="{exportTakes.inProgress}">
         <Spinner />
         <Text value="Exporting scenes…" />

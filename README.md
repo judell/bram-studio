@@ -11,10 +11,6 @@ Bram Studio makes two kinds of project:
   Final transcript says who's speaking, matched from a few samples of each voice. Both
   keep every version, and two transcripts can be compared.
 
-Each project lives in folder of its own. Each displays a row of tabs:
-**Workspace**, **Final video** and **Manage**, plus **Raw transcript** and **Final
-transcript** for a podcast. 
-
 Built with and inside [Bram](https://github.com/judell/bram);
 macOS only for now (the voice recorder uses AVFoundation).
 
@@ -113,11 +109,12 @@ podcast.
   ovals, arrows, lines and pointers work the same way. They're drawn live while you edit,
   and burned into each changed scene when the final video is made. Each change is a step in
   the scene's history, so Undo takes it back.
-- **Final video:** **Make final video** (then **Remake**) joins the scenes in list order into
-  `media/exports/<time>-takes.mp4`. Every version is kept, numbered v1, v2… and listed newest
-  first with a player, **Download video** and **Delete**. The page says when the scenes have
-  changed since the newest version (their order, their files, their callouts). The Exports
-  page (Settings › Exports) lists the same files, with notes and Level.
+- **Exports:** **Make final video** (then **Remake**), at the top of the Exports tab, joins
+  the scenes in list order into `media/exports/<time>-takes.mp4`. Every version is kept,
+  numbered v1, v2… and listed newest first with a player, **Download video** and **Delete**.
+  The tab says when the scenes have changed since the newest version (their order, their
+  files, their callouts). Below, every video in `media/exports/` is listed with a note,
+  including ones you edited elsewhere and saved there.
 - **After editing elsewhere:** if you cut an export in another editor, run
   `python3 level_edit.py <edited.mp4>`. It removes low rumble and evens out the loudness of
   the joined sources, and writes `<name>-leveled.mp4` beside it with the video untouched.
