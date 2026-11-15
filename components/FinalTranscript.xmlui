@@ -217,23 +217,25 @@
         turnsList.scrollToIndex(k);
       }" />
     <!-- The landing is checked when the list reports what's in view, not after
-         a guessed wait: if the target isn't in the visible range, scroll to it
-         again (at most twice). List.scrollToIndex takes no alignment, so a
-         target in range can still sit mid-row; asked upstream as
-         xmlui-org/xmlui#3961 (scrollToIndex align: "start"). Each check logs
-         final-transcript-view. -->
+         a guessed wait. List.scrollToIndex takes no alignment, so a target in
+         range can sit mid-row: once it's drawn, index.html's studioAlignTop
+         aligns its top with the list's top. That's a DOM WORKAROUND waiting on
+         xmlui-org/xmlui#3961 (scrollToIndex align: "start"), retired by
+         reminder-retire-dom-scroll-workarounds. Not in range yet: scroll to it
+         again (at most twice). Each check logs final-transcript-view. -->
     <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}"
       onVisibleRangeDidChange="(r) => {
         if (landing === null) return;
         const l = landing;
         const inView = r.startIndex &lt;= l.target &amp;&amp; l.target &lt;= r.endIndex;
+        const a = inView ? window.studioAlignTop('ft-turn-', l.target) : { found: false, delta: null };
         Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                          body: { ev: 'final-transcript-view', by: l.by, target: l.target, first: r.startIndex, last: r.endIndex, inView: inView, tries: l.tries } });
-        if (inView || l.tries >= 2) { landing = null; return; }
+                          body: { ev: 'final-transcript-view', by: l.by, target: l.target, first: r.startIndex, last: r.endIndex, inView: inView, aligned: a.found, delta: a.delta, tries: l.tries } });
+        if (a.found || l.tries >= 2) { landing = null; return; }
         landing = { target: l.target, by: l.by, tries: l.tries + 1 };
         turnsList.scrollToIndex(l.target);
       }">
-      <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4"
+      <HStack automationId="{'ft-turn-' + $item.i}" verticalAlignment="start" gap="$space-4" paddingBottom="$space-4"
         backgroundColor="{$item.i === cameBack ? '$color-primary-50' : undefined}">
         <!-- The time, then a pencil that opens the Workspace on this turn's
              paragraph (final-transcript-pencil-edit): one line, the row only

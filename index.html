@@ -92,7 +92,12 @@
          {found}: false means the virtualized list didn't render the card,
          and Podcast.xmlui falls back to paraList.scrollToIndex. Each
          restore is logged (podcast-page: samples-toggle) to
-         serve_media.log. -->
+         serve_media.log.
+         WORKAROUNDS: these helpers and studioAlignTop below reach into the
+         DOM (rows by data-automation-id, the scroller's scrollTop), which
+         isn't the XMLUI way. They stand in for a List API to place a row
+         on screen, asked as xmlui-org/xmlui#3961, and are retired by the
+         worklist item reminder-retire-dom-scroll-workarounds. -->
     <script>
       (function () {
         var mark = null;
@@ -156,6 +161,25 @@
               });
             });
           });
+        };
+        // Final transcript (final-transcript-align-top-workaround; see
+        // WORKAROUNDS above, xmlui-org/xmlui#3961): List.scrollToIndex places
+        // rows by estimated heights and takes no alignment, so a target can
+        // land mid-row. Called when the list reports its visible range (rows
+        // are drawn): the row whose automation id is prefix+n gets its top
+        // aligned with its scroller's top. Returns {found, delta}: delta is
+        // how far off the row's top was, in px, before the correction.
+        window.studioAlignTop = function (prefix, n) {
+          var re = new RegExp("(^|[^a-z-])" + prefix + n + "$");
+          var el = Array.prototype.slice.call(
+            document.querySelectorAll('[data-automation-id*="' + prefix + '"]'))
+            .find(function (c) { return re.test(c.getAttribute("data-automation-id") || ""); });
+          if (!el) return { found: false, delta: null };
+          var sc = scroller(el);
+          var top = sc === document.scrollingElement ? 0 : sc.getBoundingClientRect().top;
+          var delta = el.getBoundingClientRect().top - top;
+          sc.scrollTop += delta;
+          return { found: true, delta: Math.round(delta) };
         };
       })();
     </script>
