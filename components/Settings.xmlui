@@ -11,11 +11,11 @@
      one folder holds every project. A folder that isn't there yet is offered
      to be made, as on the Projects page (the server asks for create: true). -->
 <Component name="Settings">
-  <DataSource id="settings" url="http://127.0.0.1:8765/settings" />
+  <DataSource id="settings" url="{window.STUDIO_API}/settings" />
   <!-- Speakers belong to the open project (its studio.db), unlike the rest of
        this page; projects names it. The speakers event (an agent's change,
        or another page's) refetches the list. -->
-  <DataSource id="openProject" url="http://127.0.0.1:8765/projects" />
+  <DataSource id="openProject" url="{window.STUDIO_API}/projects" />
   <!-- XMLUI's trace capture (the Inspector's data), moved here from the
        header. config.json's xmluiConfig.xsVerbose turns it on; it's off by
        default, since capture costs time in every handler. serve_media.py's
@@ -26,15 +26,15 @@
        button reads the setting from GET /trace. The Inspector itself is the
        studio's own xs-diff.html and the xmlui-parser.es.js it imports
        (vendor/). -->
-  <DataSource id="traceState" url="http://127.0.0.1:8765/trace" />
-  <DataSource id="speakers" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="traceState" url="{window.STUDIO_API}/trace" />
+  <DataSource id="speakers" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, color FROM speakers ORDER BY position, id', params: [] }}" />
-  <EventSource url="http://127.0.0.1:8765/events"
+  <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => { if (m.changed === 'speakers') speakers.refetch(); }" />
   <script>
     function saveDefault(location, create) {
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
+        const r = Actions.callApi({ url: window.STUDIO_API + '/settings', method: 'post', invalidates: [],
                                     body: { defaultSafekeeping: location, create: !!create } });
         if (r.missing) {
           const yes = confirm('Make the folder?', 'There is no folder at ' + r.defaultSafekeeping
@@ -52,7 +52,7 @@
     }
     function speakerOp(op, body) {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/speakers/' + op, method: 'post', invalidates: [], body });
+        Actions.callApi({ url: window.STUDIO_API + '/speakers/' + op, method: 'post', invalidates: [], body });
         speakers.refetch();
         return true;
       } catch (e) {
@@ -62,7 +62,7 @@
     }
     function savePodcast() {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/settings', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/settings', method: 'post', invalidates: [],
                           body: { podcast: { pauseMs: pauseBox.value, fadeMs: fadeBox.value,
                                              paragraphPauseS: paraPauseBox.value, paragraphWords: paraWordsBox.value,
                                              fillers: fillersBox.value, repeatsToKeep: keepBox.value,
@@ -239,7 +239,7 @@
           <Button size="xs" variant="outlined" label="{traceState.value?.on ? 'Trace on' : 'Trace off'}"
             tooltip="{traceState.value?.on ? 'Trace capture is on (Inspector can export). Click to turn it off and reload.' : 'Trace capture is off (faster). Click to turn it on and reload.'}"
             onClick="
-              Actions.callApi({ url: 'http://127.0.0.1:8765/trace', method: 'post', invalidates: [],
+              Actions.callApi({ url: window.STUDIO_API + '/trace', method: 'post', invalidates: [],
                                 body: { on: !traceState.value?.on } });
               location.reload();
             " />

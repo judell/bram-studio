@@ -28,7 +28,7 @@
 
   <!-- Callouts and shapes: text, boxes, ovals, arrows and pointers burned into
        a take (overlay.py). -->
-  <DataSource id="callouts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="callouts" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, text, x1, y1, x2, y2, t_in, t_out, tail, shape FROM overlays WHERE take_id = ? AND kind IN (?, ?) ORDER BY t_in', params: [$props.take, &quot;callout&quot;, &quot;shape&quot;] }}" />
 
   <method name="cancelRemoval">() => { goneId = null; }</method>

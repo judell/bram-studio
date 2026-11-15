@@ -19,9 +19,9 @@
   var.pick="{null}" var.confirmDelete="{null}" var.genre="{$props.genre || 'podcast'}">
 
   <DataSource id="final" when="{genre === 'screencast' || !!source}"
-    url="{genre === 'screencast' ? 'http://127.0.0.1:8765/screencast/final' : 'http://127.0.0.1:8765/podcast/final?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{genre === 'screencast' ? window.STUDIO_API + '/screencast/final' : window.STUDIO_API + '/podcast/final?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
-  <EventSource url="http://127.0.0.1:8765/events"
+  <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => {
       if (m.final === source) {
         if (m.finished || m.error) {
@@ -59,7 +59,7 @@
       if (genre === 'screencast') {
         making = { exporting: true };
         try {
-          Actions.callApi({ url: 'http://127.0.0.1:8765/export', method: 'post', invalidates: [], body: {} });
+          Actions.callApi({ url: window.STUDIO_API + '/export', method: 'post', invalidates: [], body: {} });
           pick = null;
         } catch (e) {
           toast.error(e.message);
@@ -69,7 +69,7 @@
         return;
       }
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final', method: 'post', invalidates: [], body: { source } });
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/final', method: 'post', invalidates: [], body: { source } });
         making = { done: 0, total: 0 };
       } catch (e) {
         toast.error(e.message);
@@ -80,7 +80,7 @@
       if (genre === 'screencast') {
         const v = all().find((x) => x.n === n);
         try {
-          if (v) Actions.callApi({ url: 'http://127.0.0.1:8765/exports/delete', method: 'post', invalidates: [],
+          if (v) Actions.callApi({ url: window.STUDIO_API + '/exports/delete', method: 'post', invalidates: [],
                                    body: { name: v.name, where: 'exports' } });
           if (pick === n) pick = null;
         } catch (e) {
@@ -90,7 +90,7 @@
         return;
       }
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final/delete', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/final/delete', method: 'post', invalidates: [],
                           body: { source, n } });
         if (pick === n) pick = null;
       } catch (e) {

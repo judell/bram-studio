@@ -10,7 +10,9 @@ it is already running. If it says the server is running code older than the
 files on disk, suggest `./start.sh --restart`. Never restart while a narration,
 render or export is under way (`start.sh` refuses itself in that case).
 
-Confirm port 8765 answers (for example `curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/`).
+`start.sh` prints the port it's on: 8765, or the next free one when
+another checkout's Studio holds it. The port is also recorded in
+`studio-port.json`.
 
 The editor tab in the user's browser recovers on its own once the server is
 up. Say so; don't walk the user through reloading.

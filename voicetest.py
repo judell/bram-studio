@@ -127,8 +127,8 @@ def main():
            "expected_s": round(expected, 2), "captured_s": round(captured, 2),
            "short_pct": round(100 * (1 - captured / expected), 1), "clicks": clicks,
            "peak_db": peak_db, "rms_db": rms_db,
-           "raw_url": f"http://127.0.0.1:8765/tests/{os.path.basename(raw)}",
-           "leveled_url": f"http://127.0.0.1:8765/tests/{os.path.basename(leveled)}"}
+           "raw_url": f"http://127.0.0.1:{os.environ.get('STUDIO_PORT', '8765')}/tests/{os.path.basename(raw)}",
+           "leveled_url": f"http://127.0.0.1:{os.environ.get('STUDIO_PORT', '8765')}/tests/{os.path.basename(leveled)}"}
     # The bench is shared by all projects: its table lives in the repo's
     # studio.db, not the open project's (studio_paths.py).
     db = sqlite3.connect(os.path.join(HERE, "studio.db"))

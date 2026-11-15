@@ -52,11 +52,11 @@
   <ChangeListener listenTo="{editSprite ? editSprite.url : null}" onDidChange="dragPos = null; liveBox = null;" />
   <ChangeListener listenTo="{cur.id}" onDidChange="dragPos = null; liveBox = null; dragFrom = null; lastSprite = null;" />
 
-  <DataSource id="calloutSprite" url="http://127.0.0.1:8765/callouts/sprite" method="POST"
+  <DataSource id="calloutSprite" url="{window.STUDIO_API}/callouts/sprite" method="POST"
     when="{!!cur.id &amp;&amp; !!cur.box &amp;&amp; !!$props.take}"
     body="{{ take_id: $props.take, id: cur.id, text: cur.text, x1: cur.box.x1, y1: cur.box.y1, x2: cur.box.x2, y2: cur.box.y2, tail: cur.tail, shape: cur.shape, frame: !cur.shape }}"
     onLoaded="(d) => lastSprite = d" />
-  <DataSource id="savedSprites" url="http://127.0.0.1:8765/callouts/sprites" method="POST"
+  <DataSource id="savedSprites" url="{window.STUDIO_API}/callouts/sprites" method="POST"
     when="{!!$props.take}" body="{{ take_id: $props.take }}" />
 
   <method name="setTime">

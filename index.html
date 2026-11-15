@@ -7,6 +7,29 @@
     <!-- Dictation: Bram's script (judell/bram#417), served by Bram's built-in
          server, then Studio's bridge to it. Both must load before the engine,
          which only sees page functions that exist when it starts. -->
+    <!-- Where this checkout's Studio server is (per-checkout-server-port):
+         serve_media.py picks 8765 or the next free port and records it in
+         studio-port.json at the repo root, which Bram's server serves beside
+         this page. Read synchronously, before anything else, so every URL in
+         the markup ({window.STUDIO_API}/...) has it from the first render.
+         No file (the server's never run here) means 8765. The welcome
+         probe calls studioReadApi() again while the server is down and
+         reloads the page if a newly started server chose another port. -->
+    <script>
+      window.studioReadApi = function () {
+        try {
+          var x = new XMLHttpRequest();
+          x.open("GET", "/studio-port.json?t=" + Date.now(), false);
+          x.send();
+          if (x.status === 200) {
+            var port = JSON.parse(x.responseText).port;
+            if (port) return "http://127.0.0.1:" + port;
+          }
+        } catch (e) {}
+        return "http://127.0.0.1:8765";
+      };
+      window.STUDIO_API = window.studioReadApi();
+    </script>
     <script src="/__shell/dictation.js"></script>
     <script src="/studio-dictation.js"></script>
     <!-- The staged-turn doorway (Bram 3ee7cb7b): the welcome face's Get me

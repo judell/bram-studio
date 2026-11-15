@@ -160,7 +160,8 @@ A Studio from before projects keeps working from the repo's own `studio.db`, `me
 <summary><b>What you need</b></summary>
 
 - [Bram](https://github.com/judell/bram), with this project as its target app, and Studio's
-  server running (port 8765): `./start.sh` starts `serve_media.py` in the background,
+  server running (port 8765, or the next free one if another checkout's Studio holds it;
+  recorded in `studio-port.json`): `./start.sh` starts `serve_media.py` in the background,
   logging to `serve_media.log`, or says it's already running and whether it's running code
   older than the files on disk. `./start.sh --restart` restarts it after a server change,
   unless a narration, render or export is under way. Bram doesn't start it.

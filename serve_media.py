@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Serve the open project's media/ with video content types and HTTP byte ranges.
 
-    python3 serve_media.py [port]      (default 8765)
+    python3 serve_media.py [port]      (default 8765, or the next free port;
+                                        the choice is in studio-port.json)
 
 Bram's loopback serves project files but has no video content types and
 no Range support, so a browser would download an MP4 instead of playing
@@ -76,6 +77,7 @@ import os
 import queue
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -3482,7 +3484,49 @@ def add_speaker(db, name):
     return cur.lastrowid
 
 
-PORT =int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+def choose_port():
+    # Each checkout's server gets its own port, so several Studios can run at
+    # once (per-checkout-server-port): an explicit argument, else STUDIO_PORT
+    # (set just below, so a project switch's restart keeps its port), else
+    # 8765 if free, else the next free one. The choice is published in
+    # studio-port.json at the repo root (serve(), below), where the page,
+    # start.sh and the scripts read it.
+    if len(sys.argv) > 1:
+        return int(sys.argv[1])
+    if os.environ.get("STUDIO_PORT"):
+        return int(os.environ["STUDIO_PORT"])
+    for p in range(8765, 8800):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # The server binds with SO_REUSEADDR too (HTTPServer's
+            # allow_reuse_address); on macOS it still refuses a port another
+            # socket is listening on.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    raise SystemExit("serve_media.py: no free port in 8765-8799")
+
+
+PORT = choose_port()
+os.environ["STUDIO_PORT"] = str(PORT)  # for restart() and every script it launches
+PORT_FILE = os.path.join(HERE, "studio-port.json")
+# A URL saved in a database before this checkout's port could vary (takes.url,
+# written by register.py and overlay.py) names the port it was made on; /query
+# rewrites it to this server's port on the way out, so old projects work on
+# any port without a migration.
+LOCAL_URL = re.compile(r"^http://127\.0\.0\.1:\d+/")
+
+
+def serve():
+    # Bind first, then publish the port: the file only ever names a port
+    # this server holds.
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    with open(PORT_FILE, "w") as f:
+        json.dump({"port": PORT, "pid": os.getpid(), "root": HERE}, f)
+    print(f"serving on port {PORT} (studio-port.json)", flush=True)
+    httpd.serve_forever()
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("audio/mp4", ".m4a")
 mimetypes.add_type("audio/wav", ".wav")
@@ -6460,7 +6504,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 db.row_factory = sqlite3.Row
                 db.execute("PRAGMA query_only = ON")
-                rows = [dict(r) for r in db.execute(sql, params)]
+                rows = [{k: LOCAL_URL.sub(f"http://127.0.0.1:{PORT}/", v) if isinstance(v, str) else v
+                         for k, v in dict(r).items()} for r in db.execute(sql, params)]
             finally:
                 db.close()
         except sqlite3.Error as e:
@@ -6485,7 +6530,7 @@ if NO_PROJECT:
     # No project to prepare: leave the fresh checkout untouched (no media/,
     # no tables in the repo's studio.db, nothing to watch) and just answer
     # the no-project routes until /projects/new restarts into the first one.
-    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    serve()
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
@@ -6511,4 +6556,4 @@ with sqlite3.connect(DB) as _db:
     _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()
 threading.Thread(target=watch_changes, daemon=True).start()
-http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+serve()

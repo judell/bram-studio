@@ -20,7 +20,7 @@
 <Component name="UndoTab" var.sceneBusy="{false}"
   var.busy="{$props.undoing || $props.redoing || $props.cutting || $props.pausing || $props.narrating || $props.narrBusy}">
 
-  <DataSource id="edits" url="{'http://127.0.0.1:8765/takes/edits?id=' + ($props.take || 0)}" />
+  <DataSource id="edits" url="{window.STUDIO_API + '/takes/edits?id=' + ($props.take || 0)}" />
 
   <method name="refresh">
     () => { edits.refetch(); }
@@ -49,7 +49,7 @@
     onDidChange="(change) => {
       const v = change.newValue;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/undo/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/undo/log', method: 'post', invalidates: [],
                           body: { pageMs: Date.now(), take: v.take, edits: v.edits, canUndo: v.canUndo,
                                   undoing: v.undoing, redoing: v.redoing, cutting: v.cutting,
                                   pausing: v.pausing, narrating: v.narrating, narrBusy: v.narrBusy,

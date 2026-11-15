@@ -62,12 +62,12 @@
         narrTab.setTime(clip[0]);
         takePlayer.pause();
         takePlayer.seek(clip[0]);
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/start', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/narrate/start', method: 'post', invalidates: [],
                           body: { id: editTake, start: clip[0], end: clip[1] } });
         narrating = clip;
         narrStarting = false;
         takePlayer.play();
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/go', method: 'post', invalidates: [] });
+        Actions.callApi({ url: window.STUDIO_API + '/narrate/go', method: 'post', invalidates: [] });
       } catch (e) {
         narrating = null;
         narrStarting = false;
@@ -86,7 +86,7 @@
       narrating = null;
       narrBusy = true;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/narrate/stop', method: 'post', invalidates: [] });
+        Actions.callApi({ url: window.STUDIO_API + '/narrate/stop', method: 'post', invalidates: [] });
         // Done: the adding row closes and the new narration is selected in
         // the list (by its start, until the list has its row). A refused
         // narration (nothing said) keeps the adding row open, to retry.
@@ -153,7 +153,7 @@
       tabsBusy(true);
       letGoOfItem();
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/cuts/restore', method: 'post', invalidates: [], body: { id: r.id } });
+        Actions.callApi({ url: window.STUDIO_API + '/cuts/restore', method: 'post', invalidates: [], body: { id: r.id } });
       } catch (e) {
         cutTab.cancelRemoval();
         toast.error(e.message);
@@ -173,7 +173,7 @@
       tabsBusy(true);
       letGoOfItem();
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/pauses/remove', method: 'post', invalidates: [], body: { id: r.id } });
+        Actions.callApi({ url: window.STUDIO_API + '/pauses/remove', method: 'post', invalidates: [], body: { id: r.id } });
       } catch (e) {
         pauseTab.cancelRemoval();
         toast.error(e.message);
@@ -216,7 +216,7 @@
       // Refused (409) while a video edit of the scene runs: its timeline is
       // about to change, so the item would land in the wrong place.
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [],
+        const r = Actions.callApi({ url: window.STUDIO_API + '/callouts/add', method: 'post', invalidates: [],
                                     body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2,
                                             t_in: t, t_out: out, tail: 'none', shape: shape } });
         item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
@@ -246,7 +246,7 @@
     // and its changes re-rendered the editor.
     function saveCurrentItem() {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/update', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/callouts/update', method: 'post', invalidates: [],
                           body: { take_id: editTake, id: item.id, text: item.text, x1: item.box.x1, y1: item.box.y1,
                                   x2: item.box.x2, y2: item.box.y2, t_in: item.tIn, t_out: item.tOut, tail: item.tail,
                                   shape: item.shape } });
@@ -286,7 +286,7 @@
       const id = item.id;
       letGoOfItem();
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/delete', method: 'post', invalidates: [], body: { id: id } });
+        Actions.callApi({ url: window.STUDIO_API + '/callouts/delete', method: 'post', invalidates: [], body: { id: id } });
       } catch (e) {
         annotTab.cancelRemoval();
         toast.error(e.message);
@@ -321,7 +321,7 @@
       const a = audition;
       audition = null;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/audition/log', method: 'post', invalidates: [],
                           body: { kind: 'yielded-to-scrub-' + a.kind, start: a.start, stop: a.stop, stoppedAt: t } });
       } catch (e) {
         // A missing log line is no reason to bother the user.
@@ -335,7 +335,7 @@
       // A preview that asked to (the Pause tab's) puts the playhead back.
       if (a.returnTo !== undefined) takePlayer.seek(a.returnTo);
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/audition/log', method: 'post', invalidates: [],
                           body: { kind: a.kind, start: a.start, stop: a.stop, stoppedAt } });
       } catch (e) {
         // A missing log line is no reason to bother the user.
@@ -345,17 +345,17 @@
 
   <!-- The edited take's narrations (serve_media.py's narrations table), for
        the Narrate tab's list and the Cut and Pause tabs' warnings. -->
-  <DataSource id="narrs" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="narrs" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, t_in, t_out FROM narrations WHERE take_id = ? ORDER BY t_in', params: [editTake] }}" />
   <!-- The edited scene's inserted pauses (serve_media.py's pauses table),
        for the Pause tab's rows. -->
-  <DataSource id="pauses" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="pauses" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, at, seconds FROM pauses WHERE take_id = ? ORDER BY at', params: [editTake] }}" />
   <!-- The edited scene's cuts (serve_media.py's cuts table), for the Cut
        tab's rows. -->
-  <DataSource id="cuts" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="cuts" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, at, seconds FROM cuts WHERE take_id = ? ORDER BY at', params: [editTake] }}" />
-  <APICall id="removeNarration" method="post" url="http://127.0.0.1:8765/narrate/remove"
+  <APICall id="removeNarration" method="post" url="{window.STUDIO_API}/narrate/remove"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" onError="narrTab.cancelRemoval()" />
   <!-- Cut a stretch out of a take (serve_media.py's /takes/cut: the take and
@@ -365,21 +365,21 @@
        undoEdit and redoEdit are here, with the other edits. -->
   <!-- The edited take's sound level per slice, for the audio strip under its
        player; cutSeq (bumped by every edit) makes an edited take refetch. -->
-  <DataSource id="takeLevels" url="{'http://127.0.0.1:8765/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}"
+  <DataSource id="takeLevels" url="{window.STUDIO_API + '/takes/levels?id=' + (editTake || 0) + '&amp;c=' + cutSeq}"
     onLoaded="(d) => lastLevels = d" />
-  <APICall id="undoEdit" method="post" url="http://127.0.0.1:8765/takes/undo"
+  <APICall id="undoEdit" method="post" url="{window.STUDIO_API}/takes/undo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="redoEdit" method="post" url="http://127.0.0.1:8765/takes/redo"
+  <APICall id="redoEdit" method="post" url="{window.STUDIO_API}/takes/redo"
     body="{{ id: $param }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="cutTake" method="post" url="http://127.0.0.1:8765/takes/cut"
+  <APICall id="cutTake" method="post" url="{window.STUDIO_API}/takes/cut"
     body="{{ id: $param.id, start: $param.start, end: $param.end }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Insert a pause: hold the frame at a point for some seconds, with silence
        (serve_media.py's /takes/pause). An edit like a cut. -->
-  <APICall id="pauseTake" method="post" url="http://127.0.0.1:8765/takes/pause"
+  <APICall id="pauseTake" method="post" url="{window.STUDIO_API}/takes/pause"
     body="{{ id: $param.id, at: $param.at, seconds: $param.seconds }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -467,7 +467,7 @@
         // invalidates: [], as in addAnnotation: the default refetched
         // every DataSource and took a drawn shape ~3 s (trace, 2026-10-13).
         try {
-          const r = Actions.callApi({ url: 'http://127.0.0.1:8765/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
+          const r = Actions.callApi({ url: window.STUDIO_API + '/callouts/add', method: 'post', invalidates: [], body: { take_id: editTake, text: '', x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2, t_in: t, t_out: out, tail: 'none', shape: shape } });
           item = { id: r.id, box: box, shape: shape, text: '', tail: 'none', tIn: t, tOut: out };
         } catch (err) {
           toast.error(err.message);
@@ -484,7 +484,7 @@
            moving everything below it twice. -->
       <MediaPlayer id="takePlayer" autoPlay="false" height="55vh"
         muted="{!!narrating}" controls="{!narrating}"
-        src="{editFile ? 'http://127.0.0.1:8765/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
+        src="{editFile ? window.STUDIO_API + '/clean/' + encodeURIComponent(editFile) + '?c=' + cutSeq : playing}"
         onLoadedMetadata="(e) => {
           tabsBusy(false);
           takeAspect = e.videoWidth / e.videoHeight;

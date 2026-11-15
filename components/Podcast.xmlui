@@ -25,9 +25,9 @@
   var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
-  <DataSource id="transcript" url="{'http://127.0.0.1:8765/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
+  <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
-  <DataSource id="segments" url="{'http://127.0.0.1:8765/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
+  <DataSource id="segments" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT g.id, g.t0, g.t1, g.text, g.speaker_id, s.name, s.color FROM segments g LEFT JOIN speakers s ON s.id = g.speaker_id WHERE g.source = ? ORDER BY g.t0',
              params: [source] }}" />
 
@@ -36,23 +36,23 @@
        finished transcript: asked before one exists, each answered 404 and
        showed as an error (a new project, 2026-11-14). -->
   <DataSource id="textDoc" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
-    url="{'http://127.0.0.1:8765/transcripts/text?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/transcripts/text?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <!-- The paragraphs to edit, each with a version (key) that changes when an
        edit touches it (/transcripts/paras). -->
   <DataSource id="paras" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
-    url="{'http://127.0.0.1:8765/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <!-- Each speaker's tagged and matched speech, and whether it has enough
        tagged to be matched (/speakers/stats; the need is a Setting). -->
   <!-- The sample stretches and their check (/speakers/samples), while
        Samples is on. -->
   <DataSource id="samples" when="{!!source &amp;&amp; tagMode &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
-    url="{'http://127.0.0.1:8765/speakers/samples?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/speakers/samples?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <DataSource id="speakerStats" when="{!!source}"
-    url="{'http://127.0.0.1:8765/speakers/stats?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/speakers/stats?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <DataSource id="cutList" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
-    url="{'http://127.0.0.1:8765/transcripts/cuts?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/transcripts/cuts?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
-  <EventSource url="http://127.0.0.1:8765/events"
+  <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => {
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); textDoc.refetch(); cutList.refetch(); }
@@ -83,7 +83,7 @@
       return found && t < found.t1 + 1 ? found.id : null;
     }
     function post(path, body) {
-      return Actions.callApi({ url: 'http://127.0.0.1:8765' + path, method: 'post', invalidates: [], body });
+      return Actions.callApi({ url: window.STUDIO_API + path, method: 'post', invalidates: [], body });
     }
     function transcribe() {
       try {
@@ -154,7 +154,7 @@
     // A sample's sound alone (or a flagged part of one), so its player's
     // scrubber spans just that stretch (/speakers/sample-audio).
     function sampleAudio(t0, t1) {
-      return 'http://127.0.0.1:8765/speakers/sample-audio?source=' + encodeURIComponent(source)
+      return window.STUDIO_API + '/speakers/sample-audio?source=' + encodeURIComponent(source)
         + '&t0=' + t0 + '&t1=' + t1;
     }
     function clearSample(src, fromId, toId) {
@@ -173,7 +173,7 @@
       return 'Samples: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
     }
     function playUrl(item) {
-      return 'http://127.0.0.1:8765/transcripts/play?source=' + encodeURIComponent(source)
+      return window.STUDIO_API + '/transcripts/play?source=' + encodeURIComponent(source)
         + '&para=' + item.para + '&v=' + item.v;
     }
     // The paragraph the left pane's video follows: the current one, on Edit
@@ -191,7 +191,7 @@
     function setLeader(who, by) {
       if (leader === who) return;
       leader = who;
-      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'leader', leader: who, by, para: currentPara } });
     }
     // Did the main video play or pause because of you? Not if it is showing
@@ -206,7 +206,7 @@
       return !(leader === 'card' && c && c.para === currentPara && c.playing === playing);
     }
     function playRejected(why, err) {
-      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'clock', why, playRejected: String((err && err.message) || err) } });
     }
     function applyClock(why) {
@@ -226,7 +226,7 @@
           playRejected(why, err);
         }
       } else paraVideo.pause();
-      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'clock', why, para: c.para, by: c.by, card: c.t, video: before,
                                 drift: Math.round((before - c.t) * 1000) / 1000, playing: c.playing } });
     }
@@ -235,7 +235,7 @@
       if (!prev || !now || prev.split(':')[0] !== now.split(':')[0]) return;
       cardSeek = null;
       paraClock = { para: currentPara, t: 0, playing: false, by: 'rerendered', n: Date.now() };
-      Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'clock', why: 'rerendered', para: currentPara, was: prev, now } });
     }
     function editLine() {
@@ -286,7 +286,7 @@
         jumped = true;
         currentPara = n;
         paraList.scrollToIndex(k);
-        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                           body: { ev: 'current', para: n, by: 'final-transcript' } });
       }" />
     <!-- The project's sources can change (another project opened, a source
@@ -368,7 +368,7 @@
         <ChangeListener listenTo="{followItem() ? followItem().para + ':' + followItem().v : ''}"
           onDidChange="(c) => clipChanged(c)" />
         <MediaPlayer id="speakerPlayer" when="{!followItem()}" width="100%"
-          src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(source)}"
+          src="{window.STUDIO_API + '/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
         <!-- Edit text: the podcast edited as its text, a paragraph at a
              time, no time codes. Delete anything in a paragraph's box; when
@@ -523,16 +523,16 @@
           // new version, and rows are keyed by version) has taken the
           // clicked element off the page: not a click outside.
           if (t &amp;&amp; t.isConnected === false) {
-            Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+            Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                               body: { ev: 'pane-click', detached: true, tag: t.tagName, current: currentPara } });
             return;
           }
           const hit = !!(t &amp;&amp; t.closest &amp;&amp; t.closest('[data-automation-id*=para-card]'));
-          Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+          Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                             body: { ev: 'pane-click', hit, tag: t ? t.tagName : null, current: currentPara } });
           if (!hit &amp;&amp; currentPara !== null) {
             currentPara = null;
-            Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+            Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                               body: { ev: 'current', para: null, by: 'outside', readBack: currentPara } });
           }
         }">
@@ -571,7 +571,7 @@
             onClick="
               if (currentPara !== $item.para) {
                 currentPara = $item.para;
-                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'current', para: $item.para, by: 'click', readBack: currentPara } });
               }
             ">
@@ -592,7 +592,7 @@
                   if (!sel || !(sel.text || '').trim() || sel.startIndex === null || !sel.startItem || !sel.endItem) return;
                   anchor = sel.startItem.id;
                   focus = sel.endItem.id;
-                  Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                  Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                     body: { ev: 'select', from: anchor, to: focus, text: sel.text } });
                 }">
                 <Text value="{$item.w}"
@@ -607,7 +607,7 @@
               <Items data="{$item.speakers || []}">
                 <Button size="xs" variant="outlined" label="{$item.name}"
                   onClick="
-                    Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                    Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                       body: { ev: 'tag', speaker: $item.id, anchor, focus } });
                     tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
                   " />
@@ -633,23 +633,23 @@
               onSelectionDidChange="(sel) => {
                 if (!sel || sel.start !== sel.end || draft !== $item.text || $item.kept === 0) return;
                 if (!marks) {
-                  marks = Actions.callApi({ url: 'http://127.0.0.1:8765/transcripts/marks?source=' + encodeURIComponent(source) + '&amp;para=' + $item.para,
+                  marks = Actions.callApi({ url: window.STUDIO_API + '/transcripts/marks?source=' + encodeURIComponent(source) + '&amp;para=' + $item.para,
                                             method: 'get', invalidates: [] }) || [];
                 }
                 const hit = marks.filter((m) => m[0] &lt;= sel.start);
                 const t = hit.length ? hit[hit.length - 1][1] : 0;
                 paraPlayer.seek(t);
-                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'caret', para: $item.para, at: sel.start, t, player: paraPlayer.getCurrentTime() } });
               }"
               onGotFocus="
                 if (currentPara !== $item.para) currentPara = $item.para;
-                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length, current: currentPara } });
               "
               onDidChange="(v) => draft = v"
               onLostFocus="
-                Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'blur', para: $item.para, draftLen: (draft || '').length,
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
@@ -664,7 +664,7 @@
                 paraClock = { para: $item.para, t: e.currentTime, playing: true, by: 'play', n: Date.now() };
                 if (currentPara !== $item.para) {
                   currentPara = $item.para;
-                  Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/log', method: 'post', invalidates: [],
+                  Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                     body: { ev: 'current', para: $item.para, by: 'play', readBack: currentPara } });
                 }
               }" />

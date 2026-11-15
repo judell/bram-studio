@@ -4,7 +4,7 @@
     python3 register.py <mp4> [name] [src_start] [src_end] [source] [warning] [take.json]
 
 Copies the MP4 into media/ and inserts a row into takes; its URL points at
-serve_media.py (port 8765). With the take's JSON (render.py), the callouts
+serve_media.py (its port: STUDIO_PORT, 8765 by default). With the take's JSON (render.py), the callouts
 and shapes placed while recording become editable items on the take.
 
 With no name, or "-", the take is named from its narration: whisper.cpp
@@ -83,7 +83,7 @@ position = (db.execute("SELECT min(position) FROM takes").fetchone()[0] or 0) - 
 cur = db.execute("INSERT INTO takes (name, created_at, duration_s, src_start, src_end, file, url, notes, source, "
                  "warning, position) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                  (name, datetime.now().strftime("%Y-%m-%d %H:%M"), round(dur, 1), src_start, src_end, fname,
-                  f"http://127.0.0.1:8765/{fname}", notes, source, warning, position))
+                  f"http://127.0.0.1:{os.environ.get('STUDIO_PORT', '8765')}/{fname}", notes, source, warning, position))
 # Callouts and shapes placed while recording (the take's JSON, render.py's
 # annotations), with their on-air spans and last positions: editable items on
 # the take, burned in only by the editor's Apply. An empty callout stays empty

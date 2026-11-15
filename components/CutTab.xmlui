@@ -72,7 +72,7 @@
     // row, so the Narrate tab stops listing it (2026-10-05). True: go ahead.
     // confirm(): https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete
     function confirmCut(start, end) {
-      const d = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/cut', method: 'post', invalidates: [],
+      const d = Actions.callApi({ url: window.STUDIO_API + '/takes/cut', method: 'post', invalidates: [],
                                   body: { id: take, start: start, end: end, dryRun: true } });
       const s = (t) => t.toFixed(2);
       const lines = []

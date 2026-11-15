@@ -409,7 +409,7 @@ def render(db, take_id):
         shutil.rmtree(work)
     os.replace(tmp_out, take)
     db.execute(f"UPDATE takes SET url = ?, overlay_applied = ({APPLIED_SQL}) WHERE id = ?",
-               (f"http://127.0.0.1:8765/{fname}?v={int(time.time())}", take_id, take_id))
+               (f"http://127.0.0.1:{os.environ.get('STUDIO_PORT', '8765')}/{fname}?v={int(time.time())}", take_id, take_id))
     db.commit()
     return items
 

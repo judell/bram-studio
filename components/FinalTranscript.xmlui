@@ -25,11 +25,11 @@
   var.scrolledBack="{false}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
 
   <DataSource id="ft" when="{!!source}"
-    url="{'http://127.0.0.1:8765/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
   <DataSource id="cmp" when="{comparing &amp;&amp; !!aVer() &amp;&amp; !!bVer()}"
-    url="{'http://127.0.0.1:8765/podcast/final-transcript/compare?source=' + encodeURIComponent(source) + '&amp;a=' + aVer() + '&amp;b=' + bVer() + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/podcast/final-transcript/compare?source=' + encodeURIComponent(source) + '&amp;a=' + aVer() + '&amp;b=' + bVer() + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
-  <EventSource url="http://127.0.0.1:8765/events"
+  <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => {
       if (m.matching === source) {
         if (m.error) { busy = null; toast.error('Matching voices: ' + m.error); }
@@ -85,7 +85,7 @@
     }
     function make() {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final-transcript', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/final-transcript', method: 'post', invalidates: [],
                           body: { source } });
         busy = { done: 0, total: 0 };
       } catch (e) {
@@ -95,7 +95,7 @@
     function remove(n) {
       confirmDelete = null;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/podcast/final-transcript/delete', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/final-transcript/delete', method: 'post', invalidates: [],
                           body: { source, n } });
         if (pick === n) pick = null;
         if (cmpA === n) cmpA = null;

@@ -16,7 +16,7 @@
 // field's text is therefore pushed here from onDidChange, which fires for
 // the script's own setValue writes as well as for typing.
 (function () {
-  var SERVER = "http://127.0.0.1:8765";
+  var SERVER = window.STUDIO_API || "http://127.0.0.1:8765";
   var inst = null; // the running BramDictation.attach instance
   var key = ""; // the row being dictated into
   var latest = ""; // that row's field text

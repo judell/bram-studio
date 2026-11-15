@@ -13,16 +13,16 @@
        the page is served, not only inside Bram. Each take's MP4 is served by
        serve_media.py too, which Bram's loopback can't do yet (no video
        content types, no byte ranges). -->
-  <DataSource id="takes" url="http://127.0.0.1:8765/query" method="POST" dataType="sql"
+  <DataSource id="takes" url="{window.STUDIO_API}/query" method="POST" dataType="sql"
     body="{{ sql: 'SELECT id, name, created_at, substr(created_at, 6) AS recorded, duration_s, url, file, source, src_end, warning FROM takes ORDER BY position, created_at DESC', params: [] }}"
     pollIntervalInSeconds="60" />
   <!-- A scene appears here when Make scene's clip (/takes/clip) registers. -->
-  <DataSource id="sources" url="http://127.0.0.1:8765/sources" pollIntervalInSeconds="60" />
+  <DataSource id="sources" url="{window.STUDIO_API}/sources" pollIntervalInSeconds="60" />
   <!-- The project folders and which one is open ({open, name, genre, sources,
        projects}; list_projects() in serve_media.py): the header's picker, the
        editor the open project's genre opens in, and the sources its tools
        choose among. -->
-  <DataSource id="projects" url="http://127.0.0.1:8765/projects" />
+  <DataSource id="projects" url="{window.STUDIO_API}/projects" />
   <!-- Push instead of polling: serve_media.py's GET /events says which list
        changed ({changed: 'takes'|'sources'|'exports'|'projects'})
        and only that one is refetched, plus the Projects page's list, which
@@ -45,7 +45,7 @@
   <!-- A reconnect also follows the server starting over on another project
        (Open or Create on the Projects page), so onOpen refetches every list;
        when this page asked for the switch (`opening`), it then shows Takes. -->
-  <EventSource url="http://127.0.0.1:8765/events"
+  <EventSource url="{window.STUDIO_API}/events"
     onOpen="() => {
       dictating = window.studioDictationSync();
       projects.refetch(); takes.refetch(); exports.refetch();
@@ -68,17 +68,17 @@
        first; see list_exports() in serve_media.py), deleting one (moved to
        media/.trash/), and leveling an export with level_edit.py. No
        onSuccess on either call (xmlui-org/xmlui#3924): the clicks refetch. -->
-  <DataSource id="exports" url="http://127.0.0.1:8765/exports" />
-  <APICall id="deleteExport" method="post" url="http://127.0.0.1:8765/exports/delete"
+  <DataSource id="exports" url="{window.STUDIO_API}/exports" />
+  <APICall id="deleteExport" method="post" url="{window.STUDIO_API}/exports/delete"
     body="{{ name: $param.name, where: $param.where }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="levelExport" method="post" url="http://127.0.0.1:8765/exports/level"
+  <APICall id="levelExport" method="post" url="{window.STUDIO_API}/exports/level"
     body="{{ name: $param.name, where: $param.where }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- A row's note, saved when its field loses focus: the buffered-edit shape
        from https://www.xmlui.org/docs/howto/buffer-a-reactive-edit (noteBuffer),
        refetching in the handler instead of onSuccess (xmlui-org/xmlui#3924). -->
-  <APICall id="saveExportNote" method="post" url="http://127.0.0.1:8765/exports/note"
+  <APICall id="saveExportNote" method="post" url="{window.STUDIO_API}/exports/note"
     body="{{ name: $param.name, where: $param.where, note: $param.note }}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
   <!-- Every field that takes dictation has the same frame: 🎤 before it (⏹
@@ -107,16 +107,24 @@
     // down failed. A refused connection is the "down" answer.
     function probeServer() {
       if (serverUp === true) return;
+      // A server started while this page waited may have chosen a port other
+      // than the one the page loaded with (another checkout's Studio holds
+      // the default port): the markup's URLs were fixed at load, so reload to pick it up
+      // (per-checkout-server-port; index.html's studioReadApi).
+      if (window.studioReadApi() !== window.STUDIO_API) {
+        window.location.reload();
+        return;
+      }
       // Identity first (probe-checks-server-identity): the server reports
       // the Bram port recorded in its checkout's .bram/.bram-port.json. If
       // that's known and differs from this page's own origin port, whoever
-      // holds 8765 belongs to another checkout: treat it as down and name
+      // holds this page's port belongs to another checkout: treat it as down and name
       // the conflict. Unknown on either side fails open. An older server
       // without /identity falls back to the plain /sources probe.
       let ok = false;
       let conflict = '';
       try {
-        const ident = Actions.callApi({ url: 'http://127.0.0.1:8765/identity', method: 'get', invalidates: [] });
+        const ident = Actions.callApi({ url: window.STUDIO_API + '/identity', method: 'get', invalidates: [] });
         const myPort = window.location.port;
         if (ident && ident.bramPort && myPort && String(ident.bramPort) !== String(myPort)) {
           conflict = ident.root || 'another checkout';
@@ -125,7 +133,7 @@
         }
       } catch (e) {
         try {
-          Actions.callApi({ url: 'http://127.0.0.1:8765/sources', method: 'get', invalidates: [] });
+          Actions.callApi({ url: window.STUDIO_API + '/sources', method: 'get', invalidates: [] });
           ok = true;
         } catch (e2) {
           ok = false;
@@ -315,7 +323,7 @@
       const a = audition;
       audition = null;
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/audition/log', method: 'post', invalidates: [],
                           body: { kind: 'yielded-to-scrub-' + a.kind, start: a.start, stop: a.stop, stoppedAt: t } });
       } catch (e) {
         // A missing log line is no reason to bother the user.
@@ -330,7 +338,7 @@
       // A preview that asked to (the Pause tab's) puts the playhead back.
       if (a.returnTo !== undefined) P.seek(a.returnTo);
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/audition/log', method: 'post', invalidates: [],
+        Actions.callApi({ url: window.STUDIO_API + '/audition/log', method: 'post', invalidates: [],
                           body: { kind: a.kind, start: a.start, stop: a.stop, stoppedAt } });
       } catch (e) {
         // A missing log line is no reason to bother the user.
@@ -416,7 +424,7 @@
     function setSafekeeping(slug, location, create) {
       let saved = false;
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/safekeeping', method: 'post',
+        const r = Actions.callApi({ url: window.STUDIO_API + '/projects/safekeeping', method: 'post',
           body: { slug: slug, location: location, create: !!create }, invalidates: [] });
         if (r.missing) {
           const yes = confirm('Make the folder?', 'There is no folder at ' + r.location + ' yet. Make it, and send copies there?',
@@ -451,7 +459,7 @@
     }
     function deleteProject(p) {
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/delete', method: 'post',
+        const r = Actions.callApi({ url: window.STUDIO_API + '/projects/delete', method: 'post',
           body: { slug: p.slug }, invalidates: [] });
         toast.success(p.name + ' is in the Trash, as ' + r.as + '.');
       } catch (e) {
@@ -467,7 +475,7 @@
     }
     function clearSafekeeping(p) {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/projects/safekeeping/clear', method: 'post',
+        Actions.callApi({ url: window.STUDIO_API + '/projects/safekeeping/clear', method: 'post',
           body: { slug: p.slug }, invalidates: [] });
         toast.success('The safekeeping copy of ' + p.name + ' is in the Trash.');
       } catch (e) {
@@ -478,7 +486,7 @@
     function copyToSafekeeping(p) {
       copyingProject = p.slug;
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/copy', method: 'post',
+        const r = Actions.callApi({ url: window.STUDIO_API + '/projects/copy', method: 'post',
           body: { slug: p.slug }, invalidates: [] });
         toast.success('Copied ' + p.name + ': ' + (r.copied - 2) + ' files new or changed, ' + r.skipped
           + ' unchanged, ' + sizeText(r.bytes) + ' in all.');
@@ -496,7 +504,7 @@
     }
     function deleteStray(item) {
       try {
-        Actions.callApi({ url: 'http://127.0.0.1:8765/projects/stray/delete', method: 'post',
+        Actions.callApi({ url: window.STUDIO_API + '/projects/stray/delete', method: 'post',
           body: { slug: item.slug, path: item.path }, invalidates: [] });
       } catch (e) {
         toast.error(e.message);
@@ -509,7 +517,7 @@
     // the confirmation from it; cleanProject does it.
     function cleanPlan(action) {
       try {
-        const plan = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/clean', method: 'post',
+        const plan = Actions.callApi({ url: window.STUDIO_API + '/projects/clean', method: 'post',
           body: { slug: action.slug, what: action.what, days: action.days, dry: true }, invalidates: [] });
         if (!plan.files) {
           toast(action.days ? 'Nothing here was deleted more than ' + action.days + ' days ago.' : 'Nothing to clean up.');
@@ -527,7 +535,7 @@
     }
     function cleanProject(action) {
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/clean', method: 'post',
+        const r = Actions.callApi({ url: window.STUDIO_API + '/projects/clean', method: 'post',
           body: { slug: action.slug, what: action.what, days: action.days }, invalidates: [] });
         toast.success('Moved ' + sizeText(r.bytes) + ' to the Trash, as ' + r.as + '.');
       } catch (e) {
@@ -537,7 +545,7 @@
     }
     function switchProject(path, body, label) {
       try {
-        const r = Actions.callApi({ url: 'http://127.0.0.1:8765/projects/' + path, method: 'post', body: body, invalidates: [] });
+        const r = Actions.callApi({ url: window.STUDIO_API + '/projects/' + path, method: 'post', body: body, invalidates: [] });
         if (r.restarting) {
           playing = '';
           scene = null;
@@ -553,13 +561,13 @@
     }
   </script>
   <!-- Joins every take, in list order, into one MP4 (media/exports/). -->
-  <APICall id="exportTakes" method="post" url="http://127.0.0.1:8765/export"
+  <APICall id="exportTakes" method="post" url="{window.STUDIO_API}/export"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="reorderTakes" method="post" url="http://127.0.0.1:8765/reorder"
+  <APICall id="reorderTakes" method="post" url="{window.STUDIO_API}/reorder"
     body="{$param}" invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
-  <APICall id="deleteTake" method="post" url="http://127.0.0.1:8765/delete"
+  <APICall id="deleteTake" method="post" url="{window.STUDIO_API}/delete"
     body="{{ id: $param }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
@@ -571,17 +579,17 @@
        DndItems row, logging success:start but never success:end, which holds
        lastResult back until the 30s handler timeout. Waiting on xmlui-org/xmlui#3924
        (FIFO scheduler; fine with strictDeterminism false, which we don't want). -->
-  <APICall id="undeleteTake" method="post" url="http://127.0.0.1:8765/undelete"
+  <APICall id="undeleteTake" method="post" url="{window.STUDIO_API}/undelete"
     body="{{ undo: $param }}"
     invalidates="{[]}"
     errorNotificationMessage="{$error.message}" />
 
   <!-- Audio recording test: serve_media.py runs voicetest.py, which records 10s
        with the chosen mic and recorder and adds a voice_tests row. -->
-  <DataSource id="devices" url="http://127.0.0.1:8765/devices" />
-  <DataSource id="voiceTests" url="http://127.0.0.1:8765/query/shared" method="POST" dataType="sql"
+  <DataSource id="devices" url="{window.STUDIO_API}/devices" />
+  <DataSource id="voiceTests" url="{window.STUDIO_API}/query/shared" method="POST" dataType="sql"
     body="{{ sql: 'SELECT * FROM voice_tests ORDER BY created_at DESC', params: [] }}" />
-  <APICall id="voiceTest" method="post" url="http://127.0.0.1:8765/voicetest"
+  <APICall id="voiceTest" method="post" url="{window.STUDIO_API}/voicetest"
     body="{$param}"
     onSuccess="voiceTests.refetch()"
     errorNotificationMessage="{$error.message}" />
@@ -663,7 +671,7 @@
     <Text>Bram Studio makes screencasts and podcasts from recordings you already have.</Text>
     <Button label="Get me going" onClick="goGetMeGoing()" />
     <Timer interval="300" enabled="{staging}" onTick="doorwayTick()" />
-    <Text when="{serverConflict !== ''}">Another Studio's server holds port 8765 (serving {serverConflict}). Stop it and this page will carry on.</Text>
+    <Text when="{serverConflict !== ''}">Another Studio's server holds this port (serving {serverConflict}). Stop it and this page will carry on.</Text>
     <Text when="{copied === 'yes'}">Copied. Now open Bram's window and paste it to the agent.</Text>
     <VStack when="{copied === 'no'}" horizontalAlignment="center" gap="0.5rem">
       <Text>Couldn't copy. Select this, copy it, and paste it to the agent in Bram's window:</Text>
@@ -862,7 +870,7 @@
               renamingProject = '';
               if (name &amp;&amp; name !== $item.name) {
                 try {
-                  Actions.callApi({ url: 'http://127.0.0.1:8765/projects/rename', method: 'post', invalidates: [],
+                  Actions.callApi({ url: window.STUDIO_API + '/projects/rename', method: 'post', invalidates: [],
                                     body: { slug: $item.slug, name: name } });
                 } catch (e) {
                   toast.error(e.message);
@@ -929,7 +937,7 @@
           enabled="{!!takes.value &amp;&amp; takes.value.length > 0}"
           onClick="
             try {
-              calloutsDialog.open(Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post',
+              calloutsDialog.open(Actions.callApi({ url: window.STUDIO_API + '/scenes/callouts', method: 'post',
                                                     invalidates: [], body: { dryRun: true } }));
             } catch (e) {
               toast.error(e.message);
@@ -949,7 +957,7 @@
             label="{$param ? [$param.add ? 'Add ' + $param.add + ' callout' + ($param.add === 1 ? '' : 's') : '', $param.remove ? 'Remove ' + $param.remove + ' duplicate' + ($param.remove === 1 ? '' : 's') : ''].filter((x) => x).join(' and ') : ''}"
             onClick="
               try {
-                const r = Actions.callApi({ url: 'http://127.0.0.1:8765/scenes/callouts', method: 'post', invalidates: [], body: {} });
+                const r = Actions.callApi({ url: window.STUDIO_API + '/scenes/callouts', method: 'post', invalidates: [], body: {} });
                 toast.success([r.add ? 'Added ' + r.add + ' callout' + (r.add === 1 ? '' : 's') : '', r.remove ? 'removed ' + r.remove + ' duplicate' + (r.remove === 1 ? '' : 's') : ''].filter((x) => x).join(', ') || 'Nothing to change');
               } catch (e) {
                 toast.error(e.message);
@@ -992,7 +1000,7 @@
             onDidChange="(v) => {
               if (!v) return;
               try {
-                Actions.callApi({ url: 'http://127.0.0.1:8765/projects/sources/add', method: 'post', invalidates: [], body: { source: v } });
+                Actions.callApi({ url: window.STUDIO_API + '/projects/sources/add', method: 'post', invalidates: [], body: { source: v } });
                 projects.refetch();
                 scenesSource = v;
                 sourceChoice.setValue(v);
@@ -1004,7 +1012,7 @@
         </HStack>
         <VStack when="{!!sourceChoice.value}">
         <MediaPlayer id="sourcePlayer" maxHeight="55vh"
-          src="{'http://127.0.0.1:8765/sources/' + encodeURIComponent(sourceChoice.value)}"
+          src="{window.STUDIO_API + '/sources/' + encodeURIComponent(sourceChoice.value)}"
           onLoadedMetadata="(e) => { sourceAspect = e.videoWidth / e.videoHeight; srcDur = e.duration || 0; nextClipFrom(lastSceneEnd(sourceChoice.value)); }" />
         <Slider id="capSlider" width="100%" minValue="{0}" maxValue="{srcDur || 1}" step="{0.04}"
           initialValue="{capSeed}" minStepsBetweenThumbs="{13}"
@@ -1039,7 +1047,7 @@
               audition = null;
               clipBusy = true;
               try {
-                const r = Actions.callApi({ url: 'http://127.0.0.1:8765/takes/clip', method: 'post', invalidates: [],
+                const r = Actions.callApi({ url: window.STUDIO_API + '/takes/clip', method: 'post', invalidates: [],
                                             body: { source: sourceChoice.value, start: capClip[0], end: capClip[1] } });
                 toast.success('Added ' + (r &amp;&amp; r.name ? r.name : 'the scene'));
                 // Ready for the next scene: it starts where this one ended.
@@ -1083,7 +1091,7 @@
       <Timer interval="300000"
         onTick="
           try {
-            Actions.callApi({ url: 'http://127.0.0.1:8765/page/health', method: 'post', invalidates: [],
+            Actions.callApi({ url: window.STUDIO_API + '/page/health', method: 'post', invalidates: [],
                               body: window.studioPageHealth() });
           } catch (e) {
             // A missing log line is no reason to bother the user.
@@ -1155,7 +1163,7 @@
               renamingTake = null;
               if (name &amp;&amp; name !== $item.name) {
                 try {
-                  Actions.callApi({ url: 'http://127.0.0.1:8765/takes/rename', method: 'post', invalidates: [],
+                  Actions.callApi({ url: window.STUDIO_API + '/takes/rename', method: 'post', invalidates: [],
                                     body: { id: $item.id, name: name } });
                 } catch (e) {
                   toast.error(e.message);
@@ -1390,7 +1398,7 @@
                 <Select id="audioChoice" placeholder="Play from…" width="480px"
                   data="{[
                     ...(takes.value || []).map(t => ({ label: 'Scene: ' + t.name.slice(0, 60), value: t.url })),
-                    ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: 'http://127.0.0.1:8765/sources/' + encodeURIComponent(x.name) }))
+                    ...(sources.value || []).map(x => ({ label: 'Source: ' + x.name, value: window.STUDIO_API + '/sources/' + encodeURIComponent(x.name) }))
                   ]}"
                   onDidChange="audioLog = []; audioDuration = ''">
                   <!-- A take's name is long enough to wrap, and a Select's wrapped
