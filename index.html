@@ -9,6 +9,27 @@
          which only sees page functions that exist when it starts. -->
     <script src="/__shell/dictation.js"></script>
     <script src="/studio-dictation.js"></script>
+    <!-- The staged-turn doorway (Bram 3ee7cb7b): the welcome face's Get me
+         going asks Bram to come forward with the repo's get-me-going prompt
+         staged in the message box. BramDoorway.stage() is a promise, and the
+         engine's script runtime doesn't see assignments made inside native
+         promise callbacks (the probeServer lesson), so the outcome is
+         recorded on window and Main.xmlui polls it with a short Timer. On an
+         older Bram this script 404s, BramDoorway is undefined, and the page
+         falls back to the clipboard. -->
+    <script src="/__shell/doorway.js"></script>
+    <script>
+      window.studioDoorway = function () {
+        window.__doorwayOutcome = "pending";
+        try {
+          if (!window.BramDoorway) { window.__doorwayOutcome = "rejected"; return; }
+          window.BramDoorway.stage("get-me-going").then(
+            function () { window.__doorwayOutcome = "ok"; },
+            function () { window.__doorwayOutcome = "rejected"; }
+          );
+        } catch (e) { window.__doorwayOutcome = "rejected"; }
+      };
+    </script>
     <!-- The page's measure of itself, for Main.xmlui's page-health Timer
          (logged by serve_media.py's /page/health). It reads the browser
          outside the app, so it lives here; it must exist before the engine

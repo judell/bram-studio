@@ -1,5 +1,6 @@
 {
   "launch": { "minimized": true, "openApp": "/" },
   "greeting": { "file": "docs/welcome.md", "name": "Bram Studio", "orientMe": false },
+  "prompts": { "get-me-going": { "file": "docs/get-me-going-prompt.md" } },
   "ui": { "showTargetApp": false }
 }

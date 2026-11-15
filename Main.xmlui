@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied=""
+<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied="" var.staging="{false}"
   onReady="probeServer()"
   onError="(error, event) => { if (serverUp !== true || (projects.loaded &amp;&amp; projects.value &amp;&amp; !projects.value.open)) event.preventDefault(); }">
   <!-- A header band over the main area and no nav: the open project decides
@@ -116,7 +116,24 @@
         if (serverUp === null) serverUp = false;
       }
     }
-    // The welcome face's button: the prompt goes to the clipboard, and
+    // The welcome face's button: ask Bram to come forward with the repo's
+    // get-me-going prompt staged in its message box (window.studioDoorway in
+    // index.html; the doorwayTick Timer reads the outcome). On success the
+    // page says nothing - Bram's window coming forward is the feedback. If
+    // the doorway refuses (older Bram, Bram not reachable), fall back to the
+    // clipboard below.
+    function goGetMeGoing() {
+      copied = '';
+      window.studioDoorway();
+      staging = true;
+    }
+    function doorwayTick() {
+      const o = window.__doorwayOutcome;
+      if (o === 'pending') return;
+      staging = false;
+      if (o !== 'ok') copyGetMeGoing();
+    }
+    // The clipboard fallback: the prompt goes to the clipboard, and
     // `copied` says how that went ('yes', or 'no' when the browser refused
     // both ways, so the face shows the prompt to copy by hand).
     function copyGetMeGoing() {
@@ -620,7 +637,8 @@
   <VStack when="{serverUp === false}" horizontalAlignment="center" gap="1rem" paddingTop="4rem">
     <H1>Bram Studio</H1>
     <Text>Bram Studio makes screencasts and podcasts from recordings you already have.</Text>
-    <Button label="Get me going" onClick="copyGetMeGoing()" />
+    <Button label="Get me going" onClick="goGetMeGoing()" />
+    <Timer interval="300" enabled="{staging}" onTick="doorwayTick()" />
     <Text when="{copied === 'yes'}">Copied. Now open Bram's window and paste it to the agent.</Text>
     <VStack when="{copied === 'no'}" horizontalAlignment="center" gap="0.5rem">
       <Text>Couldn't copy. Select this, copy it, and paste it to the agent in Bram's window:</Text>
