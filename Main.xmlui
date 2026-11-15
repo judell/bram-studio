@@ -1,4 +1,4 @@
-<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied="" var.staging="{false}" var.serverConflict=""
+<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied="" var.staging="{false}"
   onReady="probeServer()"
   onError="(error, event) => { if (serverUp !== true || (projects.loaded &amp;&amp; projects.value &amp;&amp; !projects.value.open)) event.preventDefault(); }">
   <!-- A header band over the main area and no nav: the open project decides
@@ -118,9 +118,12 @@
       // Identity first (probe-checks-server-identity): the server reports
       // the Bram port recorded in its checkout's .bram/.bram-port.json. If
       // that's known and differs from this page's own origin port, whoever
-      // holds this page's port belongs to another checkout: treat it as down and name
-      // the conflict. Unknown on either side fails open. An older server
-      // without /identity falls back to the plain /sources probe.
+      // holds this page's port belongs to another checkout: treat it as down.
+      // Nothing more is said: with per-checkout ports this just means this
+      // checkout's server isn't running yet, and the welcome face's Get me
+      // going starts it on a free port (drop-port-conflict-line). Unknown on
+      // either side fails open. An older server without /identity falls back
+      // to the plain /sources probe.
       let ok = false;
       let conflict = '';
       try {
@@ -139,7 +142,6 @@
           ok = false;
         }
       }
-      serverConflict = conflict;
       if (ok) {
         serverUp = true;
         projects.refetch(); takes.refetch(); sources.refetch(); exports.refetch();
@@ -670,9 +672,7 @@
     <H1>Bram Studio</H1>
     <Text>Bram Studio makes screencasts and podcasts from recordings you already have.</Text>
     <Button label="Get me going" onClick="goGetMeGoing()" />
-    <Timer interval="300" enabled="{staging}" onTick="doorwayTick()" />
-    <Text when="{serverConflict !== ''}">Another Studio's server holds this port (serving {serverConflict}). Stop it and this page will carry on.</Text>
-    <Text when="{copied === 'yes'}">Copied. Now open Bram's window and paste it to the agent.</Text>
+    <Timer interval="300" enabled="{staging}" onTick="doorwayTick()" />    <Text when="{copied === 'yes'}">Copied. Now open Bram's window and paste it to the agent.</Text>
     <VStack when="{copied === 'no'}" horizontalAlignment="center" gap="0.5rem">
       <Text>Couldn't copy. Select this, copy it, and paste it to the agent in Bram's window:</Text>
       <Text>Get me going: read docs/get-me-going.md in this repo and follow it.</Text>
