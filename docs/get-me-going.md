@@ -15,10 +15,21 @@ Confirm port 8765 answers (for example `curl -sS -o /dev/null -w '%{http_code}\n
 The editor tab in the user's browser recovers on its own once the server is
 up. Say so; don't walk the user through reloading.
 
-## 2. Inventory by tier
+## 2. Inventory by tier, report as needed
 
-Check each tier and report what works **now** and what each missing piece
-would **add**. Don't present a wall of prerequisites.
+Check every tier below, but **say only what gates the user's likely next
+step**: the core tier, and transcription (both genres want it early). One
+or two sentences — what works now, and the first missing thing they'd
+notice — never a wall of everything absent.
+
+- The optional podcast tiers (cut-edge alignment, speaker matching) come
+  up when the user starts a podcast project or asks; the features
+  themselves flag their absence in context.
+- Never volunteer the `remix_take.py --regate` / VAD tier; it matters only
+  to someone already using that script.
+- State a download's size when proposing that download, not in the survey.
+
+The full map — for answering, not for reciting:
 
 - **Core screencast** (cut scenes, pauses, callouts, final video): `ffmpeg`;
   Python 3 with Pillow.
