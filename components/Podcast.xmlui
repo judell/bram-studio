@@ -587,8 +587,22 @@
                (podcast-page: current). -->
           <VStack paddingBottom="$space-3" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
             var.roster="{$item.speakers || []}">
+          <!-- When another card becomes current, this one stops; and the card
+               being left (only that one: every card hears the change) goes
+               back to its start, so choosing it again plays the paragraph
+               from the beginning, not from where it was left
+               (podcast-card-switch-resets-playback; 2026-11-15: "click-
+               switching to a card should reset playback"). -->
           <ChangeListener listenTo="{currentPara}"
-            onDidChange="if (currentPara !== $item.para &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
+            onDidChange="(change) => {
+              if (currentPara === $item.para || $item.kept === 0) return;
+              if (!paraPlayer.paused) paraPlayer.pause();
+              if (change.prevValue === $item.para) {
+                paraPlayer.seek(0);
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'card-reset', para: $item.para, now: currentPara } });
+              }
+            }" />
           <!-- The main video taking over stops this card; pausing the video
                leaves this card's player where the video stopped. -->
           <ChangeListener listenTo="{leader}"
