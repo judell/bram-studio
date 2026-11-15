@@ -1654,7 +1654,11 @@ def forget_studio_file(name):
 
 def studio_kind(name, st, files):
     e = files.get(name)
-    if e and e.get("size") == st.st_size and e.get("mtime_ns") == st.st_mtime_ns:
+    # Time to the microsecond: a copy (a project moved into projects/,
+    # Safekeeping) keeps only that much, and an exact nanosecond match
+    # disowned Studio's own exports (export-record-mtime-precision).
+    if e and e.get("size") == st.st_size and isinstance(e.get("mtime_ns"), int) \
+            and e["mtime_ns"] // 1000 == st.st_mtime_ns // 1000:
         return e.get("kind")
     return None
 
