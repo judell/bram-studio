@@ -1,0 +1,5 @@
+{
+  "launch": { "minimized": true, "openApp": "/" },
+  "greeting": { "file": "docs/welcome.md", "name": "Bram Studio", "orientMe": false },
+  "ui": { "showTargetApp": false }
+}
