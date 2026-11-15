@@ -1,4 +1,6 @@
-<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="">
+<App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied=""
+  onReady="probeServer()"
+  onError="(error, event) => { if (serverUp !== true) event.preventDefault(); }">
   <!-- A header band over the main area and no nav: the open project decides
        what's on screen. Its genre (project.json's genre, served by /projects)
        picks the editor at /; everything else is behind the header's settings
@@ -97,6 +99,52 @@
        writes with setValue
        (https://www.xmlui.org/docs/reference/components/TextArea). -->
   <script>
+    // Is serve_media.py answering? serverUp is null until the first probe
+    // lands, then true or false; only the first answer can make it false (a
+    // server that goes away under an open editor leaves the editor as it is:
+    // the event stream reconnects by itself). When it turns true, every
+    // DataSource refetches, since the ones that fired while the server was
+    // down failed. A refused connection is the "down" answer.
+    function probeServer() {
+      if (serverUp === true) return;
+      try {
+        Actions.callApi({ url: 'http://127.0.0.1:8765/sources', method: 'get', invalidates: [] });
+        serverUp = true;
+        projects.refetch(); takes.refetch(); sources.refetch(); exports.refetch();
+        devices.refetch(); voiceTests.refetch();
+      } catch (e) {
+        if (serverUp === null) serverUp = false;
+      }
+    }
+    // The welcome face's button: the prompt goes to the clipboard, and
+    // `copied` says how that went ('yes', or 'no' when the browser refused
+    // both ways, so the face shows the prompt to copy by hand).
+    function copyGetMeGoing() {
+      const text = 'Get me going: read docs/get-me-going.md in this repo and follow it.';
+      let ok = false;
+      try {
+        if (window.navigator.clipboard) {
+          window.navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (e) {
+        ok = false;
+      }
+      if (!ok) {
+        try {
+          const d = window.document;
+          const t = d.createElement('textarea');
+          t.value = text;
+          d.body.appendChild(t);
+          t.select();
+          ok = d.execCommand('copy');
+          d.body.removeChild(t);
+        } catch (e) {
+          ok = false;
+        }
+      }
+      copied = ok ? 'yes' : 'no';
+    }
     function noteKey(item) { return item.where + '/' + item.name; }
     function commitNote(item) {
       const note = noteBuffer.trim();
@@ -521,7 +569,7 @@
       <Button label="Cancel" variant="ghost" onClick="newProjectDialog.close()" />
     </HStack>
   </ModalDialog>
-  <AppHeader>
+  <AppHeader when="{serverUp === true}">
     <!-- Clean and minimal: the title (back to the open project's editor),
          the project picker, New project and a settings icon. Everything else
          (Exports, Manage projects, Audio, trace and Inspector) is on the
@@ -556,14 +604,30 @@
        clean-up, safekeeping, rename, delete; there's no page of all
        projects (2026-11-14: "the management stuff only exists on a per
        project basis"). -->
-  <NavPanel when="{projects.loaded}">
+  <NavPanel when="{serverUp === true &amp;&amp; projects.loaded}">
     <NavLink label="Workspace" to="/" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Raw transcript" to="/raw" />
     <NavLink label="Final video" to="/final-video" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Final transcript" to="/final-transcript" />
     <NavLink label="Manage" to="/manage" />
   </NavPanel>
-  <Pages fallbackPath="/">
+  <!-- The server's down (serverUp false): a welcome face instead of the
+       editor. Get me going copies a prompt for the agent in Bram's window;
+       the page is the face, the agent is the brains. The Timer probes every
+       4 s while the server hasn't answered and stops once it has, so an open
+       editor costs nothing; when it answers the editor takes the face's place. -->
+  <Timer interval="4000" enabled="{serverUp !== true}" onTick="probeServer()" />
+  <VStack when="{serverUp === false}" horizontalAlignment="center" gap="1rem" paddingTop="4rem">
+    <H1>Bram Studio</H1>
+    <Text>Bram Studio makes screencasts and podcasts from recordings you already have.</Text>
+    <Button label="Get me going" onClick="copyGetMeGoing()" />
+    <Text when="{copied === 'yes'}">Copied. Now open Bram's window and paste it to the agent.</Text>
+    <VStack when="{copied === 'no'}" horizontalAlignment="center" gap="0.5rem">
+      <Text>Couldn't copy. Select this, copy it, and paste it to the agent in Bram's window:</Text>
+      <Text>Get me going: read docs/get-me-going.md in this repo and follow it.</Text>
+    </VStack>
+  </VStack>
+  <Pages when="{serverUp === true}" fallbackPath="/">
     <!-- Manage: the open project's own disk use and clean-up, safekeeping,
          rename and delete, and the stray items in the folders all projects
          share. (It was a page of every project, Settings › Manage projects;
