@@ -232,6 +232,8 @@ USAGE = (("takes", "Takes", "the takes, their clean copies, their lossless audio
           "previews"),
          ("remix", "Re-mix ingredients", "sessions and tracks of the takes in the list"),
          ("exports", "Exports", "everything on the Exports page"),
+         ("transcripts", "Transcripts", "whisper's transcripts and the audio it heard, one folder per source; "
+          "Transcribe remakes them"),
          ("logs", "Logs", "logs Studio wrote, kept for tracing what happened"),
          ("undo", "Undo history", "what the History tab can still restore"),
          ("deleted", "Deleted takes", "takes you deleted that Studio can still restore, with their recordings"),
@@ -423,7 +425,10 @@ def project_usage(folder):
         elif n == "exports":
             for c in entries(p):
                 cp = os.path.join(p, c)
-                ours = os.path.isfile(cp) and (c.startswith(".") or c.lower().endswith(".mp4"))
+                # finals/: a podcast's Final video versions (finals_dir), what
+                # the Final video tab lists (manage-podcast-files-not-scratch).
+                ours = (os.path.isfile(cp) and (c.startswith(".") or c.lower().endswith(".mp4"))) or \
+                    (c == "finals" and os.path.isdir(cp) and not os.path.islink(cp))
                 add("exports" if ours else "stray", cp)
         else:
             add("stray", p)
@@ -437,6 +442,11 @@ def project_usage(folder):
             for c in entries(p):
                 add("remix" if of_take(c, live_work) else "deleted" if of_take(c, deleted_work) else "discarded",
                     os.path.join(p, c))
+        elif n == "transcripts" and os.path.isdir(p):
+            # A podcast's transcripts (transcript_folder): whisper's output
+            # and the audio it heard, per source. Studio's, and not offered
+            # for clean-up (manage-podcast-files-not-scratch).
+            add("transcripts", p)
         elif n == "narrated" or n.startswith("overlay-"):
             # Renders on their way to media/ and overlay.py's scratch folders:
             # nothing reads them once the take is registered.
