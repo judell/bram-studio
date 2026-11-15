@@ -36,6 +36,13 @@
   <DataSource id="paraStart" when="{view === 'Transcript' &amp;&amp; !!source &amp;&amp; $props.para !== undefined &amp;&amp; $props.para !== null &amp;&amp; $props.para !== ''}"
     url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT min(t0) AS t0 FROM words WHERE source = ? AND para = ?', params: [source, Number($props.para)] }}" />
+  <!-- Raw transcript's place, the other way: the paragraph of the segment
+       playing (currentId follows playback), by the last word starting at or
+       before the segment's start. Emitted as the Workspace's selection
+       (raw-transcript-play-sets-workspace-place). -->
+  <DataSource id="playPara" when="{view === 'Transcript' &amp;&amp; !!source &amp;&amp; currentId !== null &amp;&amp; !!segments.value &amp;&amp; !!segments.value.find((s) => s.id === currentId)}"
+    url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
+    body="{{ sql: 'SELECT para FROM words WHERE source = ? AND t0 &lt;= ? ORDER BY t0 DESC LIMIT 1', params: [source, segments.value &amp;&amp; segments.value.find((s) => s.id === currentId) ? segments.value.find((s) => s.id === currentId).t0 : 0] }}" />
 
   <!-- The text to edit and the cut list (serve_media.py's /transcripts/text
        and /transcripts/cuts). These and the paragraphs and samples wait for a
@@ -338,6 +345,17 @@
         Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                           body: { ev: 'raw-place', para: Number($props.para), t0: t, segment: k >= 0 ? segs[k].id : null } });
         if (k >= 0) transcriptList.scrollToIndex(k);
+      }" />
+    <!-- Playing in Raw transcript makes that paragraph the Workspace's place.
+         The arrival scroll above counts as done once you've played, so the
+         list doesn't jump when the new place comes back as para. -->
+    <ChangeListener listenTo="{view === 'Transcript' &amp;&amp; playPara.value &amp;&amp; playPara.value[0] ? playPara.value[0].para : null}"
+      onDidChange="(c) => {
+        if (c.newValue === null || c.newValue === undefined || c.newValue === c.prevValue) return;
+        if (rawPlace === null) rawPlace = -1;
+        emitEvent('paraChange', c.newValue);
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'raw-play-place', segment: currentId, para: c.newValue } });
       }" />
     <!-- The project's sources can change (another project opened, a source
          added): keep the chosen one if it's still there, else the first. -->

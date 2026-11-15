@@ -1255,6 +1255,7 @@
          other project they lead back to its editor. -->
     <Page url="/raw">
       <Podcast when="{projects.loaded &amp;&amp; projects.value.genre === 'podcast'}" view="Transcript" para="{workspacePara}"
+        onParaChange="(n) => workspacePara = n"
         sources="{projects.value ? (projects.value.sources || []) : []}" project="{projects.value ? projects.value.open : ''}" />
       <Link when="{projects.loaded &amp;&amp; projects.value.genre !== 'podcast'}" to="/">Back to the project</Link>
     </Page>
