@@ -1,6 +1,6 @@
 <App name="Bram Studio" layout="horizontal-sticky" var.scenesSource="" var.playing="" var.scene="{null}" var.sourceAspect="{undefined}" var.savedKey="" var.dismissedUndo="" var.noteBuffer="" var.dictating="" var.noteEdited="{false}" var.audition="{null}" var.capClip="{[0, 1]}" var.capSeed="{[0, 1]}" var.srcDur="{0}" var.clipBusy="{false}" var.renamingTake="{null}" var.renameDraft="" var.opening="" var.copyingProject="" var.editingSafe="" var.safeDrafts="{{}}" var.renamingProject="" var.projectDraft="" var.serverUp="{null}" var.copied=""
   onReady="probeServer()"
-  onError="(error, event) => { if (serverUp !== true) event.preventDefault(); }">
+  onError="(error, event) => { if (serverUp !== true || (projects.loaded &amp;&amp; projects.value &amp;&amp; !projects.value.open)) event.preventDefault(); }">
   <!-- A header band over the main area and no nav: the open project decides
        what's on screen. Its genre (project.json's genre, served by /projects)
        picks the editor at /; everything else is behind the header's settings
@@ -604,7 +604,7 @@
        clean-up, safekeeping, rename, delete; there's no page of all
        projects (2026-11-14: "the management stuff only exists on a per
        project basis"). -->
-  <NavPanel when="{serverUp === true &amp;&amp; projects.loaded}">
+  <NavPanel when="{serverUp === true &amp;&amp; projects.loaded &amp;&amp; !!projects.value.open}">
     <NavLink label="Workspace" to="/" />
     <NavLink when="{projects.value.genre === 'podcast'}" label="Raw transcript" to="/raw" />
     <NavLink label="Final video" to="/final-video" />
@@ -627,7 +627,15 @@
       <Text>Get me going: read docs/get-me-going.md in this repo and follow it.</Text>
     </VStack>
   </VStack>
-  <Pages when="{serverUp === true}" fallbackPath="/">
+  <!-- The server's up but nothing exists yet (a fresh checkout serves with
+       no project; NO_PROJECT in serve_media.py): invite the first New
+       project instead of rendering an editor with nothing to edit. -->
+  <VStack when="{serverUp === true &amp;&amp; projects.loaded &amp;&amp; !projects.value.open}"
+    horizontalAlignment="center" gap="1rem" paddingTop="4rem">
+    <H1>Bram Studio</H1>
+    <Text>No projects yet. Click <Text variant="strong">New project</Text> in the header to start your first.</Text>
+  </VStack>
+  <Pages when="{serverUp === true &amp;&amp; !(projects.loaded &amp;&amp; !projects.value.open)}" fallbackPath="/">
     <!-- Manage: the open project's own disk use and clean-up, safekeeping,
          rename and delete, and the stray items in the folders all projects
          share. (It was a page of every project, Settings › Manage projects;

@@ -100,6 +100,11 @@ CONFIG = os.path.join(HERE, "config.json")  # the page's XMLUI config: appGlobal
 SHARED_DB = os.path.join(HERE, "studio.db")  # the repo's: the Audio bench's voice_tests (voicetest.py)
 PROJECT_GIVEN = bool(os.environ.get("STUDIO_PROJECT"))  # before the next line sets it for the scripts
 os.environ["STUDIO_PROJECT"] = studio_paths.PROJECT
+# A fresh checkout serves with no project at all until New project makes the
+# first one (ensure_open_project sets this; no-auto-first-project). The
+# dispatcher turns project routes away while it's set, and startup leaves the
+# repo's own studio.db and media/ untouched.
+NO_PROJECT = False
 testing = threading.Lock()  # held while voicetest.py has the mic
 SOURCES = studio_paths.SOURCES  # source movies, usually symlinks
 DESKTOP = os.path.expanduser("~/Desktop")  # where recordings usually land
@@ -817,8 +822,7 @@ GENRES = ("screencast", "podcast")
 
 def create_project_folder(folder, name, genre="screencast", sources=()):
     # A new, empty project (studio_paths.py): media/, work/, project.json and
-    # a studio.db from schema.sql. Shared by New project and the startup
-    # default (ensure_open_project). The genre is chosen here, once; no route
+    # a studio.db from schema.sql. The genre is chosen here, once; no route
     # changes it later.
     os.makedirs(os.path.join(folder, "media"))
     os.makedirs(os.path.join(folder, "work"))
@@ -876,9 +880,6 @@ def migrate_all_genres():
     migrate_genres([os.path.join(studio_paths.PROJECTS, s) for s in sorted(slugs)] + [studio_paths.REPO])
 
 
-DEFAULT_PROJECT = "My project"
-
-
 PENDING_DELETE = os.path.join(studio_paths.PROJECTS, ".delete-pending")
 
 
@@ -914,10 +915,10 @@ def ensure_open_project():
     # studio.db has no tables there, and the server crashed on "no such
     # table: takes" (2026-10-05). So: open the most recently changed project
     # if there are any; leave an old, unmigrated repo (its studio.db holds
-    # takes) as it is, since migrate_project.py moves that; else create
-    # DEFAULT_PROJECT and open it. Opening one restarts the server, as Open
-    # on the Projects page does, so every path here and every script it
-    # launches agree.
+    # takes) as it is, since migrate_project.py moves that; else serve with
+    # no project (NO_PROJECT) until New project makes the first. Opening one
+    # restarts the server, as Open on the Projects page does, so every path
+    # here and every script it launches agree.
     if PROJECT_GIVEN or studio_paths.PROJECT != studio_paths.REPO:
         return
     projects = studio_paths.PROJECTS
@@ -940,9 +941,15 @@ def ensure_open_project():
             print("startup: no open project; the repo's own studio.db holds takes, so it stays the "
                   "project (migrate_project.py moves it into projects/)", flush=True)
             return
-        slug = re.sub(r"[^a-z0-9]+", "-", DEFAULT_PROJECT.lower()).strip("-")
-        create_project_folder(os.path.join(projects, slug), DEFAULT_PROJECT)
-        print(f"startup: no projects; created {DEFAULT_PROJECT!r} ({slug}) and opening it", flush=True)
+        # No projects and not a legacy repo: serve with none, rather than
+        # invent one ("let's not make a dumb project — the New project button
+        # will suffice", 2026-11-15). /projects/new makes the first project
+        # and restarts into it; until then the dispatcher's no_project_ok
+        # gate turns project routes away.
+        global NO_PROJECT
+        NO_PROJECT = True
+        print("startup: no projects; serving without one until New project makes the first", flush=True)
+        return
     os.makedirs(projects, exist_ok=True)
     with open(studio_paths.OPEN, "w") as f:
         f.write(slug + "\n")
@@ -3566,7 +3573,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                          self.headers.get("Access-Control-Request-Headers", "Content-Type"))
         self.end_headers()
 
+    # With no project yet (NO_PROJECT), only the routes the no-project page
+    # needs answer; everything else gets one clear refusal instead of
+    # "no such table" from the repo's bare studio.db. /projects/new is the
+    # way out: it creates the first project and restarts the server into it.
+    NO_PROJECT_GET = ("/projects", "/sources", "/devices", "/dictation/status",
+                      "/dictation/engine", "/narrate/status", "/events", "/trace")
+    NO_PROJECT_POST = ("/projects/new", "/page/health", "/audition/log", "/trace")
+
+    def no_project_refused(self, allowed):
+        if NO_PROJECT and self.path.split("?")[0] not in allowed:
+            self.send_json(409, {"error": "no project yet; create one with New project"})
+            return True
+        return False
+
     def do_GET(self):
+        if self.no_project_refused(self.NO_PROJECT_GET):
+            return
         if self.path == "/trace":
             return self.send_json(200, {"on": trace_on()})
         if self.path == "/settings":
@@ -3653,6 +3676,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # tell that no other request is in the middle of changing something.
         # The pages' queries change nothing, so they are neither counted nor
         # turned away.
+        if self.no_project_refused(self.NO_PROJECT_POST):
+            return
         if self.path == "/trace":
             return self.set_trace()
         if urllib.parse.urlparse(self.path).path == "/query":  # ?p=<project>: the pages' cache key only
@@ -6442,6 +6467,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 ensure_open_project()
 finish_pending_delete()
 migrate_all_genres()
+if NO_PROJECT:
+    # No project to prepare: leave the fresh checkout untouched (no media/,
+    # no tables in the repo's studio.db, nothing to watch) and just answer
+    # the no-project routes until /projects/new restarts into the first one.
+    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 os.makedirs(ROOT, exist_ok=True)
 # The callouts query reads overlays, so it must exist before the page asks.
 with sqlite3.connect(DB) as _db:
