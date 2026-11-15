@@ -64,14 +64,74 @@ curl -L -o nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/rele
 The Command Line Tools install is `xcode-select --install` (about 2.4 GB, not
 the full Xcode app).
 
+`ffmpeg` and `whisper-cli` come from Homebrew: `brew install ffmpeg
+whisper-cpp`. Pillow can come from Homebrew too (`brew install pillow`),
+which avoids pip's refusal to install into Homebrew's Python.
+
 ## 3. Offer installs, confirm first
+
+Assume the user is not a developer. Many won't know what a terminal,
+Homebrew or a command line is, and shouldn't need to. Explain each step in
+plain words, say what it's for in Studio's terms ("so Studio can cut
+video"), and never leave them at a dead end.
 
 For anything missing that the user would want: show the commands and the
 download sizes (where the README doesn't give one, check with
 `curl -sIL <url> | grep -i content-length` before quoting), ask once, then
-run and report what happened. Never install
-unasked. If `brew` itself is missing, say so and stop; installing Homebrew is
-the user's call.
+run and report what happened. Never install unasked.
+
+### When Homebrew isn't installed
+
+Check with `command -v brew`, and also look for `/opt/homebrew/bin/brew`
+(Apple Silicon) and `/usr/local/bin/brew` (Intel). Your shell's `PATH` may
+not include them even when Homebrew is installed. Many Mac users don't
+have Homebrew, and without it the core tier can't be installed, so this
+case matters.
+
+**You can't install Homebrew yourself:** its installer asks for the user's
+Mac password, which you must never ask for, type or handle. The user runs
+it. Walk them through it like this, in your own words:
+
+1. Say what it is and why: "Homebrew is a free, widely used tool for
+   installing software on a Mac. Studio needs it to get the video tool it
+   relies on (ffmpeg). Installing it takes about 5–15 minutes, and it also
+   installs Apple's Command Line Tools (about 2.4 GB), which Studio's
+   narration recorder needs too."
+2. Tell them how to open Terminal: press ⌘ Space, type **Terminal**, press
+   Return. A window with a text prompt opens.
+3. Give them the command to paste, exactly as published at
+   [brew.sh](https://brew.sh) (point them there so they can check it
+   themselves):
+
+   ```sh
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+
+   Paste it into Terminal and press Return.
+4. Warn them what they'll see:
+   - It asks for their **Mac login password**. As they type, **nothing
+     appears on screen, not even dots**. That's normal. Type it and press
+     Return.
+   - It may say "Press RETURN to continue". Press Return.
+   - It runs for several minutes with a lot of text. That's normal.
+5. When it finishes, it prints **"Next steps"** with one or two commands
+   to run (on Apple Silicon Macs, a line containing
+   `eval "$(/opt/homebrew/bin/brew shellenv)"`). Tell them to copy and run
+   those lines too, the same way. Without them, the `brew` command isn't
+   found in new Terminal windows.
+6. Ask them to come back here and say "done" (or paste any error they saw).
+
+Then pick up where you left off. Find `brew` by its full path
+(`/opt/homebrew/bin/brew`, or `/usr/local/bin/brew` on Intel) rather than
+trusting your shell's `PATH`, which was set before Homebrew existed. Then
+install, confirm first as above: `brew install ffmpeg whisper-cpp pillow`,
+then the whisper model.
+
+If the installer fails, read the error they paste. The two common causes
+are no internet connection and an account that isn't an administrator on
+the Mac. For the second, say plainly that someone with an admin account
+needs to install Homebrew, or make their account an admin in System
+Settings › Users & Groups.
 
 ## 4. Match the moment
 
