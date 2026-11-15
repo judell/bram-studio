@@ -139,7 +139,9 @@ podcast.
   left follows it; play the video yourself and it takes over the sound. **Undo** and
   **Redo** work across all paragraphs. Each paragraph has **Elide N tics**, which cuts its
   fillers ("um", "uh", and any you add in Settings, such as "you know") and stutters ("and, and") in one step, and **Restore
-  tics**. **Cuts** (folded) lists what was taken out. Paragraph breaks are set once from all
+  tics**. **Replace** changes a word or phrase everywhere it's kept (matched in any case),
+  each word keeping its time, as one step **Undo** takes back. **Cuts** (folded) lists what
+  was taken out. Paragraph breaks are set once from all
   the words and never move.
 - **Where a cut falls:** whisper's word times can be off by up to a second, so each cut's
   edges are placed by the sound: `align.py` hears the few seconds around an edge with a CTC

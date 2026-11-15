@@ -2393,6 +2393,8 @@ def describe_step(db, source, ch):
                 else f"clear the speaker from {n(len(tagged), 'word', 'words')}")
     elif ch.get("reason") == "tic":
         what = "elide " + n(len(cut), "tic", "tics")
+    elif ch.get("reason") == "replace":
+        what = f"replace {ch.get('before')} with {ch.get('after')} ({n(len(fixed), 'word', 'words')})"
     elif back and not cut and not fixed:
         was = ch.get("restoredWas", {})
         what = "restore " + (n(len(back), "tic", "tics") if was and all(v == "tic" for v in was.values())
@@ -2529,6 +2531,40 @@ def apply_text_edit(db, source, text, para=None):
     record_text_change(db, source, changes)
     return {"cut": len(changes["cut"]), "restored": len(changes["restored"]),
             "corrected": len(changes["corrected"]), "ignored": ignored}
+
+
+def replace_words(db, source, before, after):
+    # The Workspace's Replace (podcast-search-replace): every run of kept
+    # words reading `before` (whole words, any case) is corrected to `after`
+    # as typed, word for word, so each keeps its time and audio, as a
+    # correction typed into a paragraph does. Punctuation and a possessive
+    # stay: "Quadri," -> "Clawdrey,", "Quadri's" -> "Clawdrey's". One Undo
+    # step for all of it. Cut words are left alone.
+    bw, aw = before.split(), after.split()
+    if not bw:
+        return {"error": "Type what to replace."}
+    if len(bw) != len(aw):
+        return {"error": "Before and after need the same number of words, so each keeps its time."}
+    pats = [re.compile(r"^(\W*)" + re.escape(w) + r"(?!\w)(.*)$", re.I | re.S) for w in bw]
+    kept = db.execute("SELECT id, coalesce(shown, text), text, para FROM words "
+                      "WHERE source = ? AND kept = 1 ORDER BY i", (source,)).fetchall()
+    corrected, paras, i = [], set(), 0
+    while i <= len(kept) - len(bw):
+        ms = [p.match(kept[i + k][1]) for k, p in enumerate(pats)]
+        if not all(ms):
+            i += 1
+            continue
+        for k, m in enumerate(ms):
+            word_id, shown, text, para = kept[i + k]
+            typed = m.group(1) + aw[k] + m.group(2)
+            if typed != shown:
+                corrected.append([word_id, shown if shown != text else None, None if typed == text else typed])
+                paras.add(para)
+        i += len(bw)
+    if corrected:
+        record_text_change(db, source, {"cut": [], "restored": [], "corrected": corrected,
+                                        "before": before, "after": after}, reason="replace")
+    return {"replaced": len(corrected), "paragraphs": len(paras)}
 
 
 def record_text_change(db, source, changes, reason="edit"):
@@ -3895,7 +3931,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/segments/speaker":
             return self.label_segments()
         if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore",
-                         "/transcripts/elide"):
+                         "/transcripts/elide", "/transcripts/replace"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
@@ -4278,6 +4314,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                           "restored": len(ch["restored"]) if ch else 0, "corrected": len(ch["corrected"]) if ch else 0,
                           "para": describe_step(db, source, ch)[1] if ch else None,
                           "did": "Redid " + describe_step(db, source, ch)[0] if ch else ""}
+            elif op == "replace":
+                if not isinstance(body.get("before"), str) or not isinstance(body.get("after"), str):
+                    return self.send_json(400, {"error": "expected {source, before, after}"})
+                result = replace_words(db, source, body["before"].strip(), body["after"].strip())
+                if "error" in result:
+                    return self.send_json(400, result)
             elif op == "elide":
                 para = body.get("para")
                 result = elide_tics(db, source, dry=bool(body.get("dryRun")), para=None if para is None else int(para))

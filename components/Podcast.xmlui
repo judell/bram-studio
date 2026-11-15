@@ -124,6 +124,27 @@
         toast.error(e.message);
       }
     }
+    // Replace (podcast-search-replace): every "before" in the kept words,
+    // any case, becomes "after" as typed, each word keeping its time; one
+    // Undo takes it all back. The text refreshes through the words push.
+    function replaceWords() {
+      const before = (replaceBefore.value || '').trim();
+      const after = (replaceAfter.value || '').trim();
+      if (!before) return;
+      try {
+        const r = post('/transcripts/replace', { source, before, after });
+        if (r.replaced) {
+          toast.success('Replaced ' + r.replaced + (r.replaced === 1 ? ' word' : ' words') + ' in '
+            + r.paragraphs + (r.paragraphs === 1 ? ' paragraph' : ' paragraphs'));
+          replaceBefore.setValue('');
+          replaceAfter.setValue('');
+        } else {
+          toast('No “' + before + '” to replace');
+        }
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
     function undoText() { stepText('/transcripts/undo'); }
     function redoText() { stepText('/transcripts/redo'); }
     // A paragraph's Elide / Restore tics, called from inside the list with
@@ -480,6 +501,14 @@
             </VStack>
         <Text when="{view === 'Transcript'}" variant="secondary"
           value="whisper's segments, with their times: click a time to play from there." />
+        <!-- Replace across every paragraph (podcast-search-replace), between
+             Samples and Cuts: a misheard name fixed once, as corrections. -->
+        <HStack when="{view === 'Edit text' &amp;&amp; transcribed()}" verticalAlignment="center">
+          <TextBox id="replaceBefore" placeholder="Before" width="*" />
+          <TextBox id="replaceAfter" placeholder="After" width="*" />
+          <Button label="Replace" variant="outlined" enabled="{!!(replaceBefore.value || '').trim()}"
+            onClick="replaceWords()" />
+        </HStack>
         <!-- The cuts: what was taken out, for interest, folded at first
              (2026-11-14: "not super valuable, but slightly interesting").
              No Restore here: typing words back, Undo, or a paragraph's
