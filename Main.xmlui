@@ -376,13 +376,26 @@
       const v = bytes / Math.pow(1024, i);
       return i === 0 ? bytes + ' B' : v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2) + ' ' + units[i];
     }
+    // A scratch item's "what it is" line (the server's scratch_details): its
+    // size, file count, last change (a date, as 'changed' in projectFacts) and,
+    // for a folder, the names inside, largest first.
+    function scratchWhat(item) {
+      if (item.files === undefined) return sizeText(item.bytes);
+      // The local date (toISOString would give UTC, a day ahead on a US evening).
+      const d = new Date(item.modified * 1000);
+      const day = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-'
+        + String(d.getDate()).padStart(2, '0');
+      return sizeText(item.bytes) + ', ' + item.files + (item.files === 1 ? ' file' : ' files')
+        + ', last changed ' + day
+        + (item.sample && item.sample.length ? '; contains ' + item.sample.join(', ') + '…' : '');
+    }
     // A project's line on the Projects page, after its name.
     function projectFacts(p) {
       const facts = [p.takes + (p.takes === 1 ? ' take' : ' takes'), p.seconds + ' s', sizeText(p.bytes)];
       if (p.changed) facts.push('changed ' + p.changed.substring(5));
       if (p.safekeeping.last) facts.push('copied ' + p.safekeeping.last.at.substring(5)
         + (p.safekeeping.changed_since ? ' (changed since)' : ''));
-      if (p.stray.length) facts.push(p.stray.length + (p.stray.length === 1 ? ' stray item' : ' stray items'));
+      if (p.stray.length) facts.push(p.stray.length + (p.stray.length === 1 ? ' scratch file' : ' scratch files'));
       return facts.join(' · ');
     }
     // Safekeeping (the Projects page): where a project's copies go, what the
@@ -772,9 +785,9 @@
         <!-- Rows are parted by a light rule and a little padding, not a gap
              (borderBottom, as in
              https://www.xmlui.org/docs/howto/dock-elements-to-panel-edges). -->
-        <VStack gap="0">
+        <VStack gap="0" width="100%">
         <Items data="{$item.categories}">
-          <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
+          <HStack verticalAlignment="center" width="100%" paddingLeft="$space-4" paddingVertical="$space-1"
             borderBottom="1px solid $color-surface-200" when="{($item.key !== 'stray' &amp;&amp; $item.key !== 'logs') || $item.bytes > 0}">
             <Text value="{$item.label}" width="170px" />
             <Text value="{sizeText($item.bytes)}" width="90px" />
@@ -806,10 +819,33 @@
           </HStack>
         </Items>
         <Items data="{$item.stray}">
-          <HStack verticalAlignment="center" paddingLeft="$space-4" paddingVertical="$space-1"
+          <!-- Expands to say what it is, why it's here and how to decide. The
+               Delete button sits beside the expander, not in its summary, so
+               a click on it doesn't also open or close the row. -->
+          <HStack verticalAlignment="start" width="100%" paddingLeft="$space-4" paddingVertical="$space-1"
             borderBottom="1px solid $color-surface-200">
-            <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
-            <Text value="{sizeText($item.bytes)}" width="100px" />
+            <ExpandableItem iconPosition="start" fullWidthSummary="true" width="*">
+              <property name="summary">
+                <HStack width="100%" verticalAlignment="center">
+                  <Text value="{$item.path + ($item.folder ? '/' : '')}" width="*" />
+                  <Text value="{sizeText($item.bytes)}" width="100px" />
+                </HStack>
+              </property>
+              <VStack gap="$space-1">
+                <HStack verticalAlignment="start">
+                  <Text variant="strong" value="What it is:" width="110px" />
+                  <Text width="*" value="{scratchWhat($item)}" />
+                </HStack>
+                <HStack verticalAlignment="start">
+                  <Text variant="strong" value="Why it's here:" width="110px" />
+                  <Text width="*" value="Studio didn't make this and doesn't read it. Something else put it here: an assistant working in this project, a tool, or you." />
+                </HStack>
+                <HStack verticalAlignment="start">
+                  <Text variant="strong" value="How to decide:" width="110px" />
+                  <Text width="*" value="If you don't recognize it and nothing you use needs it, Delete is safe: it goes to the Trash, so you can drag it back. Not sure? Ask the assistant in Bram's window what it was." />
+                </HStack>
+              </VStack>
+            </ExpandableItem>
             <!-- Asks first (https://www.xmlui.org/docs/howto/open-a-confirmation-before-delete). -->
             <Button label="Delete" variant="outlined" size="sm" themeColor="attention"
               tooltip="Move this to the Trash"

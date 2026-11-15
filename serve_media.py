@@ -231,7 +231,7 @@ def push(message):
 USAGE = (("takes", "Takes", "the takes, their clean copies, their lossless audio, replaced narration audio, "
           "previews"),
          ("remix", "Re-mix ingredients", "sessions and tracks of the takes in the list"),
-         ("exports", "Exports", "everything on the Exports page"),
+         ("exports", "Exports", "Final video versions and other exported videos (the Exports tab)"),
          ("transcripts", "Transcripts", "whisper's transcripts and the audio it heard, one folder per source; "
           "Transcribe remakes them"),
          ("logs", "Logs", "logs Studio wrote, kept for tracing what happened"),
@@ -239,7 +239,7 @@ USAGE = (("takes", "Takes", "the takes, their clean copies, their lossless audio
          ("deleted", "Deleted takes", "takes you deleted that Studio can still restore, with their recordings"),
          ("discarded", "Discarded", "what nothing in Studio uses or can restore: deleted exports, takes deleted "
           "before Undo delete existed, abandoned recordings, render leftovers"),
-         ("stray", "Stray", "not Studio's: listed below"))
+         ("stray", "Scratch files", "Listed below, expand for details."))
 MOVIES = (".mp4", ".mov", ".m4v")
 # In media/.trash/: a step of a take's edit history (apply_take_edit,
 # record_annot_step, remix_take.py).
@@ -296,19 +296,62 @@ def trash_path(name):
     return os.path.expanduser(f"~/.Trash/{stem} {time.strftime('%Y-%m-%d %H.%M.%S')}{ext}")
 
 
-def tree_size(path):
+def tree_size(path, seen=None):
     # (bytes on disk, files) under a file or a folder; links aren't followed.
+    # seen: a set shared across calls; a file with other hard links
+    # (st_nlink > 1) is counted only the first time its (device, inode) turns
+    # up, so a project's total doesn't count one file under two names twice.
+    def count(st):
+        if seen is not None and st.st_nlink > 1:
+            key = (st.st_dev, st.st_ino)
+            if key in seen:
+                return 0, 0
+            seen.add(key)
+        return disk_size(st), 1
+
     if os.path.islink(path) or not os.path.isdir(path):
-        return disk_size(os.lstat(path)), 1
+        return count(os.lstat(path))
     size = files = 0
     for root, _, names in os.walk(path):
         for n in names:
             try:
-                size += disk_size(os.lstat(os.path.join(root, n)))
-                files += 1
+                b, c = count(os.lstat(os.path.join(root, n)))
+                size += b
+                files += c
             except OSError:
                 pass
     return size, files
+
+
+def scratch_details(path):
+    # What the Manage page says about a scratch item: {files, modified, sample}.
+    # modified: the newest modification time in it (epoch seconds). sample, for
+    # a folder: up to 5 names directly inside, largest first.
+    newest = 0
+    try:
+        newest = os.lstat(path).st_mtime
+    except OSError:
+        pass
+    is_dir = os.path.isdir(path) and not os.path.islink(path)
+    files = 1
+    if is_dir:
+        files = 0
+        for root, _, names in os.walk(path):
+            for n in names:
+                try:
+                    newest = max(newest, os.lstat(os.path.join(root, n)).st_mtime)
+                    files += 1
+                except OSError:
+                    pass
+    out = {"files": files, "modified": newest}
+    if is_dir:
+        try:
+            kids = [(tree_size(os.path.join(path, n))[0], n) for n in os.listdir(path) if n != ".DS_Store"]
+        except OSError:
+            kids = []
+        kids.sort(key=lambda k: (-k[0], k[1]))
+        out["sample"] = [n for _, n in kids[:5]]
+    return out
 
 
 def take_keys(folder, files):
@@ -384,8 +427,10 @@ def project_usage(folder):
     size, count, stray = collections.Counter(), collections.Counter(), []
     paths, when = collections.defaultdict(list), {}
 
+    seen_links = set()  # hard-linked files counted once across the whole project
+
     def add(kind, path):
-        b, n = tree_size(path)
+        b, n = tree_size(path, seen_links)
         size[kind] += b
         count[kind] += n
         paths[kind].append(path)
@@ -397,7 +442,8 @@ def project_usage(folder):
                 when[path] = next((t for key, t in deleted_at.items() if name == key or of_take(name, [key])), 0)
         if kind == "stray":
             stray.append({"path": os.path.relpath(path, folder), "bytes": b,
-                          "folder": os.path.isdir(path) and not os.path.islink(path)})
+                          "folder": os.path.isdir(path) and not os.path.islink(path),
+                          **scratch_details(path)})
 
     for n in entries(folder):
         if n in ("media", "work"):
@@ -457,9 +503,15 @@ def project_usage(folder):
             add("logs", p)
         else:
             add("stray", p)
+    # A podcast has no takes: its first row is the project's own files.
+    info = read_project(folder) or {}
+    labels = {k: (label, about) for k, label, about in USAGE}
+    if info.get("genre") == "podcast":
+        labels["takes"] = ("Project files", "this project's database (the transcript, your edits, speakers) "
+                           "and previews Studio rebuilds as needed")
     return {"bytes": sum(size.values()),
-            "categories": [{"key": k, "label": label, "about": about, "bytes": size[k], "files": count[k]}
-                           for k, label, about in USAGE],
+            "categories": [{"key": k, "label": labels[k][0], "about": labels[k][1], "bytes": size[k],
+                            "files": count[k]} for k, _, _ in USAGE],
             "stray": stray, "_paths": paths, "_when": when}
 
 
@@ -545,7 +597,7 @@ def shared_stray():
 
     def add(path):
         found.append({"path": os.path.relpath(path, HERE), "bytes": tree_size(path)[0],
-                      "folder": os.path.isdir(path) and not os.path.islink(path)})
+                      "folder": os.path.isdir(path) and not os.path.islink(path), **scratch_details(path)})
 
     try:
         for n in sorted(os.listdir(SOURCES)):
