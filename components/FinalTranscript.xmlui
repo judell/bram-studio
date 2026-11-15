@@ -22,7 +22,7 @@
 <Component name="FinalTranscript" var.source="{($props.sources || [])[0] || ''}" var.busy="{null}" var.project="{$props.project || ''}"
   var.pick="{$props.n !== undefined &amp;&amp; $props.n !== null &amp;&amp; $props.n !== '' ? Number($props.n) : null}"
   var.cameBack="{$props.turn !== undefined &amp;&amp; $props.turn !== null &amp;&amp; $props.turn !== '' ? Number($props.turn) : null}"
-  var.scrolledBack="{false}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
+  var.scrolledBack="{false}" var.landing="{null}" var.comparing="{false}" var.cmpA="{null}" var.cmpB="{null}" var.confirmDelete="{null}">
 
   <DataSource id="ft" when="{!!source}"
     url="{window.STUDIO_API + '/podcast/final-transcript?source=' + encodeURIComponent(source) + (pick !== null ? '&amp;n=' + pick : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
@@ -184,6 +184,7 @@
       onDidChange="() => {
         if (scrolledBack || cameBack === null || !ft.value || ft.value.turns.length <= cameBack) return;
         scrolledBack = true;
+        landing = { target: cameBack, by: 'back', tries: 0 };
         turnsList.scrollToIndex(cameBack);
         Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                           body: { ev: 'final-transcript-back', turn: cameBack, n: $props.n } });
@@ -212,15 +213,39 @@
                           body: { ev: 'final-transcript-place', para: n, turn: k >= 0 ? turns[k].i : null, found: k >= 0 } });
         if (k &lt; 0) return;
         cameBack = turns[k].i;
+        landing = { target: k, by: 'tab', tries: 0 };
         turnsList.scrollToIndex(k);
       }" />
-    <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}">
+    <!-- The landing is checked when the list reports what's in view, not after
+         a guessed wait: if the target isn't in the visible range, scroll to it
+         again (at most twice). List.scrollToIndex takes no alignment, so a
+         target in range can still sit mid-row; asked upstream as
+         xmlui-org/xmlui#3961 (scrollToIndex align: "start"). Each check logs
+         final-transcript-view. -->
+    <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}"
+      onVisibleRangeDidChange="(r) => {
+        if (landing === null) return;
+        const l = landing;
+        const inView = r.startIndex &lt;= l.target &amp;&amp; l.target &lt;= r.endIndex;
+        Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                          body: { ev: 'final-transcript-view', by: l.by, target: l.target, first: r.startIndex, last: r.endIndex, inView: inView, tries: l.tries } });
+        if (inView || l.tries >= 2) { landing = null; return; }
+        landing = { target: l.target, by: l.by, tries: l.tries + 1 };
+        turnsList.scrollToIndex(l.target);
+      }">
       <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4"
         backgroundColor="{$item.i === cameBack ? '$color-primary-50' : undefined}">
+        <!-- The time, then a pencil that opens the Workspace on this turn's
+             paragraph (final-transcript-pencil-edit): one line, the row only
+             as wide as both, inside the column's fixed width. -->
         <VStack width="70px" gap="0">
-          <Text variant="secondary" value="{stamp($item.at)}" />
-          <Link when="{$item.para !== null &amp;&amp; $item.para !== undefined}"
-            to="{{ pathname: '/', queryParams: { para: $item.para, back: '/final-transcript?n=' + (shown() ? shown().n : '') + '&amp;turn=' + $item.i } }}">Edit</Link>
+          <HStack width="fit-content" gap="$space-1" verticalAlignment="center">
+            <Text variant="secondary" value="{stamp($item.at)}" />
+            <Link when="{$item.para !== null &amp;&amp; $item.para !== undefined}" tooltip="Edit in the Workspace"
+              to="{{ pathname: '/', queryParams: { para: $item.para, back: '/final-transcript?n=' + (shown() ? shown().n : '') + '&amp;turn=' + $item.i } }}">
+              <Icon name="pencil" size="sm" />
+            </Link>
+          </HStack>
         </VStack>
         <Text width="160px" variant="strong" color="{$item.color || '$textColor-secondary'}"
           value="{$item.name + ($item.unsure ? ' (?)' : '')}" />
