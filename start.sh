@@ -17,6 +17,25 @@
 cd "$(dirname "$0")" || exit 1
 DIR=$(pwd)
 
+# On a fresh Mac (start-sh-fresh-mac):
+# - Without Apple's Command Line Tools, /usr/bin/python3 is a stub that opens
+#   a macOS install dialog instead of running, so say so plainly first.
+# - The server runs ffmpeg and whisper-cli by name and inherits this PATH,
+#   which may predate a Homebrew install (an agent's shell, say): put
+#   Homebrew's folders first so tools installed a minute ago are found.
+# - The server runs on Studio's own Python, the venv the speech models
+#   already use, so Pillow and the models share one interpreter. Without the
+#   venv, plain python3 (Pillow, if missing, only fails at the first render).
+if ! xcode-select -p >/dev/null 2>&1; then
+  echo "Studio needs Apple's Command Line Tools, which aren't installed." >&2
+  echo "Run ./check.sh, and see docs/get-me-going.md for how to install them." >&2
+  exit 1
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+VENV_PY="$HOME/.local/share/bram-studio/venv/bin/python"
+if [ -x "$VENV_PY" ]; then PY="$VENV_PY"; else PY=python3; fi
+
 recorded_port() { sed -n 's/.*"port": *\([0-9][0-9]*\).*/\1/p' studio-port.json 2>/dev/null; }
 PORT=$(recorded_port)
 PORT=${PORT:-8765}
@@ -45,7 +64,7 @@ start() {
   # a file left by a server that's gone would name the wrong port, so it
   # goes first.
   rm -f studio-port.json
-  nohup python3 serve_media.py >> serve_media.log 2>&1 < /dev/null &
+  nohup "$PY" serve_media.py >> serve_media.log 2>&1 < /dev/null &
   i=0
   while [ $i -lt 30 ]; do
     PORT=$(recorded_port)

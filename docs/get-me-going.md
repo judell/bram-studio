@@ -3,6 +3,18 @@
 Playbook for any coding agent with shell access in this repo, when the user
 says "Get me going." The README is the reference; this is the procedure.
 
+## 0. Check what's here
+
+Run `./check.sh`. It lists each piece Studio uses as `ok`, `missing` or
+`optional`, with what it's for, and installs nothing. Work from its report,
+not from your own reconstruction: it checks things you can't see (a stub
+`python3` that would open a macOS dialog instead of running).
+
+**If Apple's Command Line Tools are missing, start there.** Nothing else
+runs without them, `./start.sh` included (it refuses, and says so).
+Homebrew's installer brings them, so do the Homebrew walk-through in step 3
+first, then come back to step 1.
+
 ## 1. Start the server
 
 Run `./start.sh`. It starts `serve_media.py` in the background, or reports that
@@ -34,7 +46,8 @@ notice — never a wall of everything absent.
 The full map — for answering, not for reciting:
 
 - **Core screencast** (cut scenes, pauses, callouts, final video): `ffmpeg`;
-  Python 3 with Pillow.
+  Studio's Python (the venv at `~/.local/share/bram-studio/venv`) with
+  Pillow.
 - **Narration:** Apple Command Line Tools (`swiftc`; `serve_media.py` compiles
   `record_native.swift` on first use) and a microphone.
 - **Naming takes and transcription:** `whisper-cli` and a model in
@@ -65,8 +78,27 @@ The Command Line Tools install is `xcode-select --install` (about 2.4 GB, not
 the full Xcode app).
 
 `ffmpeg` and `whisper-cli` come from Homebrew: `brew install ffmpeg
-whisper-cpp`. Pillow can come from Homebrew too (`brew install pillow`),
-which avoids pip's refusal to install into Homebrew's Python.
+whisper-cpp`.
+
+Studio's Python is a venv of its own, which `start.sh` runs the server with
+when it exists. Pillow goes there (not into Homebrew's or Apple's Python),
+and later the podcast models' packages go there too:
+
+```sh
+python3 -m venv ~/.local/share/bram-studio/venv
+~/.local/share/bram-studio/venv/bin/pip install Pillow
+```
+
+The whisper model (about 466 MB):
+
+```sh
+mkdir -p ~/.local/share/whisper-models
+curl -L -o ~/.local/share/whisper-models/ggml-small.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+```
+
+For podcasts, `ggml-large-v3-turbo.bin` (about 1.6 GB, same folder, same
+source) transcribes more accurately; Studio uses it when it's there. Offer
+it when the user starts a podcast, not before.
 
 ## 3. Offer installs, confirm first
 
@@ -79,6 +111,11 @@ For anything missing that the user would want: show the commands and the
 download sizes (where the README doesn't give one, check with
 `curl -sIL <url> | grep -i content-length` before quoting), ask once, then
 run and report what happened. Never install unasked.
+
+**After installing anything, run `./start.sh --restart`** (it refuses while
+a narration, render or export is under way), so the server picks up the
+new tools, **then `./check.sh` again**, and tell the user what changed in
+Studio's terms ("Studio can now transcribe").
 
 ### When Homebrew isn't installed
 
@@ -124,8 +161,9 @@ it. Walk them through it like this, in your own words:
 Then pick up where you left off. Find `brew` by its full path
 (`/opt/homebrew/bin/brew`, or `/usr/local/bin/brew` on Intel) rather than
 trusting your shell's `PATH`, which was set before Homebrew existed. Then
-install, confirm first as above: `brew install ffmpeg whisper-cpp pillow`,
-then the whisper model.
+install, confirm first as above: `brew install ffmpeg whisper-cpp`, then
+Studio's Python and the whisper model (the commands in step 2), then
+restart the server and re-check, as above.
 
 If the installer fails, read the error they paste. The two common causes
 are no internet connection and an account that isn't an administrator on

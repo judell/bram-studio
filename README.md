@@ -159,15 +159,20 @@ A Studio from before projects keeps working from the repo's own `studio.db`, `me
 <details>
 <summary><b>What you need</b></summary>
 
+`./check.sh` reports what's here and what's missing, in plain words, and installs nothing.
+
 - [Bram](https://github.com/judell/bram), with this project as its target app, and Studio's
   server running (port 8765, or the next free one if another checkout's Studio holds it;
   recorded in `studio-port.json`): `./start.sh` starts `serve_media.py` in the background,
   logging to `serve_media.log`, or says it's already running and whether it's running code
   older than the files on disk. `./start.sh --restart` restarts it after a server change,
   unless a narration, render or export is under way. Bram doesn't start it.
-- `ffmpeg`, Python 3 with Pillow, and Apple's Command Line Tools for `swiftc`
+- `ffmpeg`, Apple's Command Line Tools for `swiftc` and Python
   (`xcode-select --install`; about 2.4 GB, not the full Xcode app; Homebrew installs them
-  too). `serve_media.py` compiles `record_native.swift`, the narration recorder, on first use.
+  too), and Studio's own Python with Pillow: `python3 -m venv ~/.local/share/bram-studio/venv`,
+  then `~/.local/share/bram-studio/venv/bin/pip install Pillow`. `start.sh` runs the server
+  with that Python when it exists, with Homebrew's folders first on `PATH`.
+  `serve_media.py` compiles `record_native.swift`, the narration recorder, on first use.
 - `whisper-cli` (whisper.cpp) and a model at `~/.local/share/whisper-models/ggml-small.en.bin`
   (or set `WHISPER_MODEL`), for naming takes and transcribing. Only `remix_take.py --regate`,
   for takes recorded live before scenes, uses the speech detector: Silero VAD at
