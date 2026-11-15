@@ -87,6 +87,8 @@ import time
 import traceback
 import urllib.error
 import urllib.parse
+
+from origin_gate import host_allowed, origin_allowed  # server-origin-host-gate
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -3511,7 +3513,8 @@ def choose_port():
 
 PORT = choose_port()
 os.environ["STUDIO_PORT"] = str(PORT)  # for restart() and every script it launches
-PORT_FILE = os.path.join(HERE, "studio-port.json")
+# STUDIO_PORT_FILE moves it, so a test server doesn't overwrite the live one.
+PORT_FILE = os.environ.get("STUDIO_PORT_FILE") or os.path.join(HERE, "studio-port.json")
 # A URL saved in a database before this checkout's port could vary (takes.url,
 # written by register.py and overlay.py) names the port it was made on; /query
 # rewrites it to this server's port on the way out, so old projects work on
@@ -3598,7 +3601,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # CORS only for an allowed origin, echoed back, never "*"
+        # (server-origin-host-gate); a refused request gets none.
+        origin = self.headers.get("Origin")
+        if origin and origin_allowed(origin) and not getattr(self, "refused", False):
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
         # ?download=1 on a served file: saved, not shown (the Final video
         # page's Download video, the final transcript's Download Markdown).
         parsed = urllib.parse.urlparse(self.path)
@@ -3611,6 +3619,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # preflighted. Allow whatever headers it asks for: XMLUI adds its own
     # x-ue-client-tx-id to every request, not just Content-Type.
     def do_OPTIONS(self):
+        if self.refuse_foreign():
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
@@ -3626,6 +3636,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       "/identity")
     NO_PROJECT_POST = ("/projects/new", "/page/health", "/audition/log", "/trace")
 
+    # The gate every request passes first (server-origin-host-gate): a page
+    # from a non-local origin, or a Host that isn't loopback on this
+    # server's own port, gets a bare 403 before any handler runs. The
+    # connection closes, so an unread POST body can't be taken for the next
+    # request. Logged, since a refusal the user didn't expect is a bug report.
+    def refuse_foreign(self):
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host")
+        if (origin is None or origin_allowed(origin)) and host_allowed(host, PORT):
+            return False
+        self.refused = True
+        self.close_connection = True
+        print(f"refused method={self.command} path={self.path.split('?')[0]} "
+              f"origin={origin!r} host={host!r}", flush=True)
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    # The parent class serves files on HEAD too, so it passes the gate.
+    def do_HEAD(self):
+        if self.refuse_foreign():
+            return
+        super().do_HEAD()
+
     def no_project_refused(self, allowed):
         if NO_PROJECT and self.path.split("?")[0] not in allowed:
             self.send_json(409, {"error": "no project yet; create one with New project"})
@@ -3633,6 +3668,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        if self.refuse_foreign():
+            return
         if self.no_project_refused(self.NO_PROJECT_GET):
             return
         if self.path == "/trace":
@@ -3734,6 +3771,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # tell that no other request is in the middle of changing something.
         # The pages' queries change nothing, so they are neither counted nor
         # turned away.
+        if self.refuse_foreign():
+            return
         if self.no_project_refused(self.NO_PROJECT_POST):
             return
         if self.path == "/trace":
