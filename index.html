@@ -231,7 +231,13 @@
         };
       })();
     </script>
-    <!-- XMLUI build with render:pass trace events plus xmlui-org/xmlui#3941 candidate 4, which includes candidates 1-3 (a3429e8 + 47c7d3a + 3c100b0 + candidate 2's patch 6aec1cbb…ecb9 + candidate 3's patch a7a1bd1f…86ce; sha256 e4ec32fc…5aaf); revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
+    <!-- XMLUI build: xmlui-org/xmlui#3941 step 2 (vendor-3941-step2-bundle;
+         the issue's comment 6908144494), local merge 49c1a9f91 of candidates
+         1-4 with the step 1 trace (ffce52011), step 2 (2e432491d, read-scoped
+         rendering behind xmluiConfig.readScopedRendering, off unless
+         config.json sets it true) and #3960's selection APIs (Items
+         textSelectionDidChange, #3959); 5,405,069 bytes, sha256 e20a00e6…666e.
+         Revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
     <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after
          the engine, which it registers itself with. -->
