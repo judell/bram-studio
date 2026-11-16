@@ -2425,10 +2425,15 @@ def paragraphs(db, source, with_words=False):
             p["cut"] += 1
             p["tics"] += reason == "tic"
         p["h"].update(f"{wid}:{kept}:{shown or ''}:{spk}:{how}:{unsure};".encode())
+    # av: the paragraph's sound version (audio_versions), what its clip is
+    # named by. The page addresses the clip by it, not by v, so tagging or
+    # matching voices doesn't reload the Workspace's video
+    # (workspace-video-steady).
+    sound = audio_versions(db, source)
     return [{"para": p["para"], "text": " ".join(p["words"]), "kept": p["kept"], "cut": p["cut"],
              "ticsCut": p["tics"], "ticsKept": ticky.get(p["para"], 0),
              **({"wl": p["wl"], "speakers": roster} if with_words else {}),
-             "v": p["h"].hexdigest()[:10],
+             "v": p["h"].hexdigest()[:10], "av": sound.get(p["para"]),
              "key": f"{p['para']}-{p['h'].hexdigest()[:10]}-{ticky.get(p['para'], 0)}"} for p in paras.values()]
 
 
@@ -2983,6 +2988,27 @@ def para_audio(db, source, para, duration):
     print(f"para audio source={source} para={para} pieces={len(pieces)} video=1 "
           f"secs={sum(b - a for a, b in pieces):.1f} render={time.time() - t_start:.2f}", flush=True)
     return name
+
+
+def para_poster(db, source, para, duration):
+    # A still of a paragraph's clip, its first frame, for the Workspace
+    # video's poster: shown at the video's size from the moment it mounts or
+    # changes clip, instead of an empty black box until the clip loads
+    # (workspace-video-steady). Beside the clip, named after it, so a
+    # re-render of the paragraph removes it with the old clip. Returns the
+    # file name, or None when every word is cut.
+    name = para_audio(db, source, para, duration)
+    if not name:
+        return None
+    jpg = name + ".jpg"
+    path = os.path.join(PARA_AUDIO, jpg)
+    if not os.path.isfile(path):
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", os.path.join(PARA_AUDIO, name),
+                            "-frames:v", "1", "-q:v", "4", path + ".tmp.jpg"], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("poster: " + (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1])
+        os.replace(path + ".tmp.jpg", path)
+    return jpg
 
 
 finals = {}  # source -> {"done", "total"} while its final video is made (make_final)
@@ -3866,6 +3892,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.speaker_stats()
         if self.path.startswith("/transcripts/play"):
             return self.play_para()
+        if self.path.startswith("/transcripts/poster"):
+            return self.poster_para()
         if self.path.startswith("/transcripts/marks"):
             return self.para_marks_route()
         if self.path.startswith("/screencast/final"):
@@ -4102,6 +4130,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 name = para_audio(db, source, para, row[0] or 0)
             except Exception as e:
                 print(f"para audio failed source={source} para={para} error={e}", flush=True)
+                return self.send_json(500, {"error": str(e)})
+        if not name:
+            return self.send_json(404, {"error": "nothing kept in this paragraph"})
+        self.send_response(302)
+        self.send_header("Location", "/.preview/paras/" + urllib.parse.quote(name))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def poster_para(self):
+        # GET /transcripts/poster?source=&para=&v=: a still of the paragraph's
+        # clip (para_poster), by redirect, like /transcripts/play.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+        try:
+            para = int(query.get("para", [""])[0])
+        except ValueError:
+            return self.send_json(400, {"error": "expected para"})
+        with TEXT_LOCK:
+            if not row or not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            try:
+                name = para_poster(db, source, para, row[0] or 0)
+            except Exception as e:
+                print(f"para poster failed source={source} para={para} error={e}", flush=True)
                 return self.send_json(500, {"error": str(e)})
         if not name:
             return self.send_json(404, {"error": "nothing kept in this paragraph"})

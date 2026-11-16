@@ -23,7 +23,7 @@
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
   var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
-  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}"
+  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}" var.parasSeen="{null}"
   var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -54,7 +54,8 @@
   <!-- The paragraphs to edit, each with a version (key) that changes when an
        edit touches it (/transcripts/paras). -->
   <DataSource id="paras" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
-    url="{window.STUDIO_API + '/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+    url="{window.STUDIO_API + '/transcripts/paras?source=' + encodeURIComponent(source) + (tagMode ? '&amp;words=1' : '') + (project ? '&amp;p=' + encodeURIComponent(project) : '')}"
+    onLoaded="(v) => parasSeen = v" />
   <!-- Each speaker's tagged and matched speech, and whether it has enough
        tagged to be matched (/speakers/stats; the need is a Setting). -->
   <!-- The sample stretches and their check (/speakers/samples), while
@@ -215,16 +216,38 @@
       if (!st || !st.speakers.length) return 'No speakers yet: add them in Settings › Speakers.';
       return 'Samples: ' + st.speakers.map((s) => s.name.split(' ')[0] + ' ' + Math.round(s.tagged) + ' s').join(' · ');
     }
+    // The clip's first frame (serve_media.py /transcripts/poster), the
+    // video's poster: it has a picture and a size the moment it mounts or
+    // changes clip, not a black box until the clip loads
+    // (workspace-video-steady).
+    function posterUrl(item) {
+      return window.STUDIO_API + '/transcripts/poster?source=' + encodeURIComponent(source)
+        + '&para=' + item.para + '&v=' + (item.av || item.v);
+    }
     function playUrl(item) {
       return window.STUDIO_API + '/transcripts/play?source=' + encodeURIComponent(source)
-        + '&para=' + item.para + '&v=' + item.v;
+        + '&para=' + item.para + '&v=' + (item.av || item.v);
     }
     // The paragraph the left pane's video follows: the current one, on Edit
     // text, if any of it is kept.
+    // Through a reload of paras (a Samples toggle changes its address, and
+    // paras.value is empty until it answers) it follows the last loaded
+    // paragraphs, so the video isn't swapped for the original recording and
+    // back (workspace-video-steady).
     function followItem() {
-      if (view !== 'Edit text' || currentPara === null || !paras.value) return null;
-      const p = paras.value.find((x) => x.para === currentPara);
+      const list = paras.value || parasSeen;
+      if (view !== 'Edit text' || currentPara === null || !list) return null;
+      const p = list.find((x) => x.para === currentPara);
       return p && p.kept > 0 ? p : null;
+    }
+    // Opening the Workspace at a paragraph (?para=): until that paragraph is
+    // selected, the original recording isn't mounted, so it doesn't load and
+    // flash first. Not if the paragraph isn't there to select.
+    function arriving() {
+      const n = $props.para;
+      if (view !== 'Edit text' || jumped || n === undefined || n === null || n === '') return false;
+      const list = paras.value || parasSeen;
+      return !list || list.some((x) => x.para === Number(n) && x.kept > 0);
     }
     // Put the video where the card's player is (paraClock), playing or not.
     // Logs the video's time before the move: how far it had drifted.
@@ -330,8 +353,12 @@
         const n = Number($props.para);
         const k = paras.value.findIndex((p) => p.para === n);
         if (k &lt; 0) return;
-        jumped = true;
+        // The selection first, then jumped: with jumped set first the left
+        // pane saw an arrival over and nothing selected, and mounted the
+        // original recording for a moment (workspace-video-steady: the
+        // video log went arriving, source, clip).
         currentPara = n;
+        jumped = true;
         paraList.scrollToIndex(k);
         Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                           body: { ev: 'current', para: n, by: $props.back ? 'final-transcript' : 'return' } });
@@ -433,6 +460,7 @@
              (cardSeek). Playing a card hands it back. -->
         <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="{leader !== 'video'}"
           preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
+          poster="{followItem() ? posterUrl(followItem()) : undefined}"
           onLoadedMetadata="videoPara = currentPara; applyClock('loaded')"
           onPlay="(e) => { if (videoTouched(true)) setLeader('video', 'video play'); }"
           onPause="(e) => {
@@ -446,9 +474,14 @@
              at 0, paused. Carrying the old clip's place over put the video
              past the new clip's end, and the first play stopped at once
              (log, paragraph 53, 2026-11-14 09:22). -->
-        <ChangeListener listenTo="{followItem() ? followItem().para + ':' + followItem().v : ''}"
+        <ChangeListener listenTo="{followItem() ? followItem().para + ':' + followItem().av : ''}"
           onDidChange="(c) => clipChanged(c)" />
-        <MediaPlayer id="speakerPlayer" when="{!followItem()}" width="100%"
+        <!-- What the left pane shows, logged on each change (podcast-page:
+             video), so a reload's cause is in the log. -->
+        <ChangeListener listenTo="{followItem() ? 'clip:' + followItem().para + ':' + followItem().av : (arriving() ? 'arriving' : 'source')}"
+          onDidChange="(c) => Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                                body: { ev: 'video', was: c.prevValue, now: c.newValue, view, reloading: !paras.value } })" />
+        <MediaPlayer id="speakerPlayer" when="{!followItem() &amp;&amp; !arriving()}" width="100%"
           src="{window.STUDIO_API + '/sources/' + encodeURIComponent(source)}"
           onTimeUpdate="(e) => { const id = segmentAt(e.currentTime); if (id !== currentId) currentId = id; }" />
         <!-- Edit text: the podcast edited as its text, a paragraph at a
