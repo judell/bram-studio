@@ -718,7 +718,8 @@
                splitter layout. Each assignment logs what it reads back
                (podcast-page: current). -->
           <VStack paddingBottom="$space-3" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
-            var.roster="{$item.speakers || []}" var.findHit="{!!fp().hits[String($item.para)]}">
+            var.roster="{$item.speakers || []}" var.findHit="{!!fp().hits[String($item.para)]}"
+            var.editReady="{false}" var.skipNext="{false}">
           <!-- When another card becomes current, this one stops; and the card
                being left (only that one: every card hears the change) goes
                back to its start, so choosing it again plays the paragraph
@@ -803,10 +804,31 @@
                  vendor/). It moves the player only for a bare caret in an
                  unedited box: typing would chase the caret, and an edit makes
                  the offsets stale until it saves. seek doesn't play. Logged
-                 (podcast-page: caret). -->
+                 (podcast-page: caret).
+                 The first click selects, the second edits
+                 (card-first-click-selects; 2026-11-15: "The first click on a
+                 card should select it. It then would take a second click to
+                 set the [caret]"). Focus arriving in a card that wasn't
+                 selected selects it and leaves the box read-only (editReady
+                 false), and that click's caret is skipped (skipNext), so the
+                 player doesn't move. The next caret change (a second click,
+                 or an arrow key) makes it editable and moves the player as
+                 before. Focus in a card already selected (by find, play, a
+                 tab) edits at once. Leaving the box resets it. -->
             <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+              readOnly="{!editReady}"
               onSelectionDidChange="(sel) => {
-                if (!sel || sel.start !== sel.end || draft !== $item.text || $item.kept === 0) return;
+                if (!sel) return;
+                if (!editReady) {
+                  if (skipNext) {
+                    skipNext = false;
+                    Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                      body: { ev: 'caret', para: $item.para, at: sel.start, skipped: 'first-click' } });
+                    return;
+                  }
+                  editReady = true;
+                }
+                if (sel.start !== sel.end || draft !== $item.text || $item.kept === 0) return;
                 if (!marks) {
                   marks = Actions.callApi({ url: window.STUDIO_API + '/transcripts/marks?source=' + encodeURIComponent(source) + '&amp;para=' + $item.para,
                                             method: 'get', invalidates: [] }) || [];
@@ -818,12 +840,17 @@
                                   body: { ev: 'caret', para: $item.para, at: sel.start, t, player: paraPlayer.getCurrentTime() } });
               }"
               onGotFocus="
-                if (currentPara !== $item.para) currentPara = $item.para;
+                const fresh = currentPara !== $item.para;
+                if (fresh) currentPara = $item.para;
+                editReady = !fresh;
+                skipNext = fresh;
                 Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                                  body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length, current: currentPara } });
+                                  body: { ev: 'focus', para: $item.para, draftLen: (draft || '').length, current: currentPara, fresh, editReady } });
               "
               onDidChange="(v) => draft = v"
               onLostFocus="
+                editReady = false;
+                skipNext = false;
                 Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                   body: { ev: 'blur', para: $item.para, draftLen: (draft || '').length,
                                           textLen: $item.text.length, changed: draft !== $item.text } });
