@@ -22,7 +22,7 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}"
+  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
   var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -483,19 +483,16 @@
                      optionally, they identify who's who: Match voices
                      (voiceprint.py, hidden) or a transcript formatted by
                      speaker. -->
-                <!-- Mark the card first, restore after the re-render
-                     (index.html: studioMarkCard / studioRestoreCard); when
-                     the list didn't draw it, bring it into view by index. -->
+                <!-- Mark the card (index.html studioMarkCard) and hold it
+                     (samplesHold) before the re-render; paraList's
+                     onVisibleRangeDidChange puts it back. -->
                 <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
                   <Switch label="Samples" labelPosition="end" initialValue="{false}"
                     onDidChange="(v) => {
-                      window.studioMarkCard(currentPara);
+                      const p = window.studioMarkCard(currentPara);
+                      const k = p !== null &amp;&amp; paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
+                      samplesHold = p !== null &amp;&amp; k >= 0 ? { para: p, k: k, tries: 0 } : null;
                       tagMode = v;
-                      const r = window.studioRestoreCard();
-                      if (r &amp;&amp; !r.found &amp;&amp; r.para !== null &amp;&amp; paras.value) {
-                        const k = paras.value.findIndex((p) => p.para === r.para);
-                        if (k >= 0) paraList.scrollToIndex(k);
-                      }
                     }" />
                   <Button icon="info" size="xs" variant="ghost" tooltip="About samples" onClick="samplesInfo.open()" />
                 </HStack>
@@ -632,7 +629,25 @@
       <Text when="{view === 'Edit text' &amp;&amp; transcript.loaded &amp;&amp; !transcribed()}" variant="secondary"
         value="{progress ? 'Transcribing… the text appears here when it’s done.' : 'Not transcribed yet: click Transcribe, and the text to edit appears here.'}" />
       <VStack when="{view === 'Edit text' &amp;&amp; transcribed()}" gap="$space-2">
-        <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state">
+        <!-- The Samples switch's hold (samples-toggle-holds-after-jump): the
+             re-render changes card heights, and the list reports its new
+             visible range. Then the marked card is put back where it was
+             (index.html studioPlaceCard, a labelled DOM workaround); not drawn,
+             scroll to it by index and try at the next report (at most twice).
+             Right after a jump the cards above are only estimated, which is
+             when a timed restore used to lose it. -->
+        <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state"
+          onVisibleRangeDidChange="(r) => {
+            if (samplesHold === null) return;
+            const h = samplesHold;
+            const a = window.studioPlaceCard(h.para);
+            Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                              body: { ev: 'samples-hold', para: h.para, k: h.k, first: r.startIndex, last: r.endIndex,
+                                      placed: a.found, moved: a.moved, tries: h.tries } });
+            if (a.found || h.tries >= 2) { samplesHold = null; return; }
+            samplesHold = { para: h.para, k: h.k, tries: h.tries + 1 };
+            paraList.scrollToIndex(h.k);
+          }">
           <!-- draft is the row's own: assignments to the component's
                variables made in here don't take (podcast-page log,
                2026-11-13: editingPara and paraDraft read back null in

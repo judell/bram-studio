@@ -86,13 +86,12 @@
     <!-- Podcast page, Samples switch: turning Samples on or off lays the
          words out differently, so card heights change and the list jumps.
          studioMarkCard(para) records where a paragraph card sits (the
-         selected one, or with para null the topmost one in view);
-         studioRestoreCard() runs after the re-render, finds the card
-         again and scrolls so it sits where it was. It resolves to
-         {found}: false means the virtualized list didn't render the card,
-         and Podcast.xmlui falls back to paraList.scrollToIndex. Each
-         restore is logged (podcast-page: samples-toggle) to
-         serve_media.log.
+         selected one, or with para null the topmost one in view) and
+         returns the paragraph marked; studioPlaceCard(para), called when
+         the list reports its visible range, scrolls the card back to that
+         spot, or reports it isn't drawn so Podcast.xmlui scrolls to it by
+         index and tries again. Podcast.xmlui logs each step
+         (podcast-page: samples-hold) to serve_media.log.
          WORKAROUNDS: these helpers and studioAlignTop below reach into the
          DOM (rows by data-automation-id, the scroller's scrollTop), which
          isn't the XMLUI way. They stand in for a List API to place a row
@@ -116,14 +115,6 @@
           }
           return document.scrollingElement;
         }
-        function log(body) {
-          try {
-            fetch(window.STUDIO_API + "/podcast/log", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            }).catch(function () {});
-          } catch (e) {}
-        }
         window.studioMarkCard = function (para) {
           mark = null;
           var all = cards(), el = null;
@@ -137,30 +128,21 @@
             el = all.find(function (c) { return c.getBoundingClientRect().bottom > top; }) || null;
           }
           if (el) mark = { para: paraOf(el), top: el.getBoundingClientRect().top };
+          return mark ? mark.para : null;
         };
-        window.studioRestoreCard = function () {
-          var m = mark;
+        // Called from the list's visibleRangeDidChange (samples-toggle-
+        // holds-after-jump), not after a timed wait: if the marked card is
+        // drawn, scroll so it sits where it was marked, and forget the mark.
+        // Returns {found, moved}; not drawn, the mark is kept for the next
+        // try.
+        window.studioPlaceCard = function (para) {
+          if (!mark || mark.para !== para) return { found: false, moved: null };
+          var el = cards().find(function (c) { return paraOf(c) === para; });
+          if (!el) return { found: false, moved: null };
+          var moved = el.getBoundingClientRect().top - mark.top;
+          scroller(el).scrollTop += moved;
           mark = null;
-          if (!m) {
-            log({ ev: "samples-toggle", para: null, found: false, note: "no card marked" });
-            return Promise.resolve({ found: false, para: null });
-          }
-          return new Promise(function (resolve) {
-            requestAnimationFrame(function () {
-              requestAnimationFrame(function () {
-                var el = cards().find(function (c) { return paraOf(c) === m.para; });
-                if (!el) {
-                  log({ ev: "samples-toggle", para: m.para, found: false, fallback: true });
-                  resolve({ found: false, para: m.para });
-                  return;
-                }
-                var moved = el.getBoundingClientRect().top - m.top;
-                scroller(el).scrollTop += moved;
-                log({ ev: "samples-toggle", para: m.para, found: true, moved: Math.round(moved), fallback: false });
-                resolve({ found: true, para: m.para });
-              });
-            });
-          });
+          return { found: true, moved: Math.round(moved) };
         };
         // Final transcript (final-transcript-align-top-workaround; see
         // WORKAROUNDS above, xmlui-org/xmlui#3961): List.scrollToIndex places
