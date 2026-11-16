@@ -66,6 +66,19 @@ ISLAND_MARGIN = float(os.environ.get("VP_ISLAND_MARGIN", "0.1"))
 ISLAND_DEBUG = bool(os.environ.get("VP_ISLAND_DEBUG"))
 # Word ids whose edge's candidates are printed (stderr) with their scores.
 EDGE_DEBUG = {int(x) for x in os.environ.get("VP_EDGE_DEBUG", "").split(",") if x.strip()}
+# The sentence pass (sentence_pass): a change of speaker inside a sentence
+# is suspect, since people rarely hand off mid-sentence, and the windows
+# that put it there judged 1.5 s or less (2026-11-15: "There's a VR dating
+# | platform", "who had | figured out how to | work together", "You start
+# | it with a prompt"; 12 of 106 changes in aiw were mid-sentence). A
+# piece of a sentence shorter than SENTENCE_KEEP seconds keeps its own
+# speaker only if its audio beats the whole sentence's speaker by
+# SENTENCE_MARGIN; otherwise it joins that speaker. Longer pieces are real
+# interruptions (or run-ons whisper didn't punctuate) and are left alone.
+SENTENCE_KEEP = float(os.environ.get("VP_SENTENCE_KEEP", "3.0"))
+SENTENCE_MARGIN = float(os.environ.get("VP_SENTENCE_MARGIN", "0.2"))
+SENTENCE_DEBUG = bool(os.environ.get("VP_SENTENCE_DEBUG"))
+SENTENCE_ENDS = (".", "?", "!", "…")
 UNSURE_MARGIN = 0.05
 UNSURE_SCORE = 0.25
 TRIM = 0.2  # seconds shaved off each end of a tagged stretch: whisper's word times can be off
@@ -159,6 +172,48 @@ def island_pass(seq, prints, embed):
                 joined += 1
                 changed = True
                 break
+    return joined
+
+
+def sentence_pass(seq, prints, embed):
+    # Each sentence holding a change of speaker, judged whole (see
+    # SENTENCE_KEEP above). The sentence's speaker is whichever of its
+    # speakers the whole stretch sounds most like; a short piece that
+    # doesn't clearly sound like its own speaker joins it. Samples are
+    # never moved; moved words are marked unsure. Returns pieces joined.
+    joined = 0
+    a = 0
+    for n in range(len(seq)):
+        if n < len(seq) - 1 and not (seq[n][6] or "").rstrip().endswith(SENTENCE_ENDS):
+            continue
+        b, start = n, a
+        a = n + 1
+        who = {seq[k][3] for k in range(start, b + 1)}
+        if len(who) < 2 or not all(w in prints for w in who):
+            continue
+        whole = embed(seq[start][1], seq[b][2])
+        if whole is None:
+            continue
+        S = max(who, key=lambda w: float(whole @ prints[w]))
+        k = start
+        while k <= b:
+            j = k
+            while j + 1 <= b and seq[j + 1][3] == seq[k][3]:
+                j += 1
+            X, span = seq[k][3], seq[j][2] - seq[k][1]
+            if X != S and span < SENTENCE_KEEP and not any(seq[r][5] for r in range(k, j + 1)):
+                v = embed(seq[k][1], seq[j][2]) if span >= 0.5 else None
+                margin = float(v @ prints[X] - v @ prints[S]) if v is not None else None
+                keep = margin is not None and margin >= SENTENCE_MARGIN
+                if SENTENCE_DEBUG:
+                    print(f"sentence {seq[k][0]}-{seq[j][0]} X={X} S={S} span={span:.2f} margin={margin} "
+                          f"{'keep' if keep else 'join'} "
+                          f"{' '.join(r[6] or '' for r in seq[start:b + 1])[:90]!r}", file=sys.stderr)
+                if not keep:
+                    for r in seq[k:j + 1]:
+                        r[3], r[4] = S, 1
+                    joined += 1
+            k = j + 1
     return joined
 
 
@@ -419,6 +474,7 @@ def main():
 
     edges = edge_pass(seq, prints, embed) if EDGE > 0 else {"moved": 0, "total": 0}
     edges["islandsJoined"] = island_pass(seq, prints, embed)
+    edges["sentencesJoined"] = sentence_pass(seq, prints, embed) if SENTENCE_KEEP > 0 else 0
 
     edges["embedFailed"] = len(failed)
     print(json.dumps({"speakers": speakers, "windows": len(best), "edges": edges,
