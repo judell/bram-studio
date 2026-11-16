@@ -16,7 +16,7 @@
      /screencast/final), each current or not by the scenes it was made from;
      Delete is the Exports page's (/exports/delete). -->
 <Component name="FinalVideo" var.source="{($props.sources || [])[0] || ''}" var.making="{null}" var.project="{$props.project || ''}"
-  var.pick="{null}" var.confirmDelete="{null}" var.genre="{$props.genre || 'podcast'}">
+  var.pick="{null}" var.confirmDelete="{null}" var.genre="{$props.genre || 'podcast'}" var.loadFrom="{Date.now()}">
 
   <DataSource id="final" when="{genre === 'screencast' || !!source}"
     url="{genre === 'screencast' ? window.STUDIO_API + '/screencast/final' : window.STUDIO_API + '/podcast/final?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
@@ -139,6 +139,21 @@
       if (!a || a.at === null || a.at === undefined || !vs[0] || !shown() || shown().key !== 'v' + vs[0].n) return null;
       return a.at;
     }
+    // A still of the shown file (serve_media.py /exports/poster), the
+    // player's poster: it has the video's size the moment it mounts or
+    // changes file, not a short box until the metadata loads
+    // (final-video-steady).
+    function posterUrl(v) {
+      return v ? window.STUDIO_API + '/exports/poster?url=' + encodeURIComponent(v.url) : undefined;
+    }
+    // Logged when the player knows the file's size: how long it took from
+    // the page opening or the file changing (loadFrom).
+    function loaded(e) {
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'final-video-loaded', key: shown() ? shown().key : null,
+                                w: e ? e.videoWidth : null, h: e ? e.videoHeight : null, ms: Date.now() - loadFrom } });
+      cue();
+    }
     function cue() {
       const t = cueAt();
       if (t === null) return;
@@ -197,7 +212,9 @@
          the whole video and its controls are in view. The browser keeps
          its proportions within both limits. -->
     <MediaPlayer id="player" when="{!!shown()}" width="100%" maxHeight="calc(100vh - 360px)"
-      preload="metadata" src="{shown() ? shown().url : undefined}" onLoadedMetadata="cue()" />
+      preload="metadata" src="{shown() ? shown().url : undefined}" poster="{posterUrl(shown())}"
+      onLoadedMetadata="(e) => loaded(e)" />
+    <ChangeListener listenTo="{shown() ? shown().url : ''}" onDidChange="loadFrom = Date.now()" />
     <Text variant="secondary" when="{cueAt() !== null}"
       value="{'Cued to ' + stamp(cueAt()) + ', where your selected paragraph starts'}" />
     <ChangeListener listenTo="{at.value ? at.value.at + '|' + at.value.n : ''}"

@@ -3894,6 +3894,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.play_para()
         if self.path.startswith("/transcripts/poster"):
             return self.poster_para()
+        if self.path.startswith("/exports/poster"):
+            return self.poster_export()
         if self.path.startswith("/transcripts/marks"):
             return self.para_marks_route()
         if self.path.startswith("/screencast/final"):
@@ -4307,6 +4309,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         threading.Thread(target=make_final, args=(source,), daemon=True).start()
         push({"final": source, "done": 0, "total": 0})
         self.send_json(200, {"source": source, "making": True})
+
+    def poster_export(self):
+        # GET /exports/poster?url=<an exported video's url>: a still of the
+        # video, its first frame, for Final video's poster: the player has
+        # the video's size the moment it mounts, not a short box until the
+        # file's metadata loads (final-video-steady). Only files under
+        # media/exports/. Cached in media/.preview/posters/ by name, size and
+        # mtime, so a remade or leveled file gets a new still; by redirect.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        rel = urllib.parse.unquote(urllib.parse.urlparse(query.get("url", [""])[0]).path).lstrip("/")
+        exports = os.path.realpath(os.path.join(ROOT, "exports"))
+        path = os.path.realpath(os.path.join(ROOT, rel))
+        if not path.startswith(exports + os.sep) or not os.path.isfile(path):
+            return self.send_json(404, {"error": "no such exported video"})
+        st = os.stat(path)
+        base = re.sub(r"[^\w.-]+", "_", os.path.relpath(path, exports))
+        jpg = f"{base}-{st.st_size}-{int(st.st_mtime)}.jpg"
+        posters = os.path.join(ROOT, ".preview", "posters")
+        out = os.path.join(posters, jpg)
+        if not os.path.isfile(out):
+            os.makedirs(posters, exist_ok=True)
+            r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", path,
+                                "-frames:v", "1", "-q:v", "4", out + ".tmp.jpg"], capture_output=True, text=True)
+            if r.returncode:
+                err = (r.stderr.strip().splitlines() or ["ffmpeg failed"])[-1]
+                print(f"export poster failed file={rel} error={err}", flush=True)
+                return self.send_json(500, {"error": err})
+            os.replace(out + ".tmp.jpg", out)
+            for old in os.listdir(posters):
+                if old.startswith(base + "-") and old != jpg:
+                    os.remove(os.path.join(posters, old))
+        self.send_response(302)
+        self.send_header("Location", "/.preview/posters/" + urllib.parse.quote(jpg))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def final_route(self):
         # GET /podcast/final?source=: final_state, less the clip list.
