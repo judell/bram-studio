@@ -157,7 +157,8 @@
     }
   </script>
 
-  <VStack padding="$space-6" gap="$space-4">
+  <!-- Tight top (tighter-page-top-and-notes): see Podcast.xmlui's root. -->
+  <VStack paddingHorizontal="$space-6" paddingVertical="$space-2" gap="$space-4">
     <Select when="{genre !== 'screencast' &amp;&amp; ($props.sources || []).length > 1}" width="420px"
       data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
       initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; } }" />
@@ -173,8 +174,9 @@
       <Text variant="secondary" value="{line()}" />
     </HStack>
     <Text when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === false &amp;&amp; !progress())}"
+      variant="secondary" fontSize="$fontSize-sm"
       value="{genre === 'screencast' ? 'The scenes have changed since the newest version was made: Remake to bring it up to date.' : 'The edit has changed since the newest version was made: Remake to bring it up to date.'}" />
-    <Text variant="secondary" when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === null &amp;&amp; !progress())}"
+    <Text variant="secondary" fontSize="$fontSize-sm" when="{!!(final.value &amp;&amp; final.value.exists &amp;&amp; final.value.current === null &amp;&amp; !progress())}"
       value="Studio can’t tell whether this version is up to date: it was made before Studio kept track of what goes into each version. Remake once, and from then on Remake is dimmed whenever nothing has changed." />
     <HStack when="{!!shown()}" verticalAlignment="center">
       <Select width="420px" data="{videos().map((v) => ({ value: v.key, label: label(v) }))}"

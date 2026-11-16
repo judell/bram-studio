@@ -137,7 +137,8 @@
     }
   </script>
 
-  <VStack paddingVertical="$space-6" paddingHorizontal="$space-16" gap="$space-4" height="calc(100vh - 150px)">
+  <!-- Tight top (tighter-page-top-and-notes): see Podcast.xmlui's root. -->
+  <VStack paddingVertical="$space-2" paddingHorizontal="$space-16" gap="$space-4" height="calc(100vh - 104px)">
     <Select when="{($props.sources || []).length > 1}" width="420px"
       data="{($props.sources || []).map((n) => ({ name: n }))}" valueField="name" labelField="name"
       initialValue="{source}" onDidChange="(v) => { if (v) { source = v; pick = null; cmpA = null; cmpB = null; } }" />
@@ -160,10 +161,11 @@
     <!-- Why a Remake would differ from the newest version (a newer video,
          changed samples), and whether the newest video still matches the
          edit (if not, remake it first, or the times will be off). -->
-    <Text when="{!!(ft.value &amp;&amp; !progress() &amp;&amp; ft.value.remakeWhy &amp;&amp; ft.value.remakeWhy.length)}"
-      value="{ft.value &amp;&amp; ft.value.remakeWhy ? 'Remake would differ: ' + ft.value.remakeWhy.join('; ') + '.' : ''}" />
-    <Text when="{!!(ft.value &amp;&amp; !progress() &amp;&amp; ft.value.editChanged)}"
-      value="The edit has changed since the newest final video: remake the video first, so the transcript's times match the edit." />
+    <!-- Both notes on one small line that wraps (tighter-page-top-and-notes). -->
+    <Text when="{!!(ft.value &amp;&amp; !progress() &amp;&amp; ((ft.value.remakeWhy &amp;&amp; ft.value.remakeWhy.length) || ft.value.editChanged))}"
+      variant="secondary" fontSize="$fontSize-sm"
+      value="{ft.value ? [(ft.value.remakeWhy &amp;&amp; ft.value.remakeWhy.length) ? 'Remake would differ: ' + ft.value.remakeWhy.join('; ') + '.' : '',
+                         ft.value.editChanged ? 'The edit has changed since the newest final video: remake the video first, so the transcript’s times match the edit.' : ''].filter((x) => x).join(' ') : ''}" />
 
     <!-- One version: pick it, its samples, its Markdown, Delete. -->
     <HStack when="{!!shown() &amp;&amp; !comparing}" verticalAlignment="center" wrapContent="true">

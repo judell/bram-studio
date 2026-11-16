@@ -315,7 +315,11 @@
     }
   </script>
 
-  <VStack padding="$space-6" gap="$space-4" height="calc(100vh - 150px)">
+  <!-- Tight top (tighter-page-top-and-notes): the page wrapper has no
+       vertical padding (themes/studio.json paddingVertical-Pages), and this
+       root only $space-2 above and below; the height gives the window less
+       the header and nav row (was 150 px with the old paddings). -->
+  <VStack paddingHorizontal="$space-6" paddingVertical="$space-2" gap="$space-4" height="calc(100vh - 104px)">
     <!-- Opened from the final transcript's Edit (?para=&back=): that
          paragraph is selected and scrolled to, once its list has loaded, and
          a link goes back to where you were in the transcript. -->

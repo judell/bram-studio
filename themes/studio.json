@@ -8,6 +8,7 @@
     "maxWidth-tablet": "400px",
     "width-navPanel-App": "$space-32",
     "maxWidth-content-App": "100%",
-    "maxWidth-App": "100%"
+    "maxWidth-App": "100%",
+    "paddingVertical-Pages": "0"
   }
 }
