@@ -68,6 +68,65 @@
         } catch (e) { window.__doorwayOutcome = "rejected"; }
       };
     </script>
+    <!-- Find in the long views (find-in-long-views). The Final transcript,
+         Workspace and Raw transcript lists draw only the rows near the
+         screen, so the browser's find misses the rest; each view has a
+         FindBar (components/FindBar.xmlui, from Bram) that searches the
+         data instead. studioFindPlan(rows, needle, cursor, field, keyField,
+         cacheId) is the find plan from XMLUI's how-to "Find in page across a
+         List" (xmlui-org/xmlui#3713): it counts occurrences of the needle in
+         each row's field, not rows, and maps the one cursor to a row and an
+         occurrence in it. It counts the way Text's highlightText marks (one
+         trimmed term, case-insensitive, left to right, no overlaps, at least
+         2 characters), so highlightActiveIndex lands on the counted one.
+         Counts are cached per cacheId until the rows or the needle change,
+         so a step only walks the counts. Pure: no DOM.
+         Returns { total, cursor, activeRow, activeKey, activeOcc, hits }
+         (hits: row key -> count). studioFindWordHit(w, needle) says whether
+         a Samples-mode word chip belongs to a match: the word contains the
+         needle, or is one of a phrase needle's words. -->
+    <script>
+      window.studioFindPlan = function (rows, needle, cursor, field, keyField, cacheId) {
+        var q = String(needle || "").trim().toLowerCase();
+        var arr = Array.isArray(rows) ? rows : [];
+        var none = { total: 0, cursor: 0, activeRow: -1, activeKey: null, activeOcc: -1, hits: {} };
+        if (q.length < 2) return none;
+        var slot = "__studioFind_" + (cacheId || "default");
+        var c = window[slot];
+        if (!c || c.q !== q || c.rows !== arr || c.field !== field) {
+          var idx = [], counts = [], hits = {}, total = 0;
+          for (var i = 0; i < arr.length; i++) {
+            var s = String((arr[i] && arr[i][field]) || "").toLowerCase();
+            var n = 0, at = s.indexOf(q);
+            while (at >= 0) { n++; at = s.indexOf(q, at + q.length); }
+            if (n) { idx.push(i); counts.push(n); hits[String(arr[i][keyField])] = n; total += n; }
+          }
+          c = { q: q, rows: arr, field: field, idx: idx, counts: counts, hits: hits, total: total };
+          window[slot] = c;
+        }
+        if (!c.total) return none;
+        var cur = (((Number(cursor) || 0) % c.total) + c.total) % c.total;
+        var acc = 0;
+        for (var k = 0; k < c.counts.length; k++) {
+          if (cur < acc + c.counts[k]) {
+            var row = c.idx[k];
+            return { total: c.total, cursor: cur, activeRow: row, activeKey: arr[row][keyField],
+                     activeOcc: cur - acc, hits: c.hits };
+          }
+          acc += c.counts[k];
+        }
+        return none;
+      };
+      window.studioFindWordHit = function (w, needle) {
+        var strip = function (s) { return String(s || "").toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""); };
+        var q = String(needle || "").trim().toLowerCase();
+        var x = strip(w);
+        if (q.length < 2 || !x) return false;
+        if (x.indexOf(q) >= 0) return true;
+        var words = q.split(/\s+/).map(strip).filter(Boolean);
+        return words.length > 1 && words.indexOf(x) >= 0;
+      };
+    </script>
     <!-- The page's measure of itself, for Main.xmlui's page-health Timer
          (logged by serve_media.py's /page/health). It reads the browser
          outside the app, so it lives here; it must exist before the engine

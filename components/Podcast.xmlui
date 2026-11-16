@@ -23,7 +23,8 @@
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
   var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
-  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}">
+  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}"
+  var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
@@ -76,6 +77,14 @@
     }" />
 
   <script>
+    // Find (find-in-long-views): one find state, for whichever list the
+    // view shows (the Workspace's paragraphs or the Raw transcript's
+    // segments), cleared on a change of view. index.html studioFindPlan.
+    function fp() {
+      return view === 'Transcript'
+        ? window.studioFindPlan(segments.value || [], findNeedle, findCursor, 'text', 'id', 'raw')
+        : window.studioFindPlan(paras.value || [], findNeedle, findCursor, 'text', 'para', 'workspace');
+    }
     // A finished transcript: what the text, paragraphs and cuts need.
     function transcribed() {
       return !!(transcript.value && transcript.value[0] && transcript.value[0].status === 'done');
@@ -604,7 +613,44 @@
            data-automation-id, possibly prefixed, hence *=); the click's
            target says whether it landed in one. Logged
            (podcast-page: pane-click). -->
-      <VStack height="100%" overflowY="auto" paddingLeft="$space-4"
+      <!-- The right pane: the find bar fixed at the top, the lists in a
+           scroller below it, so the bar never scrolls away
+           (find-in-long-views). The lists draw only rows near the screen,
+           so the browser's find misses the rest; the bar searches the data.
+           A step moves to the match's row; in the Workspace that paragraph
+           becomes the selection (the Workspace's place, by: 'find'). Each
+           change of match logs podcast-page: find. -->
+      <VStack height="100%" gap="$space-2" paddingLeft="$space-4">
+      <FindBar when="{view === 'Transcript' || (view === 'Edit text' &amp;&amp; transcribed())}"
+        placeholder="{view === 'Transcript' ? 'Find in raw transcript…' : 'Find in paragraphs…'}"
+        matchCount="{fp().total}" current="{fp().cursor}" showCount="{findText.trim().length >= 2}"
+        onNeedleChange="(v) => findText = v"
+        onStep="(d) => { const n = fp().total; findCursor = n ? ((fp().cursor + d) % n + n) % n : 0; }" />
+      <ChangeListener listenTo="{findText}" debounceWaitInMs="200"
+        onDidChange="() => { findCursor = 0; findNeedle = findText.trim(); }" />
+      <ChangeListener listenTo="{view}"
+        onDidChange="() => { findText = ''; findNeedle = ''; findCursor = 0; }" />
+      <ChangeListener listenTo="{findNeedle + '|' + fp().cursor + '|' + fp().total}"
+        onDidChange="() => {
+          const p = fp();
+          if (findNeedle.length &lt; 2) return;
+          Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                            body: { ev: 'find', view: view === 'Transcript' ? 'raw' : 'workspace', q: findNeedle,
+                                    n: p.total ? p.cursor + 1 : 0, of: p.total, row: p.activeRow, key: p.activeKey, occ: p.activeOcc } });
+        }" />
+      <ChangeListener listenTo="{(view === 'Transcript' ? 'raw:' : 'ws:') + fp().activeRow}"
+        onDidChange="() => {
+          const p = fp();
+          if (p.activeRow &lt; 0) return;
+          if (view === 'Transcript') { transcriptList.scrollToIndex(p.activeRow); return; }
+          if (currentPara !== p.activeKey) {
+            currentPara = p.activeKey;
+            Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                              body: { ev: 'current', para: p.activeKey, by: 'find', readBack: currentPara } });
+          }
+          paraList.scrollToIndex(p.activeRow);
+        }" />
+      <VStack height="*" overflowY="auto"
         onClick="(e) => {
           if (view !== 'Edit text') return;
           const t = e &amp;&amp; e.target;
@@ -672,7 +718,7 @@
                splitter layout. Each assignment logs what it reads back
                (podcast-page: current). -->
           <VStack paddingBottom="$space-3" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
-            var.roster="{$item.speakers || []}">
+            var.roster="{$item.speakers || []}" var.findHit="{!!fp().hits[String($item.para)]}">
           <!-- When another card becomes current, this one stops; and the card
                being left (only that one: every card hears the change) goes
                back to its start, so choosing it again plays the paragraph
@@ -728,7 +774,7 @@
                   textDecorationLine="{$item.h === 'tag' &amp;&amp; $item.s !== null ? 'underline' : 'none'}"
                   textDecorationColor="$textColor-secondary" textDecorationThickness="1px" textUnderlineOffset="4px"
                   tooltip="{$item.h === 'tag' &amp;&amp; $item.s !== null ? 'Sample: ' + nameOf(roster, $item.s) : undefined}"
-                  backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : 'transparent'}" />
+                  backgroundColor="{inRange($item.id, anchor, focus) ? '$color-primary-100' : (findHit &amp;&amp; window.studioFindWordHit($item.w, findNeedle) ? '$color-primary-200' : 'transparent')}" />
               </Items>
             </HStack>
             <HStack when="{tagMode &amp;&amp; anchor !== null &amp;&amp; focus !== null}" verticalAlignment="center" wrapContent="true">
@@ -823,9 +869,11 @@
             onClick="playFrom($item.t0)" />
           <Text width="120px" variant="strong" color="{$item.color || '$textColor-secondary'}"
             value="{$item.name || '—'}" />
-          <Text width="*" value="{$item.text}" />
+          <Text width="*" value="{$item.text}" highlightText="{findNeedle}"
+            highlightActiveIndex="{fp().activeKey === $item.id ? fp().activeOcc : -1}" />
         </HStack>
       </List>
+      </VStack>
       </VStack>
     </Splitter>
   </VStack>
