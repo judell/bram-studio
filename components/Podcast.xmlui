@@ -488,6 +488,7 @@
                      onVisibleRangeDidChange puts it back. -->
                 <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
                   <Switch label="Samples" labelPosition="end" initialValue="{false}"
+                    enabled="{currentPara !== null || tagMode}"
                     onDidChange="(v) => {
                       const p = window.studioMarkCard(currentPara);
                       const k = p !== null &amp;&amp; paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
@@ -633,7 +634,10 @@
              re-render changes card heights, and the list reports its new
              visible range. Then the marked card is put back where it was
              (index.html studioPlaceCard, a labelled DOM workaround); not drawn,
-             scroll to it by index and try at the next report (at most twice).
+             scroll to it by index. Placing repeats on every report until one
+             barely moves it (settled) or after 6, since late reports from an
+             earlier toggle can place it before the re-render
+             (samples-hold-until-settled).
              Right after a jump the cards above are only estimated, which is
              when a timed restore used to lose it. -->
         <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state"
@@ -641,12 +645,17 @@
             if (samplesHold === null) return;
             const h = samplesHold;
             const a = window.studioPlaceCard(h.para);
+            const n = h.tries + 1;
+            // Settled: placed after the re-render (the card's height changed),
+            // or placed with almost no correction. Otherwise a later report
+            // (possibly your own scroll) would snap the card back.
+            const settled = a.found &amp;&amp; (a.rerendered || Math.abs(a.moved) &lt; 2);
             Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                               body: { ev: 'samples-hold', para: h.para, k: h.k, first: r.startIndex, last: r.endIndex,
-                                      placed: a.found, moved: a.moved, tries: h.tries } });
-            if (a.found || h.tries >= 2) { samplesHold = null; return; }
-            samplesHold = { para: h.para, k: h.k, tries: h.tries + 1 };
-            paraList.scrollToIndex(h.k);
+                                      placed: a.found, moved: a.moved, rerendered: a.rerendered, n: n, settled: settled } });
+            if (settled || n >= 6) { samplesHold = null; window.studioForgetCard(); return; }
+            samplesHold = { para: h.para, k: h.k, tries: n };
+            if (!a.found) paraList.scrollToIndex(h.k);
           }">
           <!-- draft is the row's own: assignments to the component's
                variables made in here don't take (podcast-page log,

@@ -127,23 +127,30 @@
             var top = sc && sc !== document.scrollingElement ? sc.getBoundingClientRect().top : 0;
             el = all.find(function (c) { return c.getBoundingClientRect().bottom > top; }) || null;
           }
-          if (el) mark = { para: paraOf(el), top: el.getBoundingClientRect().top };
+          if (el) {
+            var b = el.getBoundingClientRect();
+            mark = { para: paraOf(el), top: b.top, height: b.height };
+          }
           return mark ? mark.para : null;
         };
         // Called from the list's visibleRangeDidChange (samples-toggle-
         // holds-after-jump), not after a timed wait: if the marked card is
-        // drawn, scroll so it sits where it was marked, and forget the mark.
-        // Returns {found, moved}; not drawn, the mark is kept for the next
-        // try.
+        // drawn, scroll so it sits where it was marked. Returns {found,
+        // moved}. The mark is kept (samples-hold-until-settled): range reports
+        // arrive late and overlap, so placing is repeated on each report,
+        // and Podcast.xmlui forgets the mark once a placement barely moves it.
         window.studioPlaceCard = function (para) {
-          if (!mark || mark.para !== para) return { found: false, moved: null };
+          if (!mark || mark.para !== para) return { found: false, moved: null, rerendered: false };
           var el = cards().find(function (c) { return paraOf(c) === para; });
-          if (!el) return { found: false, moved: null };
-          var moved = el.getBoundingClientRect().top - mark.top;
+          if (!el) return { found: false, moved: null, rerendered: false };
+          var b = el.getBoundingClientRect();
+          var moved = b.top - mark.top;
           scroller(el).scrollTop += moved;
-          mark = null;
-          return { found: true, moved: Math.round(moved) };
+          // The Samples layout changes the card's height: a different height
+          // means this report came after the re-render, not before it.
+          return { found: true, moved: Math.round(moved), rerendered: Math.abs(b.height - mark.height) > 1 };
         };
+        window.studioForgetCard = function () { mark = null; };
         // Final transcript (final-transcript-align-top-workaround; see
         // WORKAROUNDS above, xmlui-org/xmlui#3961): List.scrollToIndex places
         // rows by estimated heights and takes no alignment, so a target can
