@@ -58,6 +58,16 @@
     function progress() {
       return busy || (ft.value ? ft.value.matching : null);
     }
+    // The pencil's paragraph (pencil-returns-to-your-paragraph): for the turn
+    // you landed on from the Workspace (?para=), the paragraph you came from,
+    // which can be deep inside a long turn; otherwise the turn's first.
+    function cameFromPara() {
+      const p = $props.para;
+      return p !== undefined && p !== null && p !== '' ? Number(p) : null;
+    }
+    function pencilPara(t) {
+      return t.i === cameBack && cameFromPara() !== null ? cameFromPara() : t.para;
+    }
     function all() {
       return (ft.value && ft.value.versions) || [];
     }
@@ -244,7 +254,7 @@
           <HStack width="fit-content" gap="$space-1" verticalAlignment="center">
             <Text variant="secondary" value="{stamp($item.at)}" />
             <Link when="{$item.para !== null &amp;&amp; $item.para !== undefined}" tooltip="Edit in the Workspace"
-              to="{{ pathname: '/', queryParams: { para: $item.para, back: '/final-transcript?n=' + (shown() ? shown().n : '') + '&amp;turn=' + $item.i } }}">
+              to="{{ pathname: '/', queryParams: { para: pencilPara($item), back: '/final-transcript?n=' + (shown() ? shown().n : '') + '&amp;turn=' + $item.i + (pencilPara($item) !== $item.para ? '&amp;para=' + pencilPara($item) : '') } }}">
               <Icon name="pencil" size="sm" />
             </Link>
           </HStack>
