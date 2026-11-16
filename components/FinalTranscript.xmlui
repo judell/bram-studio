@@ -210,16 +210,22 @@
       }" />
     <Text when="{!!shown() &amp;&amp; !comparing}" variant="secondary" value="{samplesLine(shown())}" />
 
-    <!-- Compare: two versions, older first. -->
-    <HStack when="{comparing}" verticalAlignment="center" wrapContent="true">
-      <Select width="560px" data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
-        initialValue="{aVer()}" onDidChange="(v) => cmpA = v" />
+    <!-- Compare: two versions, older first (a diff reads older → newer, as
+         do the lines below), side by side sharing the width, each a card
+         holding its pick and its own samples line (compare-header-compact). -->
+    <HStack when="{comparing}" verticalAlignment="center" gap="$space-2">
+      <Card width="*" padding="$space-2" gap="$space-1">
+        <Select data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
+          initialValue="{aVer()}" onDidChange="(v) => cmpA = v" />
+        <Text variant="secondary" fontSize="$fontSize-sm" value="{samplesLine(versionOf(aVer()))}" />
+      </Card>
       <Text value="→" />
-      <Select width="560px" data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
-        initialValue="{bVer()}" onDidChange="(v) => cmpB = v" />
+      <Card width="*" padding="$space-2" gap="$space-1">
+        <Select data="{all().map((v) => ({ value: v.n, label: label(v) }))}"
+          initialValue="{bVer()}" onDidChange="(v) => cmpB = v" />
+        <Text variant="secondary" fontSize="$fontSize-sm" value="{samplesLine(versionOf(bVer()))}" />
+      </Card>
     </HStack>
-    <Text when="{comparing}" variant="secondary" value="{samplesLine(versionOf(aVer()))}" />
-    <Text when="{comparing}" variant="secondary" value="{samplesLine(versionOf(bVer()))}" />
     <Text when="{comparing &amp;&amp; !!cmp.value}" value="{cmpLine()}" />
     <Text when="{comparing &amp;&amp; !!cmp.value}" variant="secondary"
       value="{'Words per speaker: ' + (cmp.value ? cmp.value.totals.map((t) => t.name.split(' ')[0] + ' ' + t.a + ' → ' + t.b).join(' · ') : '')}" />
