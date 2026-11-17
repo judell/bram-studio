@@ -2,6 +2,8 @@
   "launch": { "minimized": false, "openApp": "/", "run": "./start.sh", "stop": "./start.sh --stop" },
   "greeting": { "file": "docs/welcome.md", "name": "Bram Studio", "orientMe": false },
   "prompts": { "get-me-going": { "file": "docs/get-me-going-prompt.md" },
-               "annotate": { "file": "docs/annotate-prompt.md", "context": true } },
+               "annotate": { "file": "docs/annotate-prompt.md", "context": true },
+               "annotate-batch": { "file": "docs/annotate-batch-prompt.md", "context": true },
+               "annotate-refine": { "file": "docs/annotate-refine-prompt.md", "context": true } },
   "ui": { "showTargetApp": false }
 }

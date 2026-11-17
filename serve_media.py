@@ -2159,7 +2159,8 @@ NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   words TEXT NOT NULL,
   markdown TEXT NOT NULL,
   created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
+  updated_at REAL NOT NULL,
+  provisional INTEGER NOT NULL DEFAULT 0
 )"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
@@ -3658,18 +3659,19 @@ NOTE_SCRIPT = """
 def placed_notes(db, source, snap):
     # The source's notes, each marked placed when the snapshot still has its
     # words at its ids (word_key compares them); a stale note is never put
-    # on other words. Shared by GET /notes and the HTML export.
+    # on other words. Shared by GET /notes and the HTML export. Provisional
+    # notes are proposals Jon hasn't accepted yet.
     at = {w[0]: i for i, w in enumerate(snap["words"])} if snap else {}
     out = []
-    for id_, a, b, words, md, created, updated in db.execute(
-            "SELECT id, w_from, w_to, words, markdown, created_at, updated_at FROM notes "
+    for id_, a, b, words, md, created, updated, prov in db.execute(
+            "SELECT id, w_from, w_to, words, markdown, created_at, updated_at, provisional FROM notes "
             "WHERE source = ? ORDER BY w_from, id", (source,)):
         placed = False
         if a in at and b in at and at[a] <= at[b]:
             have = [word_key(w[1]) for w in snap["words"][at[a]:at[b] + 1]]
             placed = have == [word_key(w) for w in words.split()]
         out.append({"id": id_, "from": a, "to": b, "words": words, "markdown": md, "created": created,
-                    "updated": updated, "placed": placed})
+                    "updated": updated, "placed": placed, "provisional": bool(prov)})
     return out
 
 
@@ -3756,7 +3758,9 @@ def transcript_html(source, snap):
     # Notes (placed ones only): their words marked, and an ⓘ with the note
     # after the last. A note can run over sentences; each sentence span
     # marks its own part, so its text reads as before.
-    notes = [n for n in placed_notes(sqlite3.connect(DB), source, snap) if n["placed"]]
+    # The export is for publishing, so a provisional note never reaches it.
+    notes = [n for n in placed_notes(sqlite3.connect(DB), source, snap)
+             if n["placed"] and not n["provisional"]]
     ids = [w[0] for w in snap["words"]]
     pos = {wid: k for k, wid in enumerate(ids)}
     covered, ends = set(), {}
@@ -4948,11 +4952,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not db.execute("SELECT 1 FROM words WHERE id = ? AND source = ? AND kept = 1",
                                   (x, source)).fetchone():
                     return self.send_json(400, {"error": f"{x} is not a kept word of {source}"})
+            prov = body.get("provisional", False)
+            if not isinstance(prov, bool):
+                return self.send_json(400, {"error": "provisional must be true or false"})
             now = time.time()
             with db:
-                id_ = db.execute("INSERT INTO notes (source, w_from, w_to, words, markdown, created_at, updated_at) "
-                                 "VALUES (?, ?, ?, ?, ?, ?, ?)", (source, a, b, words, md, now, now)).lastrowid
-            print(f"notes add source={source} id={id_} from={a} to={b} chars={len(md)}", flush=True)
+                id_ = db.execute("INSERT INTO notes (source, w_from, w_to, words, markdown, created_at, updated_at, provisional) "
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (source, a, b, words, md, now, now, int(prov))).lastrowid
+            print(f"notes add source={source} id={id_} from={a} to={b} chars={len(md)} provisional={prov}", flush=True)
         else:
             id_ = body.get("id")
             row = db.execute("SELECT source, w_from, w_to FROM notes WHERE id = ?", (id_,)).fetchone() \
@@ -4961,12 +4968,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_json(404, {"error": "no such note"})
             source, a, b = row
             if op == "update":
-                md = body.get("markdown")
-                if not isinstance(md, str) or not md.strip() or len(md) > 20000:
-                    return self.send_json(400, {"error": "expected markdown, 1 to 20000 characters"})
+                # Markdown, or Accept ({provisional: false}), or both. Only
+                # Accept changes provisional, so it can't be set back to true.
+                if "markdown" not in body and "provisional" not in body:
+                    return self.send_json(400, {"error": "expected markdown or provisional"})
+                sets, args, changed = [], [], []
+                if "markdown" in body:
+                    md = body["markdown"]
+                    if not isinstance(md, str) or not md.strip() or len(md) > 20000:
+                        return self.send_json(400, {"error": "expected markdown, 1 to 20000 characters"})
+                    sets.append("markdown = ?"); args.append(md); changed.append(f"markdown chars={len(md)}")
+                if "provisional" in body:
+                    if body["provisional"] is not False:
+                        return self.send_json(400, {"error": "provisional can only be cleared"})
+                    sets.append("provisional = 0"); changed.append("provisional=False")
                 with db:
-                    db.execute("UPDATE notes SET markdown = ?, updated_at = ? WHERE id = ?", (md, time.time(), id_))
-                print(f"notes update source={source} id={id_} from={a} to={b} chars={len(md)}", flush=True)
+                    db.execute(f"UPDATE notes SET {', '.join(sets)}, updated_at = ? WHERE id = ?",
+                               (*args, time.time(), id_))
+                print(f"notes update source={source} id={id_} from={a} to={b} {' '.join(changed)}", flush=True)
             else:
                 with db:
                     db.execute("DELETE FROM notes WHERE id = ?", (id_,))
@@ -7381,6 +7400,9 @@ with sqlite3.connect(DB) as _db:
     _db.execute(TRANSCRIPT_EDITS_SQL)
     _db.execute(WORD_EDGES_SQL)
     _db.execute(NOTES_SQL)
+    # notes.provisional arrived later (final-transcript-batch-notes).
+    if "provisional" not in [r[1] for r in _db.execute("PRAGMA table_info(notes)")]:
+        _db.execute("ALTER TABLE notes ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
     # words.para and transcript_edits.undone arrived later (podcast-paragraph-playback).
     if "para" not in [r[1] for r in _db.execute("PRAGMA table_info(words)")]:
         _db.execute("ALTER TABLE words ADD COLUMN para INTEGER")
