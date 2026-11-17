@@ -171,7 +171,15 @@
     <HStack when="{!!shown() &amp;&amp; !comparing}" verticalAlignment="center" wrapContent="true">
       <Select width="640px" data="{all().map((v) => ({ value: v.n, label: label(v) + (v.n === all()[0].n ? ' (newest)' : '') }))}"
         initialValue="{shown() ? shown().n : undefined}" onDidChange="(v) => { pick = v; confirmDelete = null; }" />
-      <Link when="{!!shown()}" to="{shown() ? shown().md + '?download=1' : ''}" target="_blank">Download Markdown</Link>
+      <!-- Download: Markdown · HTML (final-transcript-html-export). HTML
+           is one standalone page for a static server, playing the final
+           video it's timed by from the same folder. -->
+      <HStack when="{!!shown()}" gap="$space-1" verticalAlignment="center">
+        <Text value="Download:" />
+        <Link to="{shown() ? shown().md + '?download=1' : ''}" target="_blank">Markdown</Link>
+        <Text variant="secondary" value="·" />
+        <Link to="{shown() ? shown().html : ''}" target="_blank">HTML</Link>
+      </HStack>
       <Button when="{confirmDelete === null}" size="sm" variant="ghost" label="Delete this version"
         enabled="{!progress()}" onClick="confirmDelete = shown().n" />
       <Text when="{confirmDelete !== null}" value="{'Delete v' + confirmDelete + '?'}" />

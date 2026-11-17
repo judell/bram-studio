@@ -60,6 +60,20 @@
         return false;
       }
     }
+    // Metadata: the open project's title, date and summary, in its
+    // project.json (POST /projects/meta). An export uses them
+    // (final-transcript-html-export).
+    function saveMeta() {
+      try {
+        Actions.callApi({ url: window.STUDIO_API + '/projects/meta', method: 'post', invalidates: [],
+                          body: { title: metaTitle.value || '', date: metaDate.value || '',
+                                  summary: metaSummary.value || '', showTranscript: !!metaShow.value } });
+        toast.success('Metadata saved.');
+      } catch (e) {
+        toast.error(e.message);
+      }
+      openProject.refetch();
+    }
     function savePodcast() {
       try {
         Actions.callApi({ url: window.STUDIO_API + '/settings', method: 'post', invalidates: [],
@@ -79,6 +93,40 @@
   <VStack paddingHorizontal="$space-6" paddingTop="$space-6" gap="$space-5">
     <H2>Settings</H2>
     <Text variant="secondary" value="Saved in projects/.studio-settings.json, with this machine's projects." />
+    <!-- Metadata: what the open project's recording is, for its exports
+         (the HTML transcript's heading, date and summary). Saved in the
+         project's own project.json, so it travels with the project. -->
+    <Theme paddingLeft-summary-ExpandableItem="0">
+      <ExpandableItem initiallyExpanded="{false}" iconPosition="start" when="{openProject.loaded}"
+        summary="{'Metadata for ' + (openProject.value ? openProject.value.name : 'this project') + ' · title, date, summary'}">
+        <VStack gap="$space-3">
+          <Text variant="secondary" fontSize="$fontSize-sm"
+            value="What this recording is. The HTML transcript export shows the title, date and summary; without a title it uses the recording's file name." />
+          <HStack verticalAlignment="center">
+            <Text value="Title" width="120px" />
+            <TextBox id="metaTitle" width="480px" initialValue="{openProject.value.meta ? openProject.value.meta.title : ''}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Date" width="120px" />
+            <TextBox id="metaDate" width="240px" placeholder="e.g. 2026-11-13"
+              initialValue="{openProject.value.meta ? openProject.value.meta.date : ''}" />
+          </HStack>
+          <HStack verticalAlignment="start">
+            <Text value="Summary" width="120px" />
+            <TextArea id="metaSummary" width="480px" minRows="4" autoSize="true"
+              initialValue="{openProject.value.meta ? openProject.value.meta.summary : ''}" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="" width="120px" />
+            <Switch id="metaShow" label="HTML export opens with the transcript shown"
+              labelPosition="end" initialValue="{!!(openProject.value.meta &amp;&amp; openProject.value.meta.showTranscript)}" />
+          </HStack>
+          <HStack>
+            <Button size="sm" variant="outlined" label="Save" onClick="saveMeta()" />
+          </HStack>
+        </VStack>
+      </ExpandableItem>
+    </Theme>
     <!-- Speakers in the open project: add, rename (the pencil; the row keeps
          its own draft), delete (its words and segments go back to no
          speaker). Talk time per speaker isn't shown: it counted whisper's

@@ -68,6 +68,7 @@ words heard differ from the words kept ({"checking": source, done} on
 """
 import collections
 import hashlib
+import html as html_lib
 import io
 import math
 import http.server
@@ -635,6 +636,20 @@ def read_project(folder):
         return None
 
 
+META_FIELDS = ("title", "date", "summary")
+
+
+def project_meta(info):
+    # The project's metadata (Settings › Metadata), {title, date, summary},
+    # each a string, '' when unset: what an export says the recording is
+    # (final-transcript-html-export).
+    # showTranscript: whether the HTML transcript opens with its transcript
+    # shown (false, the default: just the video and the heading).
+    meta = (info or {}).get("meta") or {}
+    return {**{k: meta.get(k) if isinstance(meta.get(k), str) else "" for k in META_FIELDS},
+            "showTranscript": meta.get("showTranscript") is True}
+
+
 def write_project(folder, info):
     tmp = os.path.join(folder, ".project.json.tmp")
     with open(tmp, "w") as f:
@@ -881,6 +896,7 @@ def list_projects():
     mine = read_project(studio_paths.PROJECT) or {}
     return {"open": current and current["slug"], "name": current["name"] if current else "", "projects": projects,
             "genre": mine.get("genre", ""), "sources": mine.get("sources", []),
+            "meta": project_meta(mine),
             "shared_stray": shared, "stray_count": len(shared) + sum(len(p["stray"]) for p in projects),
             "folder": studio_paths.PROJECTS}
 
@@ -3409,6 +3425,227 @@ def save_transcript_version(db, source, made_at=None):
     return num
 
 
+TRANSCRIPT_HTML_STYLE = """
+:root { --bg: #fff; --fg: #1d1f23; --muted: #5d6470; --rule: #e3e6ea; --link: #2a62c9;
+  --grip: #c9ced6; --left: 45%; --now: #eef3fc; --said: #cfe0fb; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16181c; --fg: #e8eaed; --muted: #9aa1ac; --rule: #2c3036; --link: #8ab4f8;
+    --grip: #3a3f47; --now: #1f2a3a; --said: #2d4466; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.app { display: grid; grid-template-columns: var(--left) 8px 1fr; height: 100vh; }
+.left { overflow: auto; padding: 16px; }
+.right { overflow: auto; padding: 0 20px 64px; }
+.split { cursor: col-resize; background: var(--rule); touch-action: none; position: relative; }
+.split::after { content: ""; position: absolute; top: 50%; left: 2px; width: 4px; height: 40px;
+  margin-top: -20px; border-radius: 2px; background: var(--grip); }
+.split:hover, .split:focus-visible, .split.drag { background: var(--grip); outline: none; }
+.left { position: relative; }
+.toggle { position: absolute; top: 14px; right: 16px; font: inherit; font-size: 0.8rem;
+  color: var(--link); background: none; border: 1px solid var(--rule); border-radius: 6px;
+  padding: 2px 10px; cursor: pointer; }
+.toggle:hover { border-color: var(--link); }
+.app.solo { grid-template-columns: 1fr; }
+.app.solo .split, .app.solo .right { display: none; }
+h1 { font-size: 1.2rem; margin: 0 0 4px; padding-right: 9em; }
+.date { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
+.summary { margin: 0 0 10px; font-size: 0.95rem; }
+video { width: 100%; background: #000; display: block; border-radius: 6px; }
+.turn { display: grid; grid-template-columns: 4.5em 1fr; gap: 0 12px; padding: 14px 0;
+  border-bottom: 1px solid var(--rule); }
+.turn a.t { color: var(--link); text-decoration: none; font-variant-numeric: tabular-nums;
+  font-size: 0.9rem; padding-top: 2px; }
+.turn a.t:hover { text-decoration: underline; }
+.who { font-weight: 600; }
+.unsure { color: var(--muted); font-weight: 400; }
+.turn p { margin: 2px 0 0; }
+.turn.now { background: var(--now); box-shadow: -20px 0 0 var(--now), 20px 0 0 var(--now); }
+.s { cursor: pointer; border-radius: 3px; }
+.s:hover { text-decoration: underline; text-decoration-color: var(--grip); }
+.s.said { background: var(--said); }
+@media (max-width: 720px) {
+  .app { display: block; height: auto; }
+  .split { display: none; }
+  .left { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--rule); }
+  .left video { max-height: 35vh; }
+  .right { overflow: visible; padding: 0 16px 64px; }
+  .turn { grid-template-columns: 1fr; }
+}
+"""
+
+TRANSCRIPT_HTML_SCRIPT = """
+document.addEventListener('click', function (e) {
+  var a = e.target.closest('a.t, .s');
+  if (!a) return;
+  var v = document.getElementById('video');
+  if (!v) return;
+  e.preventDefault();
+  v.currentTime = Number(a.dataset.t);
+  var p = v.play();
+  if (p && p.catch) p.catch(function () {});
+});
+(function () {
+  var app = document.querySelector('.app'), split = document.querySelector('.split');
+  var KEY = 'transcript-split', pct = null;
+  function set(p) {
+    pct = Math.min(80, Math.max(20, p));
+    app.style.setProperty('--left', pct + '%');
+    split.setAttribute('aria-valuenow', Math.round(pct));
+  }
+  try { var saved = Number(localStorage.getItem(KEY)); if (saved) set(saved); } catch (e) {}
+  function save() { try { if (pct !== null) localStorage.setItem(KEY, String(pct)); } catch (e) {} }
+  split.addEventListener('pointerdown', function (e) {
+    split.setPointerCapture(e.pointerId); split.classList.add('drag'); e.preventDefault();
+  });
+  split.addEventListener('pointermove', function (e) {
+    if (!split.hasPointerCapture(e.pointerId)) return;
+    var r = app.getBoundingClientRect();
+    set((e.clientX - r.left) / r.width * 100);
+  });
+  split.addEventListener('pointerup', function (e) {
+    split.releasePointerCapture(e.pointerId); split.classList.remove('drag'); save();
+  });
+  split.addEventListener('keydown', function (e) {
+    var now = pct === null ? 45 : pct;
+    if (e.key === 'ArrowLeft') { set(now - 2); save(); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { set(now + 2); save(); e.preventDefault(); }
+  });
+  // Show / hide the transcript: the page's default (the project's
+  // setting, data-show-transcript), unless this viewer chose otherwise on
+  // this page (remembered per page address).
+  var toggle = document.querySelector('.toggle'), SOLO = 'transcript-hidden:' + location.pathname;
+  function solo(on) {
+    app.classList.toggle('solo', on);
+    toggle.textContent = on ? 'Show transcript' : 'Hide transcript';
+    toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  var hidden = app.dataset.showTranscript !== '1';
+  try { var mine = localStorage.getItem(SOLO); if (mine !== null) hidden = mine === '1'; } catch (e) {}
+  solo(hidden);
+  toggle.addEventListener('click', function () {
+    var on = !app.classList.contains('solo');
+    solo(on);
+    try { localStorage.setItem(SOLO, on ? '1' : '0'); } catch (e) {}
+    cur = -1; follow();
+  });
+  // Follow the video: the turn it has reached is marked and put at the top
+  // of the transcript, and stays there until the next turn starts.
+  var v = document.getElementById('video'), left = document.querySelector('.left');
+  var turns = Array.prototype.slice.call(document.querySelectorAll('.turn'));
+  var times = turns.map(function (t) { return Number(t.querySelector('a.t').dataset.t); });
+  var cur = -1, said = null, right = document.querySelector('.right');
+  function last(list, t) {
+    var k = -1, lo = 0, hi = list.length - 1;
+    while (lo <= hi) { var m = (lo + hi) >> 1; if (list[m] <= t) { k = m; lo = m + 1; } else hi = m - 1; }
+    return k;
+  }
+  function pinned() { return getComputedStyle(left).position === 'sticky'; }
+  // Stacked (narrow): the video sits pinned above, so stop below it.
+  function margin(el) { el.style.scrollMarginTop = pinned() ? left.offsetHeight + 'px' : '0px'; }
+  function follow() {
+    if (app.classList.contains('solo') || !turns.length) return;
+    var t = v.currentTime + 0.05, k = last(times, t);
+    if (k !== cur) {
+      if (cur >= 0) turns[cur].classList.remove('now');
+      cur = k;
+      if (k >= 0) {
+        turns[k].classList.add('now');
+        margin(turns[k]);
+        turns[k].scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    }
+    // The sentence being spoken, within the turn: marked; scrolled to only
+    // when it has gone below the visible part of the transcript (a long
+    // turn), so the text doesn't move with every sentence.
+    var s = null;
+    if (k >= 0) {
+      var spans = turns[k].querySelectorAll('.s');
+      var j = last(Array.prototype.map.call(spans, function (x) { return Number(x.dataset.t); }), t);
+      s = j >= 0 ? spans[j] : null;
+    }
+    if (s === said) return;
+    if (said) said.classList.remove('said');
+    said = s;
+    if (!s) return;
+    s.classList.add('said');
+    var r = s.getBoundingClientRect();
+    var bottom = pinned() ? window.innerHeight : right.getBoundingClientRect().bottom;
+    if (r.bottom > bottom) { margin(s); s.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+  }
+  v.addEventListener('timeupdate', follow);
+  v.addEventListener('seeked', follow);
+})();
+"""
+
+
+def transcript_html(source, snap):
+    # A version of the final transcript as one standalone HTML page, for a
+    # static server (final-transcript-html-export): the video on the left
+    # and the transcript on the right, each scrolling on its own, with a
+    # splitter between them (drag, or arrow keys; its place is remembered in
+    # the viewer's browser). Each turn shows its speaker in their colour
+    # and its time, which seeks the video there and plays. On a narrow
+    # screen the two stack, the video on top. The video is the final video
+    # the version is timed by, by file name (src relative), expected beside
+    # the page. Everything inline; nothing fetched from elsewhere. Turns
+    # rebuilt from the version's words, as the Final transcript page shows
+    # them.
+    # The title, date and summary come from the project's metadata (Settings
+    # › Metadata); without a title, the source's name.
+    esc = html_lib.escape
+    base = final_name(source)
+    meta = project_meta(read_project(studio_paths.PROJECT))
+    title = meta["title"] or os.path.splitext(source)[0]
+    video = f"{base}-v{snap['video']}.mp4"
+    lead = (f"<p class=\"date\">{esc(meta['date'])}</p>" if meta["date"] else "") \
+        + "".join(f"<p class=\"summary\">{esc(p.strip())}</p>"
+                  for p in re.split(r"\n\s*\n", meta["summary"]) if p.strip())
+    # Each turn's words (grouped as turns_of groups them: a new turn at each
+    # change of speaker), split into sentences at . ? or ! (closing quotes
+    # and brackets allowed after), each a span stamped with its first word's
+    # time: the page marks the one being spoken, and a click plays from it.
+    groups = []
+    for wid, w, spk, how, unsure, at in snap["words"]:
+        if not groups or groups[-1][0] != spk:
+            groups.append((spk, []))
+        groups[-1][1].append((w, at))
+    rows = []
+    for t, (_, ws) in zip(turns_of(snap["words"], snap["names"], snap["colors"]), groups):
+        color = t["color"] if re.fullmatch(r"#[0-9a-fA-F]{3,8}", t["color"] or "") else "inherit"
+        sentences, cur = [], []
+        for w, at in ws:
+            cur.append((w, at))
+            if re.search(r"[.?!][\"'”’)\]]*$", w):
+                sentences.append(cur)
+                cur = []
+        if cur:
+            sentences.append(cur)
+        body = " ".join(f'<span class="s" data-t="{s[0][1]:.2f}">{esc(" ".join(w for w, _ in s))}</span>'
+                        for s in sentences)
+        rows.append(
+            f'<div class="turn"><a class="t" href="#t={t["at"]:.2f}" data-t="{t["at"]:.2f}">{clock(t["at"])}</a>'
+            f'<div><span class="who" style="color:{color}">{esc(t["name"])}</span>'
+            + ('<span class="unsure" title="The voice match was unsure for most of this turn"> (?)</span>'
+               if t["unsure"] else "")
+            + f'<p>{body}</p></div></div>')
+    return (
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{esc(title)}</title><style>{TRANSCRIPT_HTML_STYLE}</style></head>"
+        f"<body><div class=\"app\" data-show-transcript=\"{'1' if meta['showTranscript'] else '0'}\">"
+        "<section class=\"left\">"
+        "<button class=\"toggle\" type=\"button\" aria-pressed=\"false\">Hide transcript</button>"
+        f"<h1>{esc(title)}</h1>{lead}"
+        f"<video id=\"video\" controls preload=\"metadata\" src=\"{esc(urllib.parse.quote(video))}\"></video>"
+        "</section><div class=\"split\" role=\"separator\" aria-orientation=\"vertical\" "
+        "aria-label=\"Resize the video and transcript\" aria-valuemin=\"20\" aria-valuemax=\"80\" "
+        "aria-valuenow=\"45\" tabindex=\"0\"></div><section class=\"right\">\n" + "\n".join(rows)
+        + f"\n</section></div><script>{TRANSCRIPT_HTML_SCRIPT}</script></body></html>\n")
+
+
 def transcript_summary(source, snap, latest_video):
     base = final_name(source)
     names = snap["names"]
@@ -3418,6 +3655,8 @@ def transcript_summary(source, snap, latest_video):
             "turns": len(snap["turns"]), "unsure": sum(1 for t in snap["turns"] if t["unsure"]),
             "samples": [{"name": names.get(k, k), "secs": v} for k, v in snap["samples"].items()],
             "md": final_url(f"{base}-transcript-v{snap['n']}.md"),
+            "html": f"http://127.0.0.1:{PORT}/podcast/final-transcript/html?source="
+                    f"{urllib.parse.quote(source)}&n={snap['n']}",
             "timedByLatest": latest_video is not None and snap["video"] == latest_video}
 
 
@@ -3964,6 +4203,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.open_project()
         if self.path == "/projects/delete-open":
             return self.delete_open_project()
+        if self.path == "/projects/meta":
+            # POST /projects/meta {title, date, summary}: the open project's
+            # metadata, saved in its project.json (project_meta).
+            body = self.json_body()
+            if any(not isinstance(body.get(k, ""), str) for k in META_FIELDS) \
+                    or not isinstance(body.get("showTranscript", False), bool):
+                return self.send_json(400, {"error": "expected strings title, date, summary and a boolean showTranscript"})
+            info = read_project(studio_paths.PROJECT)
+            if info is None:
+                return self.send_json(404, {"error": "no open project"})
+            info["meta"] = {**{k: body.get(k, "").strip() for k in META_FIELDS},
+                            "showTranscript": body.get("showTranscript", False)}
+            write_project(studio_paths.PROJECT, info)
+            print("project meta " + " ".join(f"{k}={len(info['meta'][k])}" for k in META_FIELDS)
+                  + f" showTranscript={info['meta']['showTranscript']}", flush=True)
+            return self.send_json(200, info["meta"])
         if self.path == "/projects/rename":
             return self.rename_project()
         if self.path == "/projects/new":
@@ -4387,6 +4642,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                             "matching": None})
             state = final_state(db, source)
         snaps = dict(versions(source, "transcript"))
+        if self.path.startswith("/podcast/final-transcript/html"):
+            # GET /podcast/final-transcript/html?source=&n=: version n as a
+            # standalone HTML page, saved (transcript_html).
+            try:
+                n = int(query.get("n", [""])[0])
+            except ValueError:
+                return self.send_json(400, {"error": "expected n"})
+            if n not in snaps:
+                return self.send_json(404, {"error": "no such version"})
+            # ASCII, every other character as an entity: it reads the same
+            # whatever charset a host labels it with (Apache's directory
+            # listings say ISO-8859-1).
+            body = transcript_html(source, snaps[n]).encode("ascii", "xmlcharrefreplace")
+            name = f"{final_name(source)}-transcript-v{n}.html"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            print(f"final transcript html source={source} n={n} bytes={len(body)}", flush=True)
+            return
         if self.path.startswith("/podcast/final-transcript/compare"):
             try:
                 a, b = int(query.get("a", [""])[0]), int(query.get("b", [""])[0])
