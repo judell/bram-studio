@@ -1,8 +1,11 @@
 #!/bin/sh
 # Start Studio's server (serve_media.py), detached, logging to
-# serve_media.log. Bram doesn't start it: a .bram.json "server" entry would
-# also become the app's address, and Studio's page comes from Bram's own
-# server.
+# serve_media.log. Bram runs this script at each launch, through
+# .bram.json "launch": {"run": "./start.sh"} (Bram 9d6afebd and later, once
+# you allow it on this computer; judell/bram#498). It doesn't use a
+# "server" entry: that would make the server the app's address (Studio's
+# page comes from Bram's own server), fix its port, and stop it when Bram
+# quits. Running this again is harmless: it reuses a running server.
 #
 #   ./start.sh            start it, or say it's running (and whether it's
 #                         running code older than the files on disk)

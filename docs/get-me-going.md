@@ -29,6 +29,12 @@ another checkout's Studio holds it. The port is also recorded in
 The editor tab in the user's browser recovers on its own once the server is
 up. Say so; don't walk the user through reloading.
 
+Bram runs `./start.sh` at each launch (`.bram.json` `launch.run`), once the
+user allows it on this computer. If Bram is showing a banner asking to run
+`./start.sh`, tell the user that **Allow** means Studio's server starts by
+itself from now on, so they won't need this step after a reboot. An older
+Bram shows no banner and doesn't run it; then this step is the way.
+
 ## 2. Inventory by tier, report as needed
 
 Check every tier below, but **say only what gates the user's likely next

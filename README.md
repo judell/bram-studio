@@ -234,7 +234,9 @@ A Studio from before projects keeps working from the repo's own `studio.db`, `me
   recorded in `studio-port.json`): `./start.sh` starts `serve_media.py` in the background,
   logging to `serve_media.log`, or says it's already running and whether it's running code
   older than the files on disk. `./start.sh --restart` restarts it after a server change,
-  unless a narration, render or export is under way. Bram doesn't start it.
+  unless a narration, render or export is under way. Bram runs `./start.sh` at each launch
+  (`.bram.json` `launch.run`, in Bram builds from 9d6afebd on), once you click **Allow** on
+  its banner on this computer.
 - `ffmpeg`, Apple's Command Line Tools for `swiftc` and Python
   (`xcode-select --install`; about 2.4 GB, not the full Xcode app; Homebrew installs them
   too), and Studio's own Python with Pillow: `python3 -m venv ~/.local/share/bram-studio/venv`,
