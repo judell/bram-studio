@@ -11,6 +11,10 @@
 #                         running code older than the files on disk)
 #   ./start.sh --restart  stop it and start it again, unless a narration,
 #                         render or export is under way
+#   ./start.sh --stop     stop it, with the same exception; says so when
+#                         it isn't running. Bram runs this when its
+#                         Settings › Companion App launch switch goes off
+#                         (.bram.json "launch": {"stop": …}).
 #
 # Each checkout's server has its own port: 8765, or the next free one when
 # another checkout's Studio holds it (per-checkout-server-port). The server
@@ -83,12 +87,16 @@ start() {
 
 pid=$(listener)
 if [ -z "$pid" ] || ! ours "$pid"; then
+  if [ "$1" = "--stop" ]; then
+    echo "Studio's server isn't running; nothing to stop."
+    exit 0
+  fi
   # Nothing on this checkout's port, or another checkout's server took it
   # after ours went away: start ours, on whatever port is free.
   start; exit $?
 fi
 
-if [ "$1" != "--restart" ]; then
+if [ "$1" != "--restart" ] && [ "$1" != "--stop" ]; then
   echo "Studio's server is already running on port $PORT (PID $pid, since $(lstart "$pid"))."
   since=$(started "$pid")
   for f in serve_media.py studio_paths.py overlay.py; do
@@ -100,14 +108,15 @@ if [ "$1" != "--restart" ]; then
   exit 0
 fi
 
-# --restart: not while something is under way.
+# --restart and --stop: not while something is under way.
+if [ "$1" = "--stop" ]; then verb="stopping"; else verb="restarting"; fi
 if ! curl -s "$URL/narrate/status" | grep -q '"id": null'; then
-  echo "Not restarting: a narration is under way (or /narrate/status didn't answer)." >&2
+  echo "Not $verb: a narration is under way (or /narrate/status didn't answer)." >&2
   exit 1
 fi
 kids=$(pgrep -P "$pid")
 if [ -n "$kids" ]; then
-  echo "Not restarting: the server is running something (a render, export or the recorder):" >&2
+  echo "Not $verb: the server is running something (a render, export or the recorder):" >&2
   ps -o pid,command -p "$(echo $kids | tr ' ' ',')" >&2
   exit 1
 fi
@@ -115,7 +124,11 @@ kill "$pid"
 i=0
 while [ -n "$(listener)" ] && [ $i -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
 if [ -n "$(listener)" ]; then
-  echo "The old server (PID $pid) didn't stop; not starting another." >&2
+  echo "The server (PID $pid) didn't stop." >&2
   exit 1
+fi
+if [ "$1" = "--stop" ]; then
+  echo "Studio's server (PID $pid) has stopped."
+  exit 0
 fi
 start
