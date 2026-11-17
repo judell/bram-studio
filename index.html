@@ -54,18 +54,28 @@
          promise callbacks (the probeServer lesson), so the outcome is
          recorded on window and Main.xmlui polls it with a short Timer. On an
          older Bram this script 404s, BramDoorway is undefined, and the page
-         falls back to the clipboard. -->
+         falls back to the clipboard.
+         studioDoorway(name, context): name defaults to get-me-going; context,
+         when given, is page data for a prompt declared "context": true in
+         .bram.json (Annotations' annotate prompt, final-transcript-notes),
+         which Bram shows under the prompt as one "Page data" line. Why a
+         refusal happened goes in __doorwayReason (context-not-accepted on a
+         Bram without page data, unreachable when Bram isn't running). -->
     <script src="/__shell/doorway.js"></script>
     <script>
-      window.studioDoorway = function () {
+      window.studioDoorway = function (name, context) {
         window.__doorwayOutcome = "pending";
+        window.__doorwayReason = "";
         try {
-          if (!window.BramDoorway) { window.__doorwayOutcome = "rejected"; return; }
-          window.BramDoorway.stage("get-me-going").then(
+          if (!window.BramDoorway) {
+            window.__doorwayOutcome = "rejected"; window.__doorwayReason = "no-doorway"; return;
+          }
+          var opts = context === undefined ? undefined : { context: context };
+          window.BramDoorway.stage(name || "get-me-going", opts).then(
             function () { window.__doorwayOutcome = "ok"; },
-            function () { window.__doorwayOutcome = "rejected"; }
+            function (e) { window.__doorwayOutcome = "rejected"; window.__doorwayReason = (e && e.reason) || "error"; }
           );
-        } catch (e) { window.__doorwayOutcome = "rejected"; }
+        } catch (e) { window.__doorwayOutcome = "rejected"; window.__doorwayReason = "error"; }
       };
     </script>
     <!-- Find in the long views (find-in-long-views). The Final transcript,
@@ -125,6 +135,32 @@
         if (x.indexOf(q) >= 0) return true;
         var words = q.split(/\s+/).map(strip).filter(Boolean);
         return words.length > 1 && words.indexOf(x) >= 0;
+      };
+      // studioFindWordMarks(wl, needle, activeOcc): Final transcript draws a
+      // turn as word items (final-transcript-notes), so Text's highlightText
+      // no longer marks it. This marks the words the same way studioFindPlan
+      // counts the turn's text (the words joined by single spaces, which is
+      // the turn's text): 1 for a word inside a match, 2 inside the match
+      // numbered activeOcc, else 0. Returns one mark per word. Pure: no DOM.
+      window.studioFindWordMarks = function (wl, needle, activeOcc) {
+        var arr = Array.isArray(wl) ? wl : [];
+        var marks = arr.map(function () { return 0; });
+        var q = String(needle || "").trim().toLowerCase();
+        if (q.length < 2 || !arr.length) return marks;
+        var starts = [], pos = 0;
+        for (var i = 0; i < arr.length; i++) { starts.push(pos); pos += String(arr[i].w || "").length + 1; }
+        var s = arr.map(function (x) { return String(x.w || ""); }).join(" ").toLowerCase();
+        var occ = 0, at = s.indexOf(q);
+        while (at >= 0) {
+          var end = at + q.length;
+          for (var j = 0; j < arr.length; j++) {
+            var a = starts[j], b = a + String(arr[j].w || "").length;
+            if (a < end && b > at) marks[j] = Math.max(marks[j], occ === activeOcc ? 2 : 1);
+          }
+          occ++;
+          at = s.indexOf(q, end);
+        }
+        return marks;
       };
     </script>
     <!-- The page's measure of itself, for Main.xmlui's page-health Timer

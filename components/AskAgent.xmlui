@@ -1,0 +1,64 @@
+<!-- Ask the agent: a button that stages a repo-written prompt (.bram.json
+     "prompts") in Bram's message box and brings Bram forward, for the user
+     to read and send. First parked for tuning speakers (stash), brought back
+     for Annotations (final-transcript-notes, docs/annotation.md).
+
+     window.studioDoorway(name, context) in index.html. BramDoorway.stage() is
+     a promise whose outcome the engine can't see assigned (the probeServer
+     lesson), so the Timer reads the recorded outcome while one is pending:
+     it polls for an answer, it doesn't wait a guessed time. Bram coming
+     forward is the feedback. If the doorway refuses (Bram not running, or no
+     doorway), the prompt's words and the page data go to the clipboard, and
+     the line below says to paste them into the agent; if the browser won't
+     copy, it shows them to copy by hand. Each ask logs podcast-page:
+     ask-agent.
+
+     Props: prompt (the prompt's name), label (the button's, default "Ask the
+     agent"), text (an optional sentence before the button), context
+     (optional page data, for a prompt declared "context": true), fallback
+     (the prompt's words, for the clipboard). -->
+<Component name="AskAgent" var.staging="{false}" var.failed="{false}" var.copied="{''}" var.manual="{''}">
+  <script>
+    function fallbackText() {
+      const data = $props.context === undefined ? '' :
+        '\n\nPage data for prompt "' + $props.prompt + '": ' + JSON.stringify($props.context);
+      return ($props.fallback || ('Read and follow the ' + $props.prompt + ' prompt in this repo.')) + data;
+    }
+    function copyFallback() {
+      const text = fallbackText();
+      try {
+        if (window.navigator.clipboard) {
+          window.navigator.clipboard.writeText(text);
+          copied = 'yes';
+          return;
+        }
+      } catch (e) {}
+      copied = 'no';
+      manual = text;
+    }
+  </script>
+  <VStack gap="$space-1">
+  <HStack verticalAlignment="center" wrapContent="true">
+    <Text when="{!!$props.text}" variant="secondary" value="{$props.text}" />
+    <Button size="sm" variant="outlined" label="{$props.label || 'Ask the agent'}" enabled="{!staging}"
+      onClick="failed = false; copied = ''; manual = ''; window.studioDoorway($props.prompt, $props.context); staging = true;" />
+  </HStack>
+  <Timer interval="300" enabled="{staging}"
+    onTick="() => {
+      const o = window.__doorwayOutcome;
+      if (o === 'pending') return;
+      staging = false;
+      failed = o !== 'ok';
+      if (failed) copyFallback();
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'ask-agent', prompt: $props.prompt, outcome: o, reason: window.__doorwayReason || '',
+                                context: $props.context === undefined ? null : $props.context, copied } });
+    }" />
+  <Text when="{failed &amp;&amp; copied === 'yes'}" variant="secondary"
+    value="Bram didn't come forward. The request is on your clipboard: paste it into the agent in Bram's window." />
+  <VStack when="{failed &amp;&amp; copied === 'no'}" gap="$space-1">
+    <Text variant="secondary" value="Bram didn't come forward. Copy this into the agent in Bram's window:" />
+    <Text value="{manual}" />
+  </VStack>
+  </VStack>
+</Component>

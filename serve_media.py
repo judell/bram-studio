@@ -2147,6 +2147,20 @@ WORD_EDGES_SQL = """CREATE TABLE IF NOT EXISTS word_edges (
   method TEXT NOT NULL,
   PRIMARY KEY (source, i)
 )"""
+# Notes on the final transcript's words (docs/annotation.md): the words they
+# cover as word ids from..to, the words' text when saved (to spot a stale
+# note), and the note's Markdown. Called "notes" because "annotations"
+# already names the video callouts' routes.
+NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  w_from INTEGER NOT NULL,
+  w_to INTEGER NOT NULL,
+  words TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+)"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
 SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
@@ -3581,6 +3595,138 @@ document.addEventListener('click', function (e) {
 """
 
 
+NOTE_STYLE = """
+:root { --note: #fff3c4; --pop: #fff; --popbd: #c9ced6; }
+@media (prefers-color-scheme: dark) { :root { --note: #4a4020; --pop: #23262b; --popbd: #3a3f47; } }
+.note { background: var(--note); border-radius: 3px; }
+.nw { position: relative; display: inline; }
+.ni { font: inherit; font-size: 0.85em; line-height: 1; color: var(--link); background: none;
+  border: 0; padding: 0 2px; margin-left: 2px; cursor: pointer; vertical-align: baseline; }
+.np { display: none; position: absolute; left: 0; top: calc(100% - 2px); z-index: 5; width: max-content;
+  max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--pop); color: var(--fg);
+  border: 1px solid var(--popbd); border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  font-size: 0.9rem; line-height: 1.45; cursor: auto; text-decoration: none; text-align: left; }
+.nw.open .np { display: block; }
+@media (hover: hover) { .nw:hover .np { display: block; } }
+.np a { color: var(--link); text-decoration: underline; }
+.np code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
+.np-p, .np-ul { display: block; }
+.np-p + .np-p, .np-p + .np-ul, .np-ul + .np-p { margin-top: 0.5em; }
+.np-li { display: list-item; list-style: disc; margin-left: 1.2em; }
+"""
+
+NOTE_SCRIPT = """
+(function () {
+  // Click or tap the ⓘ to open its note, Escape or a click elsewhere to
+  // close it. Capture phase, so a click here never reaches the sentence's
+  // click-to-play. The popup is kept inside the window.
+  function place(nw) {
+    var p = nw.querySelector('.np');
+    p.style.left = '0px';
+    var r = p.getBoundingClientRect(), shift = 0, w = document.documentElement.clientWidth;
+    if (r.right > w - 8) shift = w - 8 - r.right;
+    if (r.left + shift < 8) shift = 8 - r.left;
+    p.style.left = shift + 'px';
+  }
+  function close(except) {
+    document.querySelectorAll('.nw.open').forEach(function (n) {
+      if (n === except) return;
+      n.classList.remove('open');
+      n.querySelector('.ni').setAttribute('aria-expanded', 'false');
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var nw = e.target.closest('.nw');
+    close(nw);
+    if (!nw) return;
+    e.stopPropagation();
+    if (e.target.closest('.np')) return;
+    var on = !nw.classList.contains('open');
+    nw.classList.toggle('open', on);
+    nw.querySelector('.ni').setAttribute('aria-expanded', on ? 'true' : 'false');
+    if (on) place(nw);
+  }, true);
+  document.addEventListener('mouseover', function (e) {
+    var nw = e.target.closest('.nw');
+    if (nw) place(nw);
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(null); });
+})();
+"""
+
+
+def placed_notes(db, source, snap):
+    # The source's notes, each marked placed when the snapshot still has its
+    # words at its ids (word_key compares them); a stale note is never put
+    # on other words. Shared by GET /notes and the HTML export.
+    at = {w[0]: i for i, w in enumerate(snap["words"])} if snap else {}
+    out = []
+    for id_, a, b, words, md, created, updated in db.execute(
+            "SELECT id, w_from, w_to, words, markdown, created_at, updated_at FROM notes "
+            "WHERE source = ? ORDER BY w_from, id", (source,)):
+        placed = False
+        if a in at and b in at and at[a] <= at[b]:
+            have = [word_key(w[1]) for w in snap["words"][at[a]:at[b] + 1]]
+            placed = have == [word_key(w) for w in words.split()]
+        out.append({"id": id_, "from": a, "to": b, "words": words, "markdown": md, "created": created,
+                    "updated": updated, "placed": placed})
+    return out
+
+
+def note_html(md):
+    # A note's Markdown as HTML for the export, built in so the page needs
+    # no package: paragraphs, bullets, links, **bold**, *italic*, `code`.
+    # Everything is escaped first, so a note can't inject markup, and only
+    # http(s) URLs become links. Block parts are spans (not p / ul), since
+    # the popup sits inside the transcript's <p>, where those would end it.
+    esc = html_lib.escape
+    stash = []
+
+    def keep(h):
+        stash.append(h)
+        return f"\x00{len(stash) - 1}\x01"
+
+    def link(url, label):
+        return keep(f'<a href="{url}" target="_blank" rel="noopener">{label}</a>')
+
+    def inline(t):
+        t = re.sub(r"`([^`]+)`", lambda m: keep(f"<code>{m.group(1)}</code>"), esc(t))
+        t = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", lambda m: link(m.group(2), m.group(1)), t)
+
+        def bare(m):
+            url = m.group(0).rstrip(".,;:!?")
+            return link(url, url) + m.group(0)[len(url):]
+        t = re.sub(r"https?://(?:(?!&lt;|&gt;|&quot;)\S)+", bare, t)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+        t = re.sub(r"\*(?!\s)(.+?)(?<!\s)\*", r"<em>\1</em>", t)
+        return re.sub(r"\x00(\d+)\x01", lambda m: stash[int(m.group(1))], t)
+
+    out = []
+    for block in re.split(r"\n\s*\n", md.replace("\r\n", "\n")):
+        para, items = [], []
+
+        def flush():
+            if para:
+                out.append('<span class="np-p">' + "<br>".join(inline(x) for x in para) + "</span>")
+                para.clear()
+            if items:
+                out.append('<span class="np-ul" role="list">' + "".join(
+                    f'<span class="np-li" role="listitem">{inline(x)}</span>' for x in items) + "</span>")
+                items.clear()
+        for line in block.split("\n"):
+            m = re.match(r"\s*[-*] +(.*\S)\s*$", line)
+            if m:
+                if para:
+                    flush()
+                items.append(m.group(1))
+            elif line.strip():
+                if items:
+                    flush()
+                para.append(line.strip())
+        flush()
+    return "".join(out)
+
+
 def transcript_html(source, snap):
     # A version of the final transcript as one standalone HTML page, for a
     # static server (final-transcript-html-export): the video on the left
@@ -3607,23 +3753,56 @@ def transcript_html(source, snap):
     # change of speaker), split into sentences at . ? or ! (closing quotes
     # and brackets allowed after), each a span stamped with its first word's
     # time: the page marks the one being spoken, and a click plays from it.
+    # Notes (placed ones only): their words marked, and an ⓘ with the note
+    # after the last. A note can run over sentences; each sentence span
+    # marks its own part, so its text reads as before.
+    notes = [n for n in placed_notes(sqlite3.connect(DB), source, snap) if n["placed"]]
+    ids = [w[0] for w in snap["words"]]
+    pos = {wid: k for k, wid in enumerate(ids)}
+    covered, ends = set(), {}
+    for n in notes:
+        covered.update(ids[pos[n["from"]]:pos[n["to"]] + 1])
+        ends.setdefault(n["to"], []).append(n)
+
+    def mark(wid, w):
+        text = esc(w) + "".join(
+            '<span class="nw"><button type="button" class="ni" aria-label="Note" aria-expanded="false">'
+            f'\u24d8</button><span class="np" role="note">{note_html(n["markdown"])}</span></span>'
+            for n in ends.get(wid, []))
+        return text
+
+    def sentence_html(s):
+        parts, run = [], None
+        for w, at, wid in s:
+            piece = mark(wid, w)
+            if wid in covered:
+                run = (run or []) + [piece]
+                continue
+            if run:
+                parts.append('<span class="note">' + " ".join(run) + "</span>")
+                run = None
+            parts.append(piece)
+        if run:
+            parts.append('<span class="note">' + " ".join(run) + "</span>")
+        return " ".join(parts)
+
     groups = []
     for wid, w, spk, how, unsure, at in snap["words"]:
         if not groups or groups[-1][0] != spk:
             groups.append((spk, []))
-        groups[-1][1].append((w, at))
+        groups[-1][1].append((w, at, wid))
     rows = []
     for t, (_, ws) in zip(turns_of(snap["words"], snap["names"], snap["colors"]), groups):
         color = t["color"] if re.fullmatch(r"#[0-9a-fA-F]{3,8}", t["color"] or "") else "inherit"
         sentences, cur = [], []
-        for w, at in ws:
-            cur.append((w, at))
+        for w, at, wid in ws:
+            cur.append((w, at, wid))
             if re.search(r"[.?!][\"'”’)\]]*$", w):
                 sentences.append(cur)
                 cur = []
         if cur:
             sentences.append(cur)
-        body = " ".join(f'<span class="s" data-t="{s[0][1]:.2f}">{esc(" ".join(w for w, _ in s))}</span>'
+        body = " ".join(f'<span class="s" data-t="{s[0][1]:.2f}">{sentence_html(s) if notes else esc(" ".join(w for w, _, _ in s))}</span>'
                         for s in sentences)
         rows.append(
             f'<div class="turn"><a class="t" href="#t={t["at"]:.2f}" data-t="{t["at"]:.2f}">{clock(t["at"])}</a>'
@@ -3634,7 +3813,7 @@ def transcript_html(source, snap):
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        f"<title>{esc(title)}</title><style>{TRANSCRIPT_HTML_STYLE}</style></head>"
+        f"<title>{esc(title)}</title><style>{TRANSCRIPT_HTML_STYLE}{NOTE_STYLE if notes else ''}</style></head>"
         f"<body><div class=\"app\" data-show-transcript=\"{'1' if meta['showTranscript'] else '0'}\">"
         "<section class=\"left\">"
         "<button class=\"toggle\" type=\"button\" aria-pressed=\"false\">Hide transcript</button>"
@@ -3643,7 +3822,8 @@ def transcript_html(source, snap):
         "</section><div class=\"split\" role=\"separator\" aria-orientation=\"vertical\" "
         "aria-label=\"Resize the video and transcript\" aria-valuemin=\"20\" aria-valuemax=\"80\" "
         "aria-valuenow=\"45\" tabindex=\"0\"></div><section class=\"right\">\n" + "\n".join(rows)
-        + f"\n</section></div><script>{TRANSCRIPT_HTML_SCRIPT}</script></body></html>\n")
+        + f"\n</section></div><script>{TRANSCRIPT_HTML_SCRIPT}</script>"
+        + (f"<script>{NOTE_SCRIPT}</script>" if notes else "") + "</body></html>\n")
 
 
 def transcript_summary(source, snap, latest_video):
@@ -4141,6 +4321,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, screencast_finals(sqlite3.connect(DB)))
         if self.path.startswith("/final/at"):
             return self.final_at_route()
+        if self.path.split("?")[0] == "/notes":
+            return self.notes_route()
         if self.path.startswith("/podcast/final-transcript"):
             return self.final_transcript_route()
         if self.path.startswith("/podcast/final"):
@@ -4297,6 +4479,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.release_dictation()
         if self.path == "/dictation/trace":
             return self.dictation_trace()
+        if self.path in ("/notes/add", "/notes/update", "/notes/delete"):
+            return self.edit_note(self.path.rsplit("/", 1)[1])
         if self.path == "/callouts/add":
             return self.add_callout()
         if self.path == "/callouts/update":
@@ -4706,12 +4890,89 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if ids else {}
             for k, t in enumerate(turns):
                 t["para"], t["i"] = para_of.get(t["w0"]), k
+            # Each turn's words with their ids, for selecting a range to
+            # annotate (/notes). Added here, not in turns_of, so the saved
+            # snapshots and the exports don't carry it.
+            k = -1
+            prev = object()
+            for wid, w, spk, *_ in snap["words"]:
+                if k < 0 or spk != prev:
+                    k, prev = k + 1, spk
+                    turns[k]["wl"] = []
+                turns[k]["wl"].append({"id": wid, "w": w})
         self.send_json(200, {"needVideo": not state["exists"], "versions": listed, "version": chosen,
                              "remakeWhy": stale, "upToDate": bool(snaps) and not stale,
                              "editChanged": bool(state["exists"] and not state["current"]),
                              "turns": turns,
                              "videoCurrent": bool(state["exists"] and state["current"]),
                              "matching": matching.get(source)})
+
+    def notes_route(self):
+        # GET /notes?source=&n=: the source's notes, each marked placed when
+        # transcript version n (else the newest) still has its words at its
+        # ids; a stale note is shown but never put on other words.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        source = query.get("source", [""])[0]
+        snaps = versions(source, "transcript")
+        try:
+            snap = dict(snaps).get(int(query.get("n", [""])[0]))
+        except ValueError:
+            snap = snaps[0][1] if snaps else None
+        out = placed_notes(sqlite3.connect(DB), source, snap)
+        self.send_json(200, {"notes": out})
+
+    def edit_note(self, op):
+        # POST /notes/add {source, from, to, words, markdown}, /notes/update
+        # {id, markdown}, /notes/delete {id}: a note on the final transcript
+        # (docs/annotation.md). The agent calls add once Jon OKs the Markdown,
+        # usually with curl, so a body that isn't JSON gets a 400 saying so.
+        try:
+            body = self.json_body()
+        except ValueError:
+            return self.send_json(400, {"error": "the body isn't JSON"})
+        if not isinstance(body, dict):
+            return self.send_json(400, {"error": "expected a JSON object"})
+        db = sqlite3.connect(DB)
+        if op == "add":
+            source, a, b = body.get("source"), body.get("from"), body.get("to")
+            words, md = body.get("words"), body.get("markdown")
+            if not isinstance(source, str) or not source:
+                return self.send_json(400, {"error": "expected source"})
+            if not all(isinstance(x, int) and not isinstance(x, bool) for x in (a, b)) or a > b:
+                return self.send_json(400, {"error": "expected integer from <= to"})
+            if not isinstance(words, str) or not words.strip():
+                return self.send_json(400, {"error": "expected words"})
+            if not isinstance(md, str) or not md.strip() or len(md) > 20000:
+                return self.send_json(400, {"error": "expected markdown, 1 to 20000 characters"})
+            for x in (a, b):
+                if not db.execute("SELECT 1 FROM words WHERE id = ? AND source = ? AND kept = 1",
+                                  (x, source)).fetchone():
+                    return self.send_json(400, {"error": f"{x} is not a kept word of {source}"})
+            now = time.time()
+            with db:
+                id_ = db.execute("INSERT INTO notes (source, w_from, w_to, words, markdown, created_at, updated_at) "
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?)", (source, a, b, words, md, now, now)).lastrowid
+            print(f"notes add source={source} id={id_} from={a} to={b} chars={len(md)}", flush=True)
+        else:
+            id_ = body.get("id")
+            row = db.execute("SELECT source, w_from, w_to FROM notes WHERE id = ?", (id_,)).fetchone() \
+                if isinstance(id_, int) else None
+            if not row:
+                return self.send_json(404, {"error": "no such note"})
+            source, a, b = row
+            if op == "update":
+                md = body.get("markdown")
+                if not isinstance(md, str) or not md.strip() or len(md) > 20000:
+                    return self.send_json(400, {"error": "expected markdown, 1 to 20000 characters"})
+                with db:
+                    db.execute("UPDATE notes SET markdown = ?, updated_at = ? WHERE id = ?", (md, time.time(), id_))
+                print(f"notes update source={source} id={id_} from={a} to={b} chars={len(md)}", flush=True)
+            else:
+                with db:
+                    db.execute("DELETE FROM notes WHERE id = ?", (id_,))
+                print(f"notes delete source={source} id={id_} from={a} to={b}", flush=True)
+        push({"notes": source})
+        self.send_json(200, {"ok": True, "id": id_})
 
     def delete_final_route(self):
         # POST /podcast/final/delete or /podcast/final-transcript/delete
@@ -7119,6 +7380,7 @@ with sqlite3.connect(DB) as _db:
     _db.execute(WORDS_SQL)
     _db.execute(TRANSCRIPT_EDITS_SQL)
     _db.execute(WORD_EDGES_SQL)
+    _db.execute(NOTES_SQL)
     # words.para and transcript_edits.undone arrived later (podcast-paragraph-playback).
     if "para" not in [r[1] for r in _db.execute("PRAGMA table_info(words)")]:
         _db.execute("ALTER TABLE words ADD COLUMN para INTEGER")

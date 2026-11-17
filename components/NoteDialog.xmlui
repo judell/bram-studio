@@ -1,0 +1,57 @@
+<!-- A note's ⓘ, clicked (final-transcript-notes, docs/annotation.md): the
+     note rendered, with Edit (its Markdown in a box, then Save) and Delete
+     (with a confirm step). Saves go through Studio's server
+     (/notes/update, /notes/delete), which pushes {notes: source} over
+     /events, so Final transcript refetches and the ⓘ changes or goes. Each
+     action logs podcast-page: note.
+
+     Call open(note) with a note from GET /notes ({id, from, to, words,
+     markdown}). -->
+<Component name="NoteDialog" var.note="{null}" var.editing="{false}" var.draft="{''}" var.confirming="{false}"
+  method.open="(n) => { note = n; editing = false; confirming = false; draft = n ? n.markdown : ''; dlg.open(); }">
+  <script>
+    function log(ev, extra) {
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'note', op: ev, id: note ? note.id : null, ...(extra || {}) } });
+    }
+    function save() {
+      try {
+        Actions.callApi({ url: window.STUDIO_API + '/notes/update', method: 'post', invalidates: [],
+                          body: { id: note.id, markdown: draft } });
+        log('update', { chars: draft.length });
+        note = { ...note, markdown: draft };
+        editing = false;
+      } catch (e) {
+        toast.error('Saving the note: ' + e.message);
+      }
+    }
+    function remove() {
+      try {
+        Actions.callApi({ url: window.STUDIO_API + '/notes/delete', method: 'post', invalidates: [],
+                          body: { id: note.id } });
+        log('delete');
+        dlg.close();
+      } catch (e) {
+        toast.error('Deleting the note: ' + e.message);
+      }
+    }
+  </script>
+  <ModalDialog id="dlg" title="{note ? note.words : 'Note'}" maxWidth="640px">
+    <Markdown when="{!!note &amp;&amp; !editing}" openLinkInNewTab="{true}" content="{note ? note.markdown : ''}" />
+    <TextArea when="{editing}" initialValue="{draft}" minRows="6" autoSize="true"
+      onDidChange="(v) => draft = v" />
+    <HStack verticalAlignment="center">
+      <Button when="{!editing &amp;&amp; !confirming}" size="sm" variant="outlined" label="Edit"
+        onClick="draft = note.markdown; editing = true; log('edit')" />
+      <Button when="{editing}" size="sm" variant="solid" label="Save"
+        enabled="{!!draft.trim() &amp;&amp; draft !== note.markdown}" onClick="save()" />
+      <Button when="{editing}" size="sm" variant="ghost" label="Cancel" onClick="editing = false" />
+      <SpaceFiller />
+      <Button when="{!editing &amp;&amp; !confirming}" size="sm" variant="ghost" themeColor="attention" label="Delete"
+        onClick="confirming = true" />
+      <Text when="{confirming}" value="Delete this note?" />
+      <Button when="{confirming}" size="sm" variant="outlined" themeColor="attention" label="Delete" onClick="remove()" />
+      <Button when="{confirming}" size="sm" variant="ghost" label="Keep" onClick="confirming = false" />
+    </HStack>
+  </ModalDialog>
+</Component>
