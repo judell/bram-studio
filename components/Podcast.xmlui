@@ -852,7 +852,16 @@
                  or an arrow key) makes it editable and moves the player as
                  before. Focus in a card already selected (by find, play, a
                  tab) edits at once. Leaving the box resets it. -->
-            <TextArea when="{!tagMode}" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
+            <!-- The selected card's X (workspace-clear-paragraph; 2026-11-17:
+                 "a small X at the top right of the text area to clear the
+                 text area with one click"): empties the box and saves it
+                 the way deleting the text by hand does, so every word is cut
+                 as one step Undo takes back. Only on the selected card, so a
+                 whole paragraph isn't one stray click away; beside the box,
+                 since TextArea takes no button inside it. Logged
+                 (podcast-page: clear). -->
+            <HStack when="{!tagMode}" verticalAlignment="start" gap="$space-1">
+            <TextArea id="paraBox" width="*" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
               readOnly="{!editReady}"
               onSelectionDidChange="(sel) => {
                 if (!sel) return;
@@ -893,6 +902,16 @@
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
               " />
+            <Button when="{currentPara === $item.para &amp;&amp; $item.kept > 0}" icon="close" size="xs" variant="ghost"
+              tooltip="Cut this whole paragraph (Undo brings it back)"
+              onClick="
+                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                  body: { ev: 'clear', para: $item.para, words: $item.kept } });
+                paraBox.setValue('');
+                draft = '';
+                savePara(source, $item.para, '');
+              " />
+            </HStack>
             <!-- Its play, pause and seek set paraClock, which the left
                  pane's video follows. -->
             <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
