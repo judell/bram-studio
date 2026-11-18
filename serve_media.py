@@ -3379,6 +3379,47 @@ def turns_of(words, names, colors):
              "text": " ".join(t["words"]), "unsure": t["u"] * 2 > len(t["words"])} for t in turns]
 
 
+ROW_PARA_MIN = 120   # a long turn's row ends at a paragraph break once it has this many words
+ROW_SENT_MIN = 250   # or at a sentence end once it has this many (a paragraph that runs long)
+SENTENCE_END = re.compile(r"[.?!][\"')\]]*$")
+
+
+def rows_of(turns, words, para_of):
+    # The Final transcript page's rows: each turn (turns_of) cut into rows so
+    # its List can virtualize (issue 5: before speaker matching a whole
+    # recording is one turn of ~9,000 words). A row ends at a Workspace
+    # paragraph break once it has ROW_PARA_MIN words, or at a sentence end
+    # once it has ROW_SENT_MIN. words are the snapshot's (wid, w, spk, ...)
+    # rows, grouped into turns as turns_of groups them; para_of maps a word
+    # id to its paragraph. A row keeps its turn's speaker, name, color and
+    # unsure, and has its own at, w0, para, text and wl, plus turn (the
+    # turn's index), part (0, 1, ...) and i (its index in the result).
+    rows = []
+    k = -1
+    prev = object()
+    cur = None
+    for wid, w, spk, _how, _unsure, at in words:
+        if k < 0 or spk != prev:
+            k, prev, cur = k + 1, spk, None
+            part = 0
+        elif cur is not None:
+            n = len(cur["wl"])
+            last = cur["wl"][-1]["w"]
+            if (n >= ROW_PARA_MIN and para_of.get(wid) != para_of.get(cur["wl"][-1]["id"])) \
+                    or (n >= ROW_SENT_MIN and SENTENCE_END.search(last)):
+                cur = None
+        if cur is None:
+            t = turns[k]
+            cur = {"speaker": t["speaker"], "name": t["name"], "color": t["color"], "unsure": t["unsure"],
+                   "at": at, "w0": wid, "para": para_of.get(wid), "turn": k, "part": part, "i": len(rows), "wl": []}
+            part += 1
+            rows.append(cur)
+        cur["wl"].append({"id": wid, "w": w})
+    for r in rows:
+        r["text"] = " ".join(x["w"] for x in r["wl"])
+    return rows
+
+
 def clock(s):
     s = int(s)
     return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
@@ -4883,27 +4924,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 stale.append("samples have changed since it was made")
             if newest.get("settings") != voice_settings():
                 stale.append("the who's-speaking Settings or the matcher have changed since it was made")
-        # The turns, rebuilt from the version's words (older versions too),
-        # each with its first word's paragraph: the Edit link's target.
+        # The rows, rebuilt from the version's words (older versions too): its
+        # turns cut into rows (rows_of) so the page's List can virtualize, each
+        # with its first word's paragraph (the Edit link's target). Sent as
+        # "turns", though they are rows: a long turn is several.
         turns = []
         if chosen:
             snap = snaps[chosen["n"]]
-            turns = turns_of(snap["words"], snap["names"], snap["colors"])
-            ids = [t["w0"] for t in turns]
-            para_of = dict(db.execute(f"SELECT id, para FROM words WHERE id IN ({','.join('?' * len(ids))})", ids)) \
-                if ids else {}
-            for k, t in enumerate(turns):
-                t["para"], t["i"] = para_of.get(t["w0"]), k
-            # Each turn's words with their ids, for selecting a range to
-            # annotate (/notes). Added here, not in turns_of, so the saved
-            # snapshots and the exports don't carry it.
-            k = -1
-            prev = object()
-            for wid, w, spk, *_ in snap["words"]:
-                if k < 0 or spk != prev:
-                    k, prev = k + 1, spk
-                    turns[k]["wl"] = []
-                turns[k]["wl"].append({"id": wid, "w": w})
+            whole = turns_of(snap["words"], snap["names"], snap["colors"])
+            ids = [x[0] for x in snap["words"]]
+            para_of = {}
+            for b in range(0, len(ids), 900):  # SQLite's variable limit
+                batch = ids[b:b + 900]
+                para_of.update(db.execute(f"SELECT id, para FROM words WHERE id IN ({','.join('?' * len(batch))})", batch))
+            turns = rows_of(whole, snap["words"], para_of)
+            print(f"final-transcript-rows source={source} n={chosen['n']} turns={len(whole)} rows={len(turns)} "
+                  f"maxWords={max((len(r['wl']) for r in turns), default=0)}", flush=True)
         self.send_json(200, {"needVideo": not state["exists"], "versions": listed, "version": chosen,
                              "remakeWhy": stale, "upToDate": bool(snaps) and not stale,
                              "editChanged": bool(state["exists"] and not state["current"]),

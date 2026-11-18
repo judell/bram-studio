@@ -84,9 +84,19 @@
       const wl = t.wl || [];
       const p = fp();
       const marks = window.studioFindWordMarks(wl, findNeedle, p.activeKey === t.i ? p.activeOcc : -1);
-      const ns = placedNotes();
+      // Each word's note, from a lookup built once per call (not a search of
+      // every note per word); a word in two notes takes the first.
+      const byId = new Map();
+      let lo = Infinity, hi = -Infinity;
+      for (const x of wl) { if (x.id < lo) lo = x.id; if (x.id > hi) hi = x.id; }
+      for (const q of placedNotes()) {
+        if (q.to < lo || q.from > hi) continue;
+        for (const x of wl) {
+          if (q.from <= x.id && x.id <= q.to && !byId.has(x.id)) byId.set(x.id, q);
+        }
+      }
       return wl.map((x, k) => {
-        const n = ns.find((q) => q.from <= x.id && x.id <= q.to) || null;
+        const n = byId.get(x.id) || null;
         return { id: x.id, w: x.w, m: marks[k], noted: !!n, note: n && n.to === x.id ? n : null };
       });
     }
