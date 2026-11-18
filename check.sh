@@ -72,6 +72,28 @@ else
   opt "speaker matching model" "Final transcript says who's speaking"
 fi
 
+echo "Starting with Bram:"
+# Whether Bram runs ./start.sh at each launch (.bram.json launch.run): it
+# waits for an Allow on its banner, once per computer (issue 4). Bram
+# reports the decision at GET /__launch-run, on the port in .bram/.bram-port.
+# Nothing is printed when Bram isn't running or is too old to have the
+# route; it never counts as missing, since ./start.sh works by hand.
+BRAM_PORT=$(cat .bram/.bram-port 2>/dev/null)
+if [ -n "$BRAM_PORT" ]; then
+  lr=$(curl -4 -sS --max-time 2 "http://127.0.0.1:$BRAM_PORT/__launch-run" 2>/dev/null)
+  case "$lr" in
+    *'"command"'*)
+      case "$lr" in
+        *'"decision":"allow"'*'"runAtLaunch":false'*|*'"runAtLaunch":false'*'"decision":"allow"'*|*'"decision":"deny"'*)
+          opt "Bram runs ./start.sh at launch" "turned off; Settings › Companion App turns it back on" ;;
+        *'"decision":"allow"'*)
+          ok "Bram runs ./start.sh at each launch" ;;
+        *)
+          printf '  waiting  %s: %s\n' "Bram's Allow for ./start.sh" "click Allow on Bram's banner, or Studio's server won't start at the next launch" ;;
+      esac ;;
+  esac
+fi
+
 echo
 if [ "$missing" = 0 ]; then
   echo "Everything Studio needs is here."

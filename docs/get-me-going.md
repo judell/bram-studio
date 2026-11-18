@@ -17,6 +17,9 @@ first, then come back to step 1.
 
 ## 1. Start the server
 
+First read the "Starting with Bram" line of `./check.sh` (below): when it says
+`waiting`, the user's **Allow** starts the server, not you.
+
 Run `./start.sh`. It starts `serve_media.py` in the background, or reports that
 it is already running. If it says the server is running code older than the
 files on disk, suggest `./start.sh --restart`. Never restart while a narration,
@@ -30,10 +33,18 @@ The editor tab in the user's browser recovers on its own once the server is
 up. Say so; don't walk the user through reloading.
 
 Bram runs `./start.sh` at each launch (`.bram.json` `launch.run`), once the
-user allows it on this computer. If Bram is showing a banner asking to run
-`./start.sh`, tell the user that **Allow** means Studio's server starts by
-itself from now on, so they won't need this step after a reboot. An older
-Bram shows no banner and doesn't run it; then this step is the way.
+user allows it on this computer. **Check this before starting the server by
+hand:** `./check.sh` has a "Starting with Bram" line.
+
+- **`waiting`:** Bram is showing a banner asking to run `./start.sh`. Ask
+  the user to click **Allow** on it first: that starts the server now and at
+  every launch from then on, so they won't need this step after a reboot.
+  Don't run `./start.sh` yourself while it's waiting. The server would come
+  up, the session would look fine, and the banner would be left for the next
+  launch to wait on again (issue 4).
+- **`ok`:** Bram already starts it; `./start.sh` only reports it running.
+- **Turned off, or no line at all** (Bram not running, or too old to have
+  the banner): this step, by hand, is the way.
 
 ## 2. Inventory by tier, report as needed
 

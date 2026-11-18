@@ -236,7 +236,8 @@ A Studio from before projects keeps working from the repo's own `studio.db`, `me
   older than the files on disk. `./start.sh --restart` restarts it after a server change,
   and `./start.sh --stop` stops it, unless a narration, render or export is under way.
   Bram runs `./start.sh` at each launch (`.bram.json` `launch.run`, in Bram builds from
-  9d6afebd on), once you click **Allow** on its banner on this computer, and runs
+  9d6afebd on), once you click **Allow** on its banner on this computer (`./check.sh`
+  says whether you have), and runs
   `./start.sh --stop` when you turn that off in Bram's Settings › Companion App
   (`launch.stop`).
 - `ffmpeg`, Apple's Command Line Tools for `swiftc` and Python
