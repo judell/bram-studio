@@ -5,3 +5,4 @@ record.log
 sources/
 work/
 studio-port.json
+__pycache__/
