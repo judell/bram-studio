@@ -308,6 +308,10 @@
         turnsList.scrollToIndex(k);
       }" />
     <Text when="{!!shown() &amp;&amp; !comparing}" variant="secondary" value="{samplesLine(shown())}" />
+    <!-- What to do about (?) turns: the refine loop of
+         docs/voice-sample-setup.md (1.1), shown only when there are some. -->
+    <Text when="{!!shown() &amp;&amp; !comparing &amp;&amp; shown().unsure > 0}" variant="secondary"
+      value="Turns marked (?) didn't clearly match a voice. To fix one, or any wrong speaker: click its pencil, mark a sample of the right voice there, then Remake." />
     <!-- A batch item leaves the chips once a note overlaps it: the agent's
          notes arriving (over /events) are what clear the batch, so whatever
          stays is what didn't get a note. Overlap, not equal ends, because

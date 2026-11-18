@@ -526,22 +526,41 @@
                 <Text variant="secondary" value="Each paragraph saves when you click outside it. Undo and Redo work across all paragraphs, newest first." />
                 <!-- Samples: a few stretches of each speaker's voice, marked
                      in the text (an underline; hover for whose). Later, and
-                     optionally, they identify who's who: Match voices
-                     (voiceprint.py, hidden) or a transcript formatted by
-                     speaker. -->
+                     optionally, they identify who's who: matching voices is
+                     part of Make final transcript
+                     (components/FinalTranscript.xmlui). The tooltip, the
+                     dimmed-switch line and the empty-state line are the
+                     first-round cues of docs/voice-sample-setup.md. -->
                 <!-- Mark the card (index.html studioMarkCard) and hold it
                      (samplesHold) before the re-render; paraList's
                      onVisibleRangeDidChange puts it back. -->
-                <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
-                  <Switch label="Samples" labelPosition="end" initialValue="{false}"
-                    enabled="{currentPara !== null || tagMode}"
-                    onDidChange="(v) => {
-                      const p = window.studioMarkCard(currentPara);
-                      const k = p !== null &amp;&amp; paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
-                      samplesHold = p !== null &amp;&amp; k >= 0 ? { para: p, k: k, tries: 0 } : null;
-                      tagMode = v;
-                    }" />
-                  <Button icon="info" size="xs" variant="ghost" tooltip="About samples" onClick="samplesInfo.open()" />
+                <HStack width="100%" verticalAlignment="center" gap="$space-1">
+                  <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
+                    <Switch label="Samples" labelPosition="end" initialValue="{false}"
+                      tooltipMarkdown="{'Mark a few seconds of each speaker\'s voice.\n\nSamples are used when you make the final transcript.\n\nStart with a little; add more any time to fix who\'s speaking.'}"
+                      enabled="{currentPara !== null || tagMode}"
+                      onDidChange="(v) => {
+                        const p = window.studioMarkCard(currentPara);
+                        const k = p !== null &amp;&amp; paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
+                        samplesHold = p !== null &amp;&amp; k >= 0 ? { para: p, k: k, tries: 0 } : null;
+                        tagMode = v;
+                      }" />
+                    <Button icon="info" size="xs" variant="ghost" tooltip="About samples" onClick="samplesInfo.open()" />
+                  </HStack>
+                  <!-- Why it's dimmed (e353d04: turning Samples on re-renders
+                       the cards, and the selected one is held in place). A
+                       line, not a tooltip: hover on a disabled control isn't
+                       reliable. It shares the controls' row and wraps in what
+                       they leave (width="*"). The controls sit in their own
+                       fit-content HStack because a labelled Switch's outer
+                       wrapper (_itemWithLabel) sizes itself far wider than
+                       what it draws (309 px for a 100-122 px switch, measured
+                       in headless Chrome against the vendored engine), and
+                       width, shrinkToLabel and labelBreak on the Switch don't
+                       reach that wrapper (xmlui-org/xmlui#3968; drop the
+                       inner HStack once that's fixed). -->
+                  <Text when="{currentPara === null &amp;&amp; !tagMode}" width="*" variant="secondary" fontSize="$fontSize-sm"
+                    value="First click one of the transcript's paragraphs, on the right." />
                 </HStack>
                 <VStack when="{tagMode}" gap="$space-2">
                   <HStack verticalAlignment="center" wrapContent="true">
@@ -551,6 +570,8 @@
                   </HStack>
                   <Text variant="secondary"
                     value="Drag across a stretch (or double-click a word), then pick whose voice it is. Underlined words are samples: hover for whose." />
+                  <Text when="{!!(samples.value &amp;&amp; samples.value.stretches &amp;&amp; samples.value.stretches.length === 0)}" variant="secondary"
+                    value="A few clean stretches per person is enough to start. Keep editing; you can add more any time, for instance where the final transcript gets a speaker wrong." />
                   <!-- Every sample stretch (/speakers/samples), with Play
                        (an audio player under it, of just that stretch,
                        so you can seek within it), Clear
@@ -965,6 +986,7 @@
     <Text value="Turning Samples on shows the text word by word, so a selection covers a range of whole words rather than a sweep of characters. Drag across a stretch, or double-click a word, then pick whose voice it is." />
     <Text value="It's especially helpful to isolate a speaker inside a paragraph where two people talk. Whole paragraphs where only one person speaks are useful too." />
     <Text value="Aim for at least 30 seconds of samples for each speaker, chosen from anywhere in the recording. The samples list shows each one's length." />
+    <Text value="You don't have to finish sampling first. Start with a little of each voice and keep editing; add samples whenever you like, especially where the final transcript gets a speaker wrong." />
     <Text value="You can always clear a sample (its Clear button) or add more, then Remake final transcript on the Final transcript page." />
   </ModalDialog>
 </Component>
