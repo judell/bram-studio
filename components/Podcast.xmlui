@@ -800,8 +800,21 @@
             onDidChange="if (leader === 'video' &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
           <ChangeListener listenTo="{cardSeek}"
             onDidChange="if (cardSeek &amp;&amp; cardSeek.para === $item.para &amp;&amp; $item.kept > 0) paraPlayer.seek(cardSeek.t);" />
+          <!-- Selected vs editing (workspace-selected-vs-editing-look;
+               2026-11-18: "we now select an item in the workspace with a
+               click and then require a second click to get into editing
+               mode, but that's not obvious"). The card's border and its
+               box's frame show editReady; a line under the box names the
+               next step. Each change logs podcast-page: card-state. -->
+          <ChangeListener listenTo="{currentPara === $item.para ? (editReady ? 'editing' : 'selected') : 'none'}"
+            onDidChange="(c) => {
+              if (c.prevValue === undefined || c.newValue === c.prevValue) return;
+              Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                body: { ev: 'card-state', para: $item.para, state: c.newValue, was: c.prevValue } });
+            }" />
           <VStack automationId="{'para-card-' + $item.para}" gap="$space-1" padding="$space-3" borderRadius="$space-2"
             backgroundColor="{currentPara === $item.para ? '$color-primary-50' : '$color-surface-50'}"
+            border="{editReady ? '1px solid $color-primary-300' : '1px solid transparent'}"
             onClick="
               if (currentPara !== $item.para) {
                 currentPara = $item.para;
@@ -881,7 +894,19 @@
                  whole paragraph isn't one stray click away; beside the box,
                  since TextArea takes no button inside it. Logged
                  (podcast-page: clear). -->
+            <!-- The box itself never draws a frame (a static Theme, always
+                 applied: toggling applyIf would remount the TextArea and drop
+                 its focus mid-click). Its wrapper draws the field look only
+                 while editing, so a selected card's text reads as text.
+                 Theme scoping: xmlui docs, howto override-a-components-theme-vars. -->
+            <Theme borderColor-TextArea="transparent" borderColor-TextArea--hover="transparent"
+              borderColor-TextArea--focus="transparent" backgroundColor-TextArea="transparent"
+              backgroundColor-TextArea--hover="transparent" backgroundColor-TextArea--focus="transparent"
+              boxShadow-TextArea--focus="none" outlineWidth-TextArea--focus="0">
             <HStack when="{!tagMode}" verticalAlignment="start" gap="$space-1">
+            <VStack width="*" gap="0" borderRadius="$space-1"
+              border="{editReady ? '1px solid $color-primary-500' : '1px solid transparent'}"
+              backgroundColor="{editReady ? '$color-surface-0' : 'transparent'}">
             <TextArea id="paraBox" width="*" autoSize="true" initialValue="{$item.text}" placeholder="(all of this paragraph is cut)"
               readOnly="{!editReady}"
               onSelectionDidChange="(sel) => {
@@ -923,6 +948,7 @@
                                           textLen: $item.text.length, changed: draft !== $item.text } });
                 if (draft !== $item.text) savePara(source, $item.para, draft);
               " />
+            </VStack>
             <Button when="{currentPara === $item.para &amp;&amp; $item.kept > 0}" icon="close" size="xs" variant="ghost"
               tooltip="Cut this whole paragraph (Undo brings it back)"
               onClick="
@@ -933,6 +959,9 @@
                 savePara(source, $item.para, '');
               " />
             </HStack>
+            </Theme>
+            <Text when="{!tagMode &amp;&amp; currentPara === $item.para}" variant="secondary" fontSize="$fontSize-sm"
+              value="{editReady ? 'Editing · saves when you click outside' : 'Click the text to edit'}" />
             <!-- Its play, pause and seek set paraClock, which the left
                  pane's video follows. -->
             <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
