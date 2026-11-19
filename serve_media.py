@@ -2177,7 +2177,7 @@ def samples_key(db, source):
     # What the samples are now: a hash of every tagged word and its speaker.
     # The last check is current while it matches.
     h = hashlib.sha1()
-    for wid, spk in db.execute("SELECT id, speaker_id FROM words WHERE source = ? AND speaker_how = 'tag' "
+    for wid, spk in db.execute("SELECT id, speaker_id FROM words WHERE source = ? AND speaker_how = 'tag' AND kept = 1 "
                                "ORDER BY i", (source,)):
         h.update(f"{wid}:{spk};".encode())
     return h.hexdigest()[:12]
@@ -2231,8 +2231,13 @@ def sample_list(db, source):
     # one speaker), in order, with the last check's flags when it is
     # current; and whether a check is running or due (which starts it).
     names = {i: (n, c) for i, n, c in db.execute("SELECT id, name, color FROM speakers")}
-    rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), speaker_id FROM words "
-                      "WHERE source = ? AND speaker_how = 'tag' ORDER BY i", (source,)).fetchall()
+    # Kept words only, numbered along the kept words (k), so a cut word is in
+    # no sample and doesn't split one; voiceprint.py builds its stretches the
+    # same way (sample-clear-cut-words).
+    rows = db.execute("SELECT id, k, t0, t1, w, speaker_id FROM ("
+                      "SELECT id, ROW_NUMBER() OVER (ORDER BY i) AS k, t0, t1, coalesce(shown, text) AS w, "
+                      "speaker_id, speaker_how FROM words WHERE source = ? AND kept = 1) "
+                      "WHERE speaker_how = 'tag' ORDER BY k", (source,)).fetchall()
     out, run = [], None
     for wid, i, t0, t1, w, spk in rows:
         if run and run["speaker"] == spk and run["_i"] == i - 1:
@@ -3443,7 +3448,7 @@ def samples_now(db, source):
     # Each speaker's seconds of samples, {speaker id: secs}: what a
     # transcript version records, and what says a Remake would differ.
     return {str(spk): round(secs, 1) for spk, secs in db.execute(
-        "SELECT speaker_id, sum(t1 - t0) FROM words WHERE source = ? AND speaker_how = 'tag' "
+        "SELECT speaker_id, sum(t1 - t0) FROM words WHERE source = ? AND speaker_how = 'tag' AND kept = 1 "
         "GROUP BY speaker_id", (source,))}
 
 
@@ -4694,9 +4699,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # One Undo step, recording each word's speaker before and after, so
         # Undo restores exactly what was there and Redo re-applies it.
         how = "tag" if spk is not None else None
+        # Tagging takes the kept words; clearing takes every word in the
+        # range, cut ones too: a sample whose words were cut after it was
+        # tagged is still listed (/speakers/samples) and must still clear
+        # (sample-clear-cut-words).
+        kept = " AND kept = 1" if spk is not None else ""
         with TEXT_LOCK:
             rows = db.execute("SELECT id, speaker_id, speaker_how, speaker_unsure FROM words "
-                              "WHERE source = ? AND kept = 1 AND i BETWEEN ? AND ? ORDER BY i",
+                              f"WHERE source = ?{kept} AND i BETWEEN ? AND ? ORDER BY i",
                               (source, lo, hi)).fetchall()
             tagged = [{"id": wid, "was": [s0, h0, u0], "now": [spk, how, 0]} for wid, s0, h0, u0 in rows
                       if (s0, h0) != (spk, how)]
@@ -5056,7 +5066,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"error": "make the final video first: the transcript is timed by it"})
         if not (os.path.isfile(SPEECH_PYTHON) and os.path.isfile(SPEAKER_MODEL)):
             return self.send_json(409, {"error": f"the speaker model isn't installed ({SPEAKER_MODEL})"})
-        if not db.execute("SELECT 1 FROM words WHERE source = ? AND speaker_how = 'tag' LIMIT 1", (source,)).fetchone():
+        if not db.execute("SELECT 1 FROM words WHERE source = ? AND speaker_how = 'tag' AND kept = 1 LIMIT 1", (source,)).fetchone():
             return self.send_json(409, {"error": "no samples yet: mark some of each speaker's voice in the Workspace"})
         with TRANSCRIBE_LOCK:
             if matching:

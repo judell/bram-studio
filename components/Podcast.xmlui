@@ -866,10 +866,6 @@
                     tagRange(source, anchor, focus, $item.id); anchor = null; focus = null;
                   " />
               </Items>
-              <Button size="xs" variant="ghost" label="Not a sample"
-                when="{($item.wl || []).some((w) => w.h === 'tag' &amp;&amp; inRange(w.id, anchor, focus))}"
-                tooltip="Take these words out of any sample"
-                onClick="tagRange(source, anchor, focus, null); anchor = null; focus = null" />
               <Button size="xs" variant="ghost" label="Cancel" onClick="anchor = null; focus = null" />
             </HStack>
             <!-- Where the caret lands, the player under the box goes: to the

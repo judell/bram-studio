@@ -364,18 +364,24 @@ def main():
             return None
         return v / (np.linalg.norm(v) or 1)
 
-    # Examples: runs of consecutive tagged words with one speaker.
+    # Examples: runs of consecutive tagged kept words with one speaker. A cut
+    # word is in no sample and doesn't split one: a word tagged and later
+    # cut (an edit, Elide tics) mustn't add its audio to a voiceprint
+    # (sample-clear-cut-words; serve_media.py's /speakers/samples agrees).
     stretches = collections.defaultdict(list)
-    run = None
+    run, prev = None, None
     for wid, i, t0, t1, kept, spk, how, _ in words:
+        if not kept:
+            continue
         if how == "tag" and spk is not None:
-            if run and run[0] == spk and run[3] == i - 1:
+            if run and run[0] == spk and run[3] == prev:
                 run[2], run[3] = t1, i
             else:
                 run = [spk, t0, t1, i, wid]  # wid: the stretch's first word
                 stretches[spk].append(run)
         else:
             run = None
+        prev = i
     speakers, prints = {}, {}
     for spk, runs in stretches.items():
         secs = sum(r[2] - r[1] for r in runs)
