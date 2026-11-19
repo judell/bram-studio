@@ -22,8 +22,8 @@
      there's a use for them.) -->
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
-  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.paraClock="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
-  var.leader="{null}" var.videoPara="{null}" var.cardSeek="{null}" var.parasSeen="{null}"
+  var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.videoSeek="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
+  var.videoPara="{null}" var.parasSeen="{null}" var.videoPlaying="{false}" var.videoCmd="{null}"
   var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -261,58 +261,53 @@
       const list = paras.value || parasSeen;
       return !list || list.some((x) => x.para === Number(n) && x.kept > 0);
     }
-    // Put the video where the card's player is (paraClock), playing or not.
-    // Logs the video's time before the move: how far it had drifted.
-    // Whose sound you hear: 'card' (the video follows a card's player,
-    // muted) or 'video' (you played or paused the main video yourself; it
-    // has its sound and the cards stop). Logged (podcast-page: leader).
-    function setLeader(who, by) {
-      if (leader === who) return;
-      leader = who;
-      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                        body: { ev: 'leader', leader: who, by, para: currentPara } });
-    }
-    // Did the main video play or pause because of you? Not if it is showing
-    // a paragraph other than the current one (a pause from loading a new
-    // file), nor if it did what its card is doing (applyClock following).
-    // Nor at its end (t within 0.1 s of it): a paragraph played to the end
-    // pauses the video before its card says so.
-    function videoTouched(playing, t) {
-      if (videoPara !== currentPara) return false;
-      if (!playing && t !== undefined && paraVideo.duration && t >= paraVideo.duration - 0.1) return false;
-      const c = paraClock;
-      return !(leader === 'card' && c && c.para === currentPara && c.playing === playing);
-    }
-    function playRejected(why, err) {
-      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                        body: { ev: 'clock', why, playRejected: String((err && err.message) || err) } });
-    }
-    function applyClock(why) {
-      const c = paraClock;
-      if (leader === 'video' || !c || c.para !== currentPara || !followItem()) return;
+    // The video is the Workspace's one player (workspace-one-player): the
+    // card players are gone, and with them the rule for whose sound you
+    // hear. A click in a card's text asks the video to go to that word
+    // (videoSeek: {para, t, n}). It's applied here, outside the list (a List
+    // row reaching a component's player has been unreliable,
+    // xmlui-org/xmlui#3940), and again once a newly chosen paragraph's video
+    // has loaded. Playing or paused stays as it is. Logged (podcast-page:
+    // clock) with where the video was.
+    function applySeek(why) {
+      const s = videoSeek;
+      if (!s || s.para !== currentPara || !followItem() || videoPara !== currentPara) return;
       const before = paraVideo.getCurrentTime();
-      paraVideo.seek(c.t);
-      // A play still pending when the video's file changes or the video is
-      // removed is rejected by the browser ("interrupted by load", "media
-      // was removed from the document"). Expected: a new file re-applies
-      // the clock once loaded. Logged, not shown.
-      if (c.playing) {
+      paraVideo.seek(s.t);
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                        body: { ev: 'clock', why, para: s.para, to: s.t, video: before,
+                                drift: Math.round((before - s.t) * 1000) / 1000 } });
+    }
+    // The selected card's Play / Pause (workspace-one-player, 2026-11-18:
+    // "your idea of a small play button will be helpful"): the card asks
+    // (videoCmd: {para, play, n}), and it's done here, outside the list, as
+    // seeks are; once the paragraph's video has loaded if it hasn't yet. A
+    // play the browser refuses is logged, not shown.
+    function applyPlay(why) {
+      const c = videoCmd;
+      if (!c || c.para !== currentPara || !followItem() || videoPara !== currentPara) return;
+      videoCmd = null;
+      if (c.play) {
         try {
           const p = paraVideo.play();
-          if (p && typeof p.catch === 'function') p.catch((err) => playRejected(why, err));
+          if (p && typeof p.catch === 'function') p.catch((err) => logPlay(why, String((err && err.message) || err)));
         } catch (err) {
-          playRejected(why, err);
+          logPlay(why, String((err && err.message) || err));
         }
       } else paraVideo.pause();
-      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                        body: { ev: 'clock', why, para: c.para, by: c.by, card: c.t, video: before,
-                                drift: Math.round((before - c.t) * 1000) / 1000, playing: c.playing } });
+      logPlay(why, null, c.play);
     }
+    function logPlay(why, rejected, play) {
+      Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                        body: rejected ? { ev: 'play', why, para: currentPara, rejected }
+                                       : { ev: 'play', why, para: currentPara, play } });
+    }
+    // The current paragraph re-rendered: its new clip loads at 0, paused,
+    // and a seek asked of the old one is dropped.
     function clipChanged(c) {
       const prev = c ? c.prevValue : '', now = c ? c.newValue : '';
       if (!prev || !now || prev.split(':')[0] !== now.split(':')[0]) return;
-      cardSeek = null;
-      paraClock = { para: currentPara, t: 0, playing: false, by: 'rerendered', n: Date.now() };
+      videoSeek = null;
       Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'clock', why: 'rerendered', para: currentPara, was: prev, now } });
     }
@@ -458,29 +453,21 @@
                 : 'Transcript ' + transcript.value[0].status)
             : ''}" />
         <!-- On Edit text, the left pane shows the current paragraph as
-             edited: the same .mp4 its card plays as audio
-             (/transcripts/play), muted, following the card's player. The
-             card's play, pause and seek set paraClock, applied here
-             (applyClock), and again once a newly chosen paragraph's video
-             has loaded. Rows don't call paraVideo themselves: a List row
-             reaching a component's player has been unreliable
-             (xmlui-org/xmlui#3940). Elsewhere, the original recording.
-
-             It has its controls: play or pause it yourself and it takes
-             over (leader 'video', setLeader): it unmutes, the cards stop,
-             and pausing it moves its card's player to the same place
-             (cardSeek). Playing a card hands it back. -->
-        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%" muted="{leader !== 'video'}"
+             edited (/transcripts/play): the Workspace's one player, with its
+             sound and controls (workspace-one-player, 2026-11-18; the cards
+             had their own audio players, and two could play at once). A
+             click in a card's text moves it to that word (videoSeek,
+             applySeek). Elsewhere, the original recording. -->
+        <MediaPlayer id="paraVideo" when="{!!followItem()}" width="100%"
           preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
           poster="{followItem() ? posterUrl(followItem()) : undefined}"
-          onLoadedMetadata="videoPara = currentPara; applyClock('loaded')"
-          onPlay="(e) => { if (videoTouched(true)) setLeader('video', 'video play'); }"
-          onPause="(e) => {
-            if (!videoTouched(false, e.currentTime)) return;
-            setLeader('video', 'video pause');
-            cardSeek = { para: currentPara, t: e.currentTime, n: Date.now() };
-          }" />
-        <ChangeListener listenTo="{paraClock}" onDidChange="applyClock('clock')" />
+          onLoadedMetadata="videoPara = currentPara; videoPlaying = false; applySeek('loaded'); applyPlay('loaded')"
+          onPlay="videoPlaying = true" onPause="videoPlaying = false" onEnded="videoPlaying = false" />
+        <ChangeListener listenTo="{videoSeek}" onDidChange="applySeek('caret')" />
+        <ChangeListener listenTo="{videoCmd}" onDidChange="applyPlay('card')" />
+        <!-- Another paragraph chosen: its clip loads at 0, paused; a seek
+             asked of an earlier visit isn't replayed on it. -->
+        <ChangeListener listenTo="{currentPara}" onDidChange="videoSeek = null; videoPlaying = false" />
         <!-- The current paragraph re-rendered (Elide, Restore, Undo, an
              edit: a new version, a redrawn card with a new clip): start over
              at 0, paused. Carrying the old clip's place over put the video
@@ -773,11 +760,10 @@
                2026-11-13: editingPara and paraDraft read back null in
                the same handler that set them; xmlui-org/xmlui#3940
                reaches further than its workaround). -->
-          <!-- Each paragraph is a card: its words, player and counts in one
-               faintly tinted container; the current paragraph (currentPara:
-               the one last clicked into, or whose player last started) a
-               shade stronger. When another paragraph becomes current, this
-               one's player stops, so one plays at a time. currentPara is the
+          <!-- Each paragraph is a card: its words and counts in one faintly
+               tinted container; the current paragraph (currentPara: the one
+               last clicked into) a shade stronger. Its sound is the left
+               pane's video (workspace-one-player). currentPara is the
                component's, assigned from in here: #3940 broke that under
                Tabs, and this list has been outside the Tabs since the
                splitter layout. Each assignment logs what it reads back
@@ -785,28 +771,6 @@
           <VStack paddingBottom="$space-3" var.draft="{$item.text}" var.anchor="{null}" var.focus="{null}" var.marks="{null}"
             var.roster="{$item.speakers || []}" var.findHit="{!!fp().hits[String($item.para)]}"
             var.editReady="{false}" var.skipNext="{false}">
-          <!-- When another card becomes current, this one stops; and the card
-               being left (only that one: every card hears the change) goes
-               back to its start, so choosing it again plays the paragraph
-               from the beginning, not from where it was left
-               (podcast-card-switch-resets-playback; 2026-11-15: "click-
-               switching to a card should reset playback"). -->
-          <ChangeListener listenTo="{currentPara}"
-            onDidChange="(change) => {
-              if (currentPara === $item.para || $item.kept === 0) return;
-              if (!paraPlayer.paused) paraPlayer.pause();
-              if (change.prevValue === $item.para) {
-                paraPlayer.seek(0);
-                Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                                  body: { ev: 'card-reset', para: $item.para, now: currentPara } });
-              }
-            }" />
-          <!-- The main video taking over stops this card; pausing the video
-               leaves this card's player where the video stopped. -->
-          <ChangeListener listenTo="{leader}"
-            onDidChange="if (leader === 'video' &amp;&amp; $item.kept > 0 &amp;&amp; !paraPlayer.paused) paraPlayer.pause();" />
-          <ChangeListener listenTo="{cardSeek}"
-            onDidChange="if (cardSeek &amp;&amp; cardSeek.para === $item.para &amp;&amp; $item.kept > 0) paraPlayer.seek(cardSeek.t);" />
           <!-- Selected vs editing (workspace-selected-vs-editing-look;
                2026-11-18: "we now select an item in the workspace with a
                click and then require a second click to get into editing
@@ -930,9 +894,9 @@
                 }
                 const hit = marks.filter((m) => m[0] &lt;= sel.start);
                 const t = hit.length ? hit[hit.length - 1][1] : 0;
-                paraPlayer.seek(t);
+                videoSeek = { para: $item.para, t, n: Date.now() };
                 Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                                  body: { ev: 'caret', para: $item.para, at: sel.start, t, player: paraPlayer.getCurrentTime() } });
+                                  body: { ev: 'caret', para: $item.para, at: sel.start, t } });
               }"
               onGotFocus="
                 const fresh = currentPara !== $item.para;
@@ -963,7 +927,14 @@
               " />
             </HStack>
             </Theme>
-            <Text when="{!tagMode &amp;&amp; currentPara === $item.para}" variant="secondary" fontSize="$fontSize-sm"
+            <!-- The selected card's line: Play / Pause for the left pane's
+                 video (workspace-one-player; videoCmd, applyPlay), then what
+                 a click does here. -->
+            <HStack when="{currentPara === $item.para}" verticalAlignment="center" gap="$space-1" wrapContent="true">
+            <Button when="{$item.kept > 0}" size="xs" variant="ghost"
+              icon="{videoPlaying ? 'pause' : 'play'}" label="{videoPlaying ? 'Pause' : 'Play'}"
+              onClick="videoCmd = { para: $item.para, play: !videoPlaying, n: Date.now() }" />
+            <Text when="{!tagMode}" variant="secondary" fontSize="$fontSize-sm"
               value="{editReady ? 'Editing · saves when you click outside' : 'Click the text to edit'}" />
             <!-- The same line in Samples (workspace-samples-hint-edit-text;
                  2026-11-18): what a click does here, and the way back to
@@ -972,29 +943,14 @@
                  Edit text runs setSamples(false), as the switch does: the
                  card hold runs, and the switch follows tagMode through its
                  initialValue. -->
-            <HStack when="{tagMode &amp;&amp; currentPara === $item.para}" verticalAlignment="center" gap="$space-1" wrapContent="true">
-              <Text variant="secondary" fontSize="$fontSize-sm" value="Drag across words, or double-click one, to mark a voice ·" />
-              <Button size="xs" variant="ghost" label="Edit text"
+              <Text when="{tagMode}" variant="secondary" fontSize="$fontSize-sm" value="Drag across words, or double-click one, to mark a voice ·" />
+              <Button when="{tagMode}" size="xs" variant="ghost" label="Edit text"
                 onClick="
                   Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                                     body: { ev: 'samples-off', by: 'card', para: $item.para } });
                   setSamples(false);
                 " />
             </HStack>
-            <!-- Its play, pause and seek set paraClock, which the left
-                 pane's video follows. -->
-            <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
-              onPause="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: false, by: 'pause', n: Date.now() }"
-              onSeeked="(e) => paraClock = { para: $item.para, t: e.currentTime, playing: !paraPlayer.paused, by: 'seek', n: Date.now() }"
-              onPlay="(e) => {
-                setLeader('card', 'card play');
-                paraClock = { para: $item.para, t: e.currentTime, playing: true, by: 'play', n: Date.now() };
-                if (currentPara !== $item.para) {
-                  currentPara = $item.para;
-                  Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
-                                    body: { ev: 'current', para: $item.para, by: 'play', readBack: currentPara } });
-                }
-              }" />
             <HStack verticalAlignment="center" gap="$space-2">
               <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
               <Text variant="secondary" when="{$item.ticsCut > 0}"
