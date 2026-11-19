@@ -78,6 +78,18 @@
     }" />
 
   <script>
+    // Samples on or off, from the switch or a card's Edit text
+    // (workspace-samples-hint-edit-text): mark the card (index.html
+    // studioMarkCard) and hold it (samplesHold) before the re-render;
+    // paraList's onVisibleRangeDidChange puts it back. The switch follows
+    // through initialValue="{tagMode}": an id on it made every click on a
+    // card's text land as a first click (2026-11-18), so nothing calls it.
+    function setSamples(v) {
+      const p = window.studioMarkCard(currentPara);
+      const k = p !== null && paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
+      samplesHold = p !== null && k >= 0 ? { para: p, k: k, tries: 0 } : null;
+      tagMode = v;
+    }
     // Find (find-in-long-views): one find state, for whichever list the
     // view shows (the Workspace's paragraphs or the Raw transcript's
     // segments), cleared on a change of view. index.html studioFindPlan.
@@ -536,15 +548,10 @@
                      onVisibleRangeDidChange puts it back. -->
                 <HStack width="100%" verticalAlignment="center" gap="$space-1">
                   <HStack width="fit-content" verticalAlignment="center" gap="$space-1">
-                    <Switch label="Samples" labelPosition="end" initialValue="{false}"
+                    <Switch label="Samples" labelPosition="end" initialValue="{tagMode}"
                       tooltipMarkdown="{'Mark a few seconds of each speaker\'s voice.\n\nSamples are used when you make the final transcript.\n\nStart with a little; add more any time to fix who\'s speaking.'}"
                       enabled="{currentPara !== null || tagMode}"
-                      onDidChange="(v) => {
-                        const p = window.studioMarkCard(currentPara);
-                        const k = p !== null &amp;&amp; paras.value ? paras.value.findIndex((x) => x.para === p) : -1;
-                        samplesHold = p !== null &amp;&amp; k >= 0 ? { para: p, k: k, tries: 0 } : null;
-                        tagMode = v;
-                      }" />
+                      onDidChange="(v) => { if (v !== tagMode) setSamples(v); }" />
                     <Button icon="info" size="xs" variant="ghost" tooltip="About samples" onClick="samplesInfo.open()" />
                   </HStack>
                   <!-- Why it's dimmed (e353d04: turning Samples on re-renders
@@ -962,6 +969,22 @@
             </Theme>
             <Text when="{!tagMode &amp;&amp; currentPara === $item.para}" variant="secondary" fontSize="$fontSize-sm"
               value="{editReady ? 'Editing · saves when you click outside' : 'Click the text to edit'}" />
+            <!-- The same line in Samples (workspace-samples-hint-edit-text;
+                 2026-11-18): what a click does here, and the way back to
+                 editing. Not a click on the text: a double-click marks a
+                 word, and a click handler would fire on its first half.
+                 Edit text runs setSamples(false), as the switch does: the
+                 card hold runs, and the switch follows tagMode through its
+                 initialValue. -->
+            <HStack when="{tagMode &amp;&amp; currentPara === $item.para}" verticalAlignment="center" gap="$space-1" wrapContent="true">
+              <Text variant="secondary" fontSize="$fontSize-sm" value="Drag across words, or double-click one, to mark a voice ·" />
+              <Button size="xs" variant="ghost" label="Edit text"
+                onClick="
+                  Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                                    body: { ev: 'samples-off', by: 'card', para: $item.para } });
+                  setSamples(false);
+                " />
+            </HStack>
             <!-- Its play, pause and seek set paraClock, which the left
                  pane's video follows. -->
             <MediaPlayer id="paraPlayer" kind="audio" preload="none" width="100%" when="{$item.kept > 0}" src="{playUrl($item)}"
