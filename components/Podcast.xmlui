@@ -23,7 +23,7 @@
 <Component name="Podcast"
   var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
   var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.videoSeek="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
-  var.videoPara="{null}" var.parasSeen="{null}" var.videoPlaying="{false}" var.videoCmd="{null}"
+  var.videoPara="{null}" var.parasSeen="{null}" var.videoPlaying="{false}" var.videoCmd="{null}" var.stopAt="{null}" var.stopFrom="{null}"
   var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
 
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -287,6 +287,17 @@
       const c = videoCmd;
       if (!c || c.para !== currentPara || !followItem() || videoPara !== currentPara) return;
       videoCmd = null;
+      // A selection (samples-play-selection): start at its first word and
+      // stop where the word after its last begins (stopAt, checked on the
+      // video's timeUpdate); to null plays on to the clip's end.
+      if (c.play && c.from !== undefined) {
+        paraVideo.seek(c.from);
+        stopFrom = c.from;
+        stopAt = c.to;
+      } else if (c.play) {
+        stopFrom = null;
+        stopAt = null;
+      }
       if (c.play) {
         try {
           const p = paraVideo.play();
@@ -295,12 +306,24 @@
           logPlay(why, String((err && err.message) || err));
         }
       } else paraVideo.pause();
-      logPlay(why, null, c.play);
+      logPlay(why, null, c.play, c.from, c.to);
     }
-    function logPlay(why, rejected, play) {
+    // The selection's clip times, from the paragraph's marks ([offset,
+    // seconds, id]) and its end words' ids: {from, to}, to null when the
+    // selection runs to the paragraph's last kept word; null if an end
+    // isn't among the kept words.
+    function selectionTimes(m, a, b) {
+      let k0 = m.findIndex((x) => x[2] === a), k1 = m.findIndex((x) => x[2] === b);
+      if (k0 < 0 || k1 < 0) return null;
+      if (k0 > k1) { const k = k0; k0 = k1; k1 = k; }
+      return { from: m[k0][1], to: k1 + 1 < m.length ? m[k1 + 1][1] : null };
+    }
+    // (Not "from" as a name: XMLUI's script parser takes a bare from as a
+    // keyword and leaves the expression unclosed; as a key it's fine.)
+    function logPlay(why, rejected, play, start, end) {
       Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: rejected ? { ev: 'play', why, para: currentPara, rejected }
-                                       : { ev: 'play', why, para: currentPara, play } });
+                                       : { ev: 'play', why, para: currentPara, play, from: start, to: end } });
     }
     // The current paragraph re-rendered: its new clip loads at 0, paused,
     // and a seek asked of the old one is dropped.
@@ -462,7 +485,18 @@
           preload="metadata" src="{followItem() ? playUrl(followItem()) : undefined}"
           poster="{followItem() ? posterUrl(followItem()) : undefined}"
           onLoadedMetadata="videoPara = currentPara; videoPlaying = false; applySeek('loaded'); applyPlay('loaded')"
-          onPlay="videoPlaying = true" onPause="videoPlaying = false" onEnded="videoPlaying = false" />
+          onPlay="videoPlaying = true" onPause="videoPlaying = false"
+          onEnded="videoPlaying = false; stopAt = null"
+          onTimeUpdate="(e) => {
+            if (stopAt === null || e.currentTime &lt; stopAt) return;
+            stopAt = null;
+            paraVideo.pause();
+            Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
+                              body: { ev: 'play-stop', para: currentPara, at: e.currentTime } });
+          }"
+          onSeeked="(e) => {
+            if (stopAt !== null &amp;&amp; (e.currentTime &lt; stopFrom - 0.05 || e.currentTime > stopAt)) stopAt = null;
+          }" />
         <ChangeListener listenTo="{videoSeek}" onDidChange="applySeek('caret')" />
         <ChangeListener listenTo="{videoCmd}" onDidChange="applyPlay('card')" />
         <!-- Another paragraph chosen: its clip loads at 0, paused; a seek
@@ -932,8 +966,21 @@
                  a click does here. -->
             <HStack when="{currentPara === $item.para}" verticalAlignment="center" gap="$space-1" wrapContent="true">
             <Button when="{$item.kept > 0}" size="xs" variant="ghost"
-              icon="{videoPlaying ? 'pause' : 'play'}" label="{videoPlaying ? 'Pause' : 'Play'}"
-              onClick="videoCmd = { para: $item.para, play: !videoPlaying, n: Date.now() }" />
+              icon="{videoPlaying ? 'pause' : 'play'}"
+              label="{videoPlaying ? 'Pause' : (tagMode &amp;&amp; anchor !== null &amp;&amp; focus !== null ? 'Play selection' : 'Play')}"
+              onClick="
+                if (videoPlaying || !tagMode || anchor === null || focus === null) {
+                  videoCmd = { para: $item.para, play: !videoPlaying, n: Date.now() };
+                  return;
+                }
+                if (!marks) {
+                  marks = Actions.callApi({ url: window.STUDIO_API + '/transcripts/marks?source=' + encodeURIComponent(source) + '&amp;para=' + $item.para,
+                                            method: 'get', invalidates: [] }) || [];
+                }
+                const s = selectionTimes(marks, anchor, focus);
+                videoCmd = s ? { para: $item.para, play: true, from: s.from, to: s.to, n: Date.now() }
+                             : { para: $item.para, play: true, n: Date.now() };
+              " />
             <Text when="{!tagMode}" variant="secondary" fontSize="$fontSize-sm"
               value="{editReady ? 'Editing · saves when you click outside' : 'Click the text to edit'}" />
             <!-- The same line in Samples (workspace-samples-hint-edit-text;

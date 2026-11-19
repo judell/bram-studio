@@ -2940,7 +2940,9 @@ def para_marks(db, source, para, duration):
     # and in its rendered audio (para_audio's pieces, end to end): a list of
     # [character offset, seconds]. The editor moves the paragraph's player to
     # the word the caret lands on.
-    rows = db.execute("SELECT i, t0, kept, coalesce(shown, text) FROM words WHERE source = ? AND para = ? "
+    # Each mark also carries the word's id, [offset, seconds, id], so the
+    # Samples view can play a selection by its words (samples-play-selection).
+    rows = db.execute("SELECT i, t0, kept, coalesce(shown, text), id FROM words WHERE source = ? AND para = ? "
                       "ORDER BY i", (source, para)).fetchall()
     if not any(r[2] for r in rows):
         return []
@@ -2950,13 +2952,13 @@ def para_marks(db, source, para, duration):
         before.append(out)
         out += b - a
     marks, c = [], 0
-    for _, t0, kept, w in rows:
+    for _, t0, kept, w, wid in rows:
         if not kept:
             continue
         # The piece holding the word's start; a start just before its piece
         # (an edge placed by the sound) counts as the piece's start.
         t = next((before[n] + max(0.0, t0 - a) for n, (a, b) in enumerate(pieces) if t0 < b), out)
-        marks.append([c, round(t, 3)])
+        marks.append([c, round(t, 3), wid])
         c += len(w) + 1
     return marks
 
@@ -3345,7 +3347,7 @@ def final_words(db, source, info):
         rows = db.execute("SELECT id, coalesce(shown, text), speaker_id, speaker_how, speaker_unsure FROM words "
                           "WHERE source = ? AND para = ? AND kept = 1 ORDER BY i", (source, clip["para"])).fetchall()
         marks = para_marks(db, source, clip["para"], duration)
-        for (wid, w, spk, how, unsure), (_, t) in zip(rows, marks):
+        for (wid, w, spk, how, unsure), (_, t, *_) in zip(rows, marks):
             out.append([wid, w, spk, how, 1 if (how != "tag" and (unsure or spk is None)) else 0,
                         round(clip["at"] + t, 2)])
     return out
