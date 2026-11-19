@@ -5,10 +5,12 @@
 # you allow it on this computer; judell/bram#498). It doesn't use a
 # "server" entry: that would make the server the app's address (Studio's
 # page comes from Bram's own server), fix its port, and stop it when Bram
-# quits. Running this again is harmless: it reuses a running server.
+# quits. Running this again is harmless: it reuses a running server, or
+# restarts one running older code (Bram doesn't stop it on quit).
 #
-#   ./start.sh            start it, or say it's running (and whether it's
-#                         running code older than the files on disk)
+#   ./start.sh            start it; or say it's running; or, when it's
+#                         running code older than the files on disk and
+#                         nothing is under way, restart it
 #   ./start.sh --restart  stop it and start it again, unless a narration,
 #                         render or export is under way
 #   ./start.sh --stop     stop it, with the same exception; says so when
@@ -96,37 +98,73 @@ if [ -z "$pid" ] || ! ours "$pid"; then
   start; exit $?
 fi
 
-if [ "$1" != "--restart" ] && [ "$1" != "--stop" ]; then
-  echo "Studio's server is already running on port $PORT (PID $pid, since $(lstart "$pid"))."
+# The server file that changed after the running server started (so it's
+# running older code), or nothing.
+stale() {
   since=$(started "$pid")
   for f in serve_media.py studio_paths.py overlay.py; do
     if [ -f "$f" ] && [ "$(stat -f %m "$f")" -gt "$since" ]; then
-      echo "$f changed after it started, so it's running older code: ./start.sh --restart"
-      break
+      echo "$f"
+      return
     fi
   done
-  exit 0
+}
+
+# Why the server can't be stopped now, or nothing: a narration, or a child
+# process (a render, export or the recorder). Shared by the stale restart
+# below and by --restart / --stop, so they can't drift.
+busy() {
+  if ! curl -s "$URL/narrate/status" | grep -q '"id": null'; then
+    echo "a narration is under way (or /narrate/status didn't answer)"
+    return
+  fi
+  kids=$(pgrep -P "$pid")
+  if [ -n "$kids" ]; then
+    echo "the server is running something (a render, export or the recorder):"
+    ps -o pid,command -p "$(echo $kids | tr ' ' ',')"
+  fi
+}
+
+stop_server() {
+  kill "$pid"
+  i=0
+  while [ -n "$(listener)" ] && [ $i -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
+  if [ -n "$(listener)" ]; then
+    echo "The server (PID $pid) didn't stop." >&2
+    return 1
+  fi
+}
+
+if [ "$1" != "--restart" ] && [ "$1" != "--stop" ]; then
+  # Running already. A server running older code than the files on disk
+  # (after a pull, say) is restarted, so a Bram launch, which runs this
+  # script, loads the new code; Bram never stops the server on quit
+  # (start-sh-restarts-stale-server). Never while something is under way.
+  f=$(stale)
+  if [ -z "$f" ]; then
+    echo "Studio's server is already running on port $PORT (PID $pid, since $(lstart "$pid"))."
+    exit 0
+  fi
+  why=$(busy)
+  if [ -n "$why" ]; then
+    echo "Studio's server is running on port $PORT (PID $pid), but $f changed after it started, so it's running older code."
+    echo "Not restarting it, because $why"
+    echo "Run ./start.sh --restart once that's done."
+    exit 0
+  fi
+  echo "$f changed after Studio's server (PID $pid) started; restarting it to load the new code."
+  stop_server || exit 1
+  start; exit $?
 fi
 
 # --restart and --stop: not while something is under way.
 if [ "$1" = "--stop" ]; then verb="stopping"; else verb="restarting"; fi
-if ! curl -s "$URL/narrate/status" | grep -q '"id": null'; then
-  echo "Not $verb: a narration is under way (or /narrate/status didn't answer)." >&2
+why=$(busy)
+if [ -n "$why" ]; then
+  echo "Not $verb: $why" >&2
   exit 1
 fi
-kids=$(pgrep -P "$pid")
-if [ -n "$kids" ]; then
-  echo "Not $verb: the server is running something (a render, export or the recorder):" >&2
-  ps -o pid,command -p "$(echo $kids | tr ' ' ',')" >&2
-  exit 1
-fi
-kill "$pid"
-i=0
-while [ -n "$(listener)" ] && [ $i -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
-if [ -n "$(listener)" ]; then
-  echo "The server (PID $pid) didn't stop." >&2
-  exit 1
-fi
+stop_server || exit 1
 if [ "$1" = "--stop" ]; then
   echo "Studio's server (PID $pid) has stopped."
   exit 0

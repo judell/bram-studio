@@ -21,9 +21,11 @@ First read the "Starting with Bram" line of `./check.sh` (below): when it says
 `waiting`, the user's **Allow** starts the server, not you.
 
 Run `./start.sh`. It starts `serve_media.py` in the background, or reports that
-it is already running. If it says the server is running code older than the
-files on disk, suggest `./start.sh --restart`. Never restart while a narration,
-render or export is under way (`start.sh` refuses itself in that case).
+it is already running. A running server whose code is older than the files on
+disk (after a pull, say) it restarts by itself, unless a narration, render or
+export is under way: then it says so, and `./start.sh --restart` is for once
+that's done. Never restart while one is under way (`start.sh` refuses itself in
+that case).
 
 `start.sh` prints the port it's on: 8765, or the next free one when
 another checkout's Studio holds it. The port is also recorded in
