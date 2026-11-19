@@ -267,15 +267,16 @@
         };
       })();
     </script>
-    <!-- XMLUI build: the xmlui-org/xmlui#3969 startup-churn bundle (the
-         issue's comment 7001923155; the same bundle Bram vendored in 42854bd9),
-         a clean merge (a289cb21a) of everything in the previous build
-         (candidates 1-4, #3941 steps 1-2 with read-scoped rendering behind
-         xmluiConfig.readScopedRendering, #3960's selection APIs) plus #3969:
-         the bounded _xsLogs, the localStorage xsVerbose opt-in fix, and
-         three startup-churn fixes (layout resolver, useCombinedState memo,
-         shared per-type theme classes). 5,406,474 bytes,
-         sha256 2802afdd…d753f. Previous: e20a00e6…666e.
+    <!-- XMLUI build: xmlui-org/xmlui main at 57bc5f271
+         (vendor-xmlui-main-57bc5f271): 0.14.28 plus, as merged PRs, #3963
+         (#3941 candidates 1-4, read sets), #3964 (read-scoped rendering
+         behind xmluiConfig.readScopedRendering), #3960 and #3966 (TextArea
+         and Items selection APIs), #3972 (startup churn: layout resolver,
+         useCombinedState memo, shared per-type theme classes) and #3973
+         (bounded _xsLogs, the localStorage xsVerbose opt-in fix). The same
+         features as the previous build, now from main instead of a local
+         merge. 5,407,842 bytes, sha256 14b0021d…13dbb. Previous:
+         2802afdd…d753f (the #3969 bundle Bram vendored in 42854bd9).
          Revert to /__vendor/xmlui-standalone.umd.js for Bram's copy. -->
     <script src="/vendor/xmlui-standalone.umd.js"></script>
     <!-- xmlui-dnd-list extension (DndItems), Bram's vendored copy; must load after
