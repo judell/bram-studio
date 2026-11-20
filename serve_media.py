@@ -58,7 +58,8 @@ Editing by text: GET /transcripts/text?source= is the kept words as text;
 POST /transcripts/edit {source, text} saves an edited copy (deleted words are
 cut, words changed one for one are corrections), /transcripts/undo {source}
 takes the last change back, /transcripts/restore {source, ids} puts cut words
-back; GET /transcripts/cuts?source= is the edit list, cut spans snapped to
+back, /transcripts/unsaid {source, ids, unsaid} marks cut words not spoken
+(out of the text, their sound left in) or not; GET /transcripts/cuts?source= is the edit list, cut spans snapped to
 quiet and the kept intervals on the edited timeline. Each change announces
 {"changed": "words"}. Cut edges are placed by the sound (align.py, a CTC
 model under sherpa-onnx), cached in word_edges. POST /transcripts/check
@@ -2478,8 +2479,8 @@ def describe_step(db, source, ch):
     # the paragraph named by its opening words (the page doesn't number
     # them). Returns (text, the first paragraph it touched).
     cut, back, fixed = ch.get("cut", []), ch.get("restored", []), ch.get("corrected", [])
-    tagged = ch.get("tagged", [])
-    ids = cut + back + [c[0] for c in fixed] + [t["id"] for t in tagged]
+    tagged, flipped = ch.get("tagged", []), ch.get("unsaid", [])
+    ids = cut + back + [c[0] for c in fixed] + [t["id"] for t in tagged] + [u[0] for u in flipped]
     if not ids:
         return "", None
     paras = sorted({r[0] for r in db.execute(
@@ -2500,6 +2501,8 @@ def describe_step(db, source, ch):
             if spk is not None else None
         what = (f"tag {n(len(tagged), 'word', 'words')} as {name}" if name
                 else f"clear the speaker from {n(len(tagged), 'word', 'words')}")
+    elif flipped and not (cut or back or fixed):
+        what = f"mark {n(len(flipped), 'word', 'words')} " + ("not spoken" if flipped[0][2] == "unsaid" else "spoken")
     elif ch.get("reason") == "tic":
         what = "elide " + n(len(cut), "tic", "tics")
     elif ch.get("reason") == "replace":
@@ -2677,7 +2680,8 @@ def replace_words(db, source, before, after):
 
 
 def record_text_change(db, source, changes, reason="edit"):
-    # Apply {cut, restored, corrected: [[id, old shown, new shown]]} and keep
+    # Apply {cut, restored, corrected: [[id, old shown, new shown]], unsaid:
+    # [[id, was, now]] (cut_reason)} and keep
     # it as one Undo step. Nothing to do records nothing.
     if not any(changes.values()):
         return False
@@ -2688,6 +2692,7 @@ def record_text_change(db, source, changes, reason="edit"):
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?", [(reason, i) for i in changes["cut"]])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in changes["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in changes["corrected"]])
+    db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(now, i) for i, _, now in changes.get("unsaid", [])])
     db.execute("DELETE FROM transcript_edits WHERE source = ? AND undone = 1", (source,))
     db.execute("INSERT INTO transcript_edits (source, created_at, changes) VALUES (?, ?, ?)",
                (source, datetime_now(), json.dumps({**changes, "reason": reason})))
@@ -2705,6 +2710,7 @@ def undo_text_edit(db, source):
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
                    [(was.get(str(i), "edit"), i) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(old, i) for i, old, _ in ch["corrected"]])
+    db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(was_, i) for i, was_, _ in ch.get("unsaid", [])])
     # A tag step: each word's speaker as it was before (another speaker's
     # tag, a match, or none), so Undo is exact.
     db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = ? WHERE id = ?",
@@ -2724,6 +2730,7 @@ def redo_text_edit(db, source):
                    [(ch.get("reason", "edit"), i) for i in ch["cut"]])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in ch["corrected"]])
+    db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(now, i) for i, _, now in ch.get("unsaid", [])])
     db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = ? WHERE id = ?",
                    [(t["now"][0], t["now"][1], t["now"][2], t["id"]) for t in ch.get("tagged", [])])
     db.execute("UPDATE transcript_edits SET undone = 0 WHERE id = ?", (row[0],))
@@ -2863,36 +2870,49 @@ def text_cuts(db, source, duration):
             j += 1
         runs.append((k, j))
         k = j + 1
-    edges = aligned_edges(db, source, [rows[k][1] for k, _ in runs if k > 0]
-                          + [rows[j + 1][1] for _, j in runs if j + 1 < len(rows)])
+    # An unsaid word (cut_reason 'unsaid') has no sound to cut: a run's audio
+    # edges come from its words that are not unsaid (ea..eb), and a run of
+    # only unsaid words is a span with t0 == t1 (listed, nothing cut).
+    eff, silent = [], []
+    for k, j in runs:
+        said = [n for n in range(k, j + 1) if rows[n][6] != "unsaid"]
+        eff.append((said[0], said[-1]) if said else (k, j))
+        silent.append(not said)
+    edges = aligned_edges(db, source, [rows[ea][1] for ea, _ in eff if ea > 0]
+                          + [rows[eb + 1][1] for (_, eb), quiet_run in zip(eff, silent)
+                             if eb + 1 < len(rows) and not quiet_run])
     quiet = None
     try:
         verdicts = json.load(open(os.path.join(transcript_folder(source), "check.json")))["spans"]
     except (OSError, ValueError, KeyError):
         verdicts = {}
     spans = []
-    for k, j in runs:
+    for (k, j), (ea, eb), quiet_run in zip(runs, eff, silent):
         unaligned = False
-        if k == 0:
+        if ea == 0:
             a = 0.0
-        elif rows[k][1] in edges:
-            a = edges[rows[k][1]][0]
+        elif rows[ea][1] in edges:
+            a = edges[rows[ea][1]][0]
         else:
             quiet = quiet if quiet is not None else silences(source)
-            a, unaligned = snap(rows[k][2], quiet, rows[k - 1][3], rows[k][2]), True
-        if j + 1 == len(rows):
+            a, unaligned = snap(rows[ea][2], quiet, rows[ea - 1][3], rows[ea][2]), True
+        if quiet_run:
+            b = a
+        elif eb + 1 == len(rows):
             b = duration
-        elif rows[j + 1][1] in edges:
-            b = edges[rows[j + 1][1]][0]
+        elif rows[eb + 1][1] in edges:
+            b = edges[rows[eb + 1][1]][0]
         else:
             quiet = quiet if quiet is not None else silences(source)
-            b, unaligned = snap(rows[j][3], quiet, rows[j][3], rows[j + 1][2]), True
+            b, unaligned = snap(rows[eb][3], quiet, rows[eb][3], rows[eb + 1][2]), True
         reasons = sorted({r[6] or "edit" for r in rows[k:j + 1]})
         spans.append({"ids": [r[0] for r in rows[k:j + 1]], "text": " ".join(r[4] for r in rows[k:j + 1]),
-                      "t0": round(a, 3), "t1": round(max(a, b), 3), "reason": "+".join(reasons),
+                      "t0": round(a, 3), "t1": round(a if quiet_run else max(a, b), 3), "reason": "+".join(reasons),
                       "unaligned": unaligned, "check": verdicts.get(str(rows[k][0]))})
     kept, at, out = [], 0.0, 0.0
     for s in spans:
+        if s["t1"] <= s["t0"]:
+            continue  # nothing cut (a not-spoken run): no join here
         if s["t0"] > at:
             kept.append({"src0": round(at, 3), "src1": s["t0"], "out0": round(out, 3)})
             out += s["t0"] - at
@@ -2965,14 +2985,16 @@ def para_marks(db, source, para, duration):
 
 def audio_versions(db, source):
     # Each paragraph's sound version: a hash of which of its words are kept,
+    # and which cut words are not spoken (their sound stays in: text_cuts),
     # all its render depends on besides the settings in its file name. Not
     # paragraphs()' version, which also covers corrections and speakers, so
     # that tagging or matching voices neither re-renders a paragraph nor makes
     # the final video look out of date. {para: version}, paragraphs with any
     # word kept only.
     h, kept = {}, set()
-    for para, wid, k in db.execute("SELECT para, id, kept FROM words WHERE source = ? ORDER BY i", (source,)):
-        h.setdefault(para, hashlib.sha1()).update(f"{wid}:{k};".encode())
+    for para, wid, k, reason in db.execute("SELECT para, id, kept, cut_reason FROM words WHERE source = ? ORDER BY i",
+                                           (source,)):
+        h.setdefault(para, hashlib.sha1()).update(f"{wid}:{'u' if not k and reason == 'unsaid' else k};".encode())
         if k:
             kept.add(para)
     return {p: x.hexdigest()[:10] for p, x in h.items() if p in kept}
@@ -4554,7 +4576,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/segments/speaker":
             return self.label_segments()
         if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore",
-                         "/transcripts/elide", "/transcripts/replace"):
+                         "/transcripts/elide", "/transcripts/replace", "/transcripts/unsaid"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
@@ -5133,6 +5155,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result = replace_words(db, source, body["before"].strip(), body["after"].strip())
                 if "error" in result:
                     return self.send_json(400, result)
+            elif op == "unsaid":
+                # {ids, unsaid}: cut words only. true marks them not spoken
+                # (their sound stays in); false makes them an ordinary cut.
+                ids = [int(i) for i in body.get("ids") or []]
+                want = bool(body.get("unsaid"))
+                flips = [[i, r, "unsaid" if want else "edit"] for i, r in db.execute(
+                    f"SELECT id, coalesce(cut_reason, 'edit') FROM words WHERE source = ? AND kept = 0 "
+                    f"AND id IN ({','.join('?' * len(ids))})", [source, *ids])
+                    if (r == "unsaid") != want] if ids else []
+                record_text_change(db, source, {"cut": [], "restored": [], "corrected": [], "unsaid": flips})
+                result = {"unsaid": len(flips)}
             elif op == "elide":
                 para = body.get("para")
                 result = elide_tics(db, source, dry=bool(body.get("dryRun")), para=None if para is None else int(para))
