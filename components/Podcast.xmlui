@@ -79,7 +79,7 @@
       else if (m.changed === 'speakers') { segments.refetch(); speakerStats.refetch(); paras.refetch(); }
       else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); opinionList.refetch(); if (tagMode) samples.refetch(); }
       else if (m.samplesChecked) { if (m.samplesChecked === source &amp;&amp; tagMode) samples.refetch(); }
-      else if (m.opinion) { if (m.opinion === source) { opinionBusy = !m.done; opinionProgress = m.done ? null : m; } }
+      else if (m.opinion) { if (m.opinion === source) { opinionBusy = !m.done &amp;&amp; !m.failed || (m.queued &amp;&amp; m.queued.length > 0); opinionProgress = m.done || m.failed ? null : m; if (m.done || m.failed) opinionList.refetch(); } }
       else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
@@ -376,9 +376,36 @@
         post('/transcripts/opinion', { source, engine });
         opinionBusy = true;
         opinionProgress = null;
+        opinionList.refetch();
       } catch (e) {
         toast.error(e.message);
       }
+    }
+    // What is hearing now: the live push, else what the server says (a page
+    // opened or reloaded mid-run).
+    function hearNow() {
+      const o = opinionList.value;
+      if (opinionProgress && opinionProgress.engine) return opinionProgress;
+      return o && o.hearing ? { ...o.hearing, queued: o.queued || [] } : null;
+    }
+    // The engines that could still be asked and aren't hearing or queued.
+    function hearable() {
+      const o = opinionList.value;
+      const h = hearNow();
+      return ((o && o.available) || []).filter((a) => !h || (a.name !== h.engine && (h.queued || []).indexOf(a.name) < 0));
+    }
+    function hearLine() {
+      const o = opinionList.value;
+      const h = hearNow();
+      const parts = [];
+      if (o && o.engines) parts.push('heard by ' + (o.engines.length ? o.engines.join(', ') : 'none'));
+      if (h) {
+        parts.push('hearing ' + h.engine + '…' + (h.duration_s ? ' ' + stamp(h.done_s || 0) + ' of ' + stamp(h.duration_s) : ''));
+        if (h.queued && h.queued.length) parts.push('then ' + h.queued.join(', '));
+      }
+      const f = (o && o.failed) || {};
+      Object.keys(f).forEach((k) => parts.push(k + ' failed: ' + f[k]));
+      return parts.join(' · ');
     }
     function otherRows() {
       const o = opinionList.value;
@@ -387,9 +414,6 @@
     }
     function otherSummary() {
       const o = opinionList.value;
-      if (opinionBusy) return 'Other readings: hearing'
-        + (opinionProgress && opinionProgress.engine ? ' ' + opinionProgress.engine : '') + '…'
-        + (opinionProgress && opinionProgress.duration_s ? ' ' + stamp(opinionProgress.done_s) + ' of ' + stamp(opinionProgress.duration_s) : '');
       if (!o || !o.engines || o.engines.length === 0) return 'Other readings';
       const names = o.engines.join(', ');
       return (currentPara === null ? 'Other readings (' + names + '): ' : 'Other readings in this paragraph (' + names + '): ') + otherRows().length;
@@ -583,8 +607,19 @@
         <!-- Which view, from the page (Main.xmlui's nav): Workspace is
              Edit text, Raw transcript is Transcript. -->
             <VStack when="{view === 'Edit text' &amp;&amp; transcribed()}" gap="$space-2">
-              <Text variant="secondary" when="{!!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].model)}"
-                value="{'Transcribed by ' + transcript.value[0].model.replace(/^ggml-/, '').replace(/\.bin$/, '')}" />
+              <HStack when="{!!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].model)}" verticalAlignment="center" gap="$space-2" wrapContent="true">
+                <Text variant="secondary"
+                  value="{'Transcribed by ' + transcript.value[0].model.replace(/^ggml-/, '').replace(/\.bin$/, '') + (opinionList.value ? ' · ' + hearLine() : '')}" />
+                <Spinner when="{!!hearNow()}" />
+                <Items data="{hearable()}">
+                  <Button size="xs" variant="outlined" label="{'Hear with ' + $item.label}"
+                    enabled="{!checkBusy &amp;&amp; !progress}"
+                    tooltip="Have this engine hear the whole recording once and list where it disagrees with the text (the full whisper models take about 8 minutes for 48)"
+                    onClick="startOpinion($item.name)" />
+                </Items>
+                <Button when="{hearable().length > 1}" size="xs" variant="outlined" label="Hear with all"
+                  enabled="{!checkBusy &amp;&amp; !progress}" onClick="startOpinion()" />
+              </HStack>
               <VStack gap="$space-2">
                 <HStack verticalAlignment="center">
                   <Button size="sm" variant="outlined" label="Undo"
@@ -755,15 +790,8 @@
         <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
           summary="{otherSummary()}">
           <VStack gap="$space-1">
-            <HStack when="{opinionBusy || (opinionList.value &amp;&amp; opinionList.value.available &amp;&amp; opinionList.value.available.length > 0)}" verticalAlignment="center" gap="$space-2" wrapContent="true">
-              <Items data="{(opinionList.value &amp;&amp; opinionList.value.available) || []}">
-                <Button size="sm" variant="outlined" label="{'Hear it again: ' + $item.label}"
-                  enabled="{!opinionBusy &amp;&amp; !checkBusy &amp;&amp; !progress}"
-                  tooltip="Have this engine hear the recording once and list where it disagrees with the text (the full whisper models take about 8 minutes for 48)"
-                  onClick="startOpinion($item.name)" />
-              </Items>
-              <Spinner when="{opinionBusy}" />
-            </HStack>
+            <Text when="{!!hearNow()}" variant="secondary"
+              value="{hearNow().engine + ' is still listening; its readings come when it\'s done'}" />
             <Items data="{otherRows()}">
               <VStack gap="0" paddingBottom="$space-2">
                 <HStack verticalAlignment="center" gap="$space-2" wrapContent="true">

@@ -740,6 +740,9 @@ PODCAST_WORD_SETTINGS = {
     "fillers": "um, umm, uh, uhm, er, ah, hmm, mm",  # cut wherever they're kept (elide_tics)
     "repeatsToKeep": "yeah, no, very, blah, bye",  # said twice on purpose: not cut as stutters
     "transcribeModel": "",  # a ggml-*.bin in WHISPER_MODELS; "" = the first of TRANSCRIBE_MODELS installed
+    # "1"/"0" (there is no boolean kind): after a transcription finishes, the other engines hear the
+    # recording in the background (queue_opinions)
+    "opinionsOnTranscribe": "1",
 }
 
 
@@ -2124,6 +2127,12 @@ def run_transcript(source, path, prompt, model):
     except Exception as e:
         print(f"transcribe failed source={source} error={e}", flush=True)
         finish(f"failed: {e}")
+        return
+    try:
+        if podcast_settings()["opinionsOnTranscribe"] == "1":
+            queue_opinions(source)
+    except Exception as e:
+        print(f"opinion queue failed source={source} error={e}", flush=True)
 
 
 def datetime_now():
@@ -2197,7 +2206,7 @@ NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   provisional INTEGER NOT NULL DEFAULT 0
 )"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
-opining = {}  # source -> {"engine", "done_s", "duration_s"} while a second opinion is heard (run_opinion)
+opining = {}  # source -> {"engine", "queued": [...], "done_s", "duration_s"} while a second opinion is heard (run_opinion)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
 SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
     "~/.local/share/speech-models/nemo_en_titanet_small.onnx"))
@@ -4310,11 +4319,16 @@ def opinion_engines():
     return {**found, **OPINION_ENGINES}
 
 
+OPINION_ORDER = ("apple", "parakeet")  # fastest first; the whisper models follow
+OPINION_FAILED = {}  # source -> {engine: reason} until that engine succeeds
+
+
 def run_opinion(source, engine, prompt, duration):
-    # The background half of POST /transcripts/opinion: an engine hears the
-    # source once, into opinion-<engine>.json beside the transcript. Progress
-    # as {"opinion": source, engine, done: false, done_s, duration_s} at most
-    # every 2 s, as a transcription's; then done: true.
+    # One engine hears the source once, into opinion-<engine>.json beside the
+    # transcript. Progress as {"opinion": source, engine, done: false, done_s,
+    # duration_s, queued} at most every 2 s, as a transcription's; then done:
+    # true, or failed: <reason> (the queue goes on either way). It leaves
+    # opining[source] to run_opinion_queue, which owns the whole run.
     t_start = time.time()
     folder = transcript_folder(source)
     state = opining[source]
@@ -4325,17 +4339,74 @@ def run_opinion(source, engine, prompt, duration):
         if time.time() - last_push[0] > 2:
             last_push[0] = time.time()
             push({"opinion": source, "engine": engine, "done": False,
-                  "done_s": done_s, "duration_s": state["duration_s"]})
+                  "done_s": done_s, "duration_s": state["duration_s"], "queued": list(state["queued"])})
     try:
         opinion_engines()[engine]["run"](source, folder, prompt, duration, progress)
         print(f"opinion done source={source} engine={engine} secs={time.time() - t_start:.1f}", flush=True)
+        OPINION_FAILED.get(source, {}).pop(engine, None)
+        return None
     except Exception as e:
         print(f"opinion failed source={source} engine={engine} error={e}", flush=True)
-    finally:
+        OPINION_FAILED.setdefault(source, {})[engine] = str(e)
+        return str(e)
+
+
+def run_opinion_queue(source, prompt, duration):
+    # The engines of opining[source] hear the source one after another. Before
+    # each, wait until no transcription or round-trip check runs: a sleep-poll
+    # every 2 s is enough here, since the check and a transcription are rare
+    # and short-lived next to the queue.
+    state = opining[source]
+    while True:
+        while transcribing or checking:
+            time.sleep(2)
+        engine = state["engine"]
+        print(f"opinion start source={source} engine={engine}", flush=True)
+        push({"opinion": source, "engine": engine, "done": False, "done_s": 0,
+              "duration_s": state["duration_s"], "queued": list(state["queued"])})
+        failed = run_opinion(source, engine, prompt, duration)
         with TRANSCRIBE_LOCK:
-            opining.pop(source, None)
-        push({"opinion": source, "engine": engine, "done": True})
+            more = bool(state["queued"])
+            if more:
+                state["engine"], state["done_s"] = state["queued"].pop(0), 0
+            else:
+                opining.pop(source, None)
+        if failed:
+            push({"opinion": source, "engine": engine, "failed": failed, "queued": list(state["queued"])})
+        else:
+            push({"opinion": source, "engine": engine, "done": True, "queued": list(state["queued"])})
         notify("words")
+        if not more:
+            return
+
+
+def queue_opinions(source, engines=None):
+    # Queue the engines (default: every available one not yet heard, in
+    # OPINION_ORDER, then the whisper models) for source, minus any already
+    # running or queued; starts the queue thread unless one runs for source.
+    # Returns the engines added.
+    db = sqlite3.connect(DB)
+    row = db.execute("SELECT model, prompt, duration_s FROM transcripts WHERE source = ? AND status = 'done'",
+                     (source,)).fetchone()
+    if not row or not os.path.isfile(os.path.join(transcript_folder(source), "audio-16k.wav")):
+        return []
+    heard = {os.path.basename(f)[len("opinion-"):-len(".json")] for f in opinion_files(source)}
+    found = opinion_engines()
+    names = [n for n in OPINION_ORDER if n in found] + [n for n in found if n not in OPINION_ORDER]
+    wanted = engines if engines is not None else names
+    wanted = [n for n in names if n in wanted and (engines is not None or n not in heard)
+              and found[n]["available"](row[0])]
+    with TRANSCRIBE_LOCK:
+        state = opining.get(source)
+        if state:
+            wanted = [n for n in wanted if n != state["engine"] and n not in state["queued"]]
+            state["queued"].extend(wanted)
+            return wanted
+        if not wanted or transcribing or checking or opining:
+            return []
+        opining[source] = {"engine": wanted[0], "queued": wanted[1:], "done_s": 0, "duration_s": row[2] or 0}
+    threading.Thread(target=run_opinion_queue, args=(source, row[1], row[2] or 0), daemon=True).start()
+    return wanted
 
 
 OPINION_CACHE = {}  # path -> (mtime, words)
@@ -5085,10 +5156,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         heard = op[1] if op else []
         available = [{"name": n, "label": e["label"]} for n, e in opinion_engines().items()
                      if n not in heard and e["available"](have)]
+        with TRANSCRIBE_LOCK:
+            st = opining.get(source)
+            live = {"hearing": {"engine": st["engine"], "done_s": st["done_s"], "duration_s": st["duration_s"]}
+                    if st else None, "queued": list(st["queued"]) if st else [],
+                    "failed": dict(OPINION_FAILED.get(source, {}))}
         if not op:
-            return self.send_json(200, {"rows": [], "engines": [], "available": available})
+            return self.send_json(200, {"rows": [], "engines": [], "available": available, **live})
         rows, engines, at = op
-        self.send_json(200, {"engines": engines, "at": at, "rows": rows, "available": available,
+        self.send_json(200, {"engines": engines, "at": at, "rows": rows, "available": available, **live,
                              "paras": dict(collections.Counter(str(r["para"]) for r in rows))})
 
     def start_opinion(self):
@@ -5097,25 +5173,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # file name as "model" still names its engine.
         body = self.json_body()
         source = body.get("source") or ""
-        engine = body.get("engine") or opinion_stem(body.get("model") or "ggml-large-v3.bin")
+        engine = body.get("engine") or (opinion_stem(body["model"]) if body.get("model") else None)
         db = sqlite3.connect(DB)
         row = db.execute("SELECT model, prompt, duration_s FROM transcripts WHERE source = ? AND status = 'done'",
                          (source,)).fetchone()
         if not row:
             return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
-        entry = opinion_engines().get(engine)
-        if not entry or not entry["available"](row[0]):
-            return self.send_json(404, {"error": f"no engine {engine!r} available for {source!r}"})
+        if engine:
+            entry = opinion_engines().get(engine)
+            if not entry or not entry["available"](row[0]):
+                return self.send_json(404, {"error": f"no engine {engine!r} available for {source!r}"})
         if not os.path.isfile(os.path.join(transcript_folder(source), "audio-16k.wav")):
             return self.send_json(404, {"error": f"no audio for {source!r}; transcribe it again"})
+        # No engine: every one not yet heard (queue_opinions). With one: the
+        # same queue, so it joins the run if this source has one; 409 only when
+        # whisper is busy with something else.
         with TRANSCRIBE_LOCK:
-            if transcribing or checking or opining:
+            if (transcribing or checking or opining) and source not in opining:
                 return self.send_json(409, {"error": "whisper is busy (transcribing, checking or hearing); try again when it's done"})
-            opining[source] = {"engine": engine, "done_s": 0, "duration_s": row[2] or 0}
-        print(f"opinion start source={source} engine={engine}", flush=True)
-        threading.Thread(target=run_opinion, args=(source, engine, row[1], row[2] or 0), daemon=True).start()
-        push({"opinion": source, "engine": engine, "done": False, "done_s": 0, "duration_s": row[2] or 0})
-        self.send_json(200, {"source": source, "engine": engine, "opinion": True})
+        added = queue_opinions(source, [engine] if engine else None)
+        self.send_json(200, {"source": source, "engine": engine, "queued": added, "opinion": True})
 
     def play_para(self):
         # GET /transcripts/play?source=&para=&v=: a paragraph's edited audio

@@ -131,8 +131,10 @@ podcast.
   so they're spelled right. **Raw transcript** shows whisper's segments with their times.
 - **Other readings:** a second model (the full `ggml-large-v3`, when it's in the same
   folder, NVIDIA's Parakeet, fast and not whisper-derived, when its model is installed, or Apple's own
-  on-device engine on macOS 26, with nothing to download by hand) can hear the recording once, in the background (about 8 minutes for 48), under
-  **Other readings** in the Workspace (**Hear it again**). It lists where it disagrees with
+  on-device engine on macOS 26, with nothing to download by hand) hear the recording in the background (about 12 minutes for 48): they run on their own
+  after Transcribe, fastest first (turn that off in Settings), and the transcript line in the Workspace
+  shows which is hearing; **Hear with** buttons there run one again or all. They appear under
+  **Other readings** in the Workspace list where they disagree with
   the text, for the selected card or all of them: **Play** the stretch, or **Use this** to
   take its reading word for word (**Undo** takes it back).
 - **Editing (Workspace):** the transcript as plain text with no time codes, a paragraph per
