@@ -2549,14 +2549,17 @@ def align_words(a, b):
     # (word as written, less case and edge punctuation; its letters):
     # the same as written costs 0, the same letters written differently
     # ("Clawdrey" / "C-L-A-W-D-R-E-Y") 0.5, both "equal"; another word, in
-    # place, 1 ("replace"); cutting or inserting one, 1. Ties prefer the
-    # pairing, then a change in place. Unlike difflib's longest
+    # place, 1.01 ("replace"); cutting or inserting one, 1. The hair over 1
+    # keeps an anchor: "what they got this question" typed as "with the
+    # obvious question here" pairs question with question (three changes, a
+    # cut and an insert) rather than sliding every word one along (five
+    # changes). Ties prefer the pairing, then a change in place. Unlike difflib's longest
     # matching runs, this never trades a respelling for a cut plus an insert
     # when the respelling looks like a neighbour ("Quadri, C-L-A-W-D-R-E-Y"
     # → "Clawdrey, C-L-A-W-D-R-E-Y"). Quadratic: for a paragraph, not a
     # whole transcript.
     def sub(x, y):
-        return 0 if x[0] == y[0] else 0.5 if x[1] == y[1] else 1
+        return 0 if x[0] == y[0] else 0.5 if x[1] == y[1] else 1.01
 
     n, m = len(a), len(b)
     d = [[0] * (m + 1) for _ in range(n + 1)]
@@ -2613,19 +2616,38 @@ def apply_text_edit(db, source, text, para=None):
             changes["corrected"].append([word[0], word[2] if word[2] != word[3] else None,
                                          None if typed == word[3] else typed])
 
-    def restore(at, typed):
+    def restore(at, typed, carry=False):
         # Cut words between kept[at - 1] and kept[at], matched to typed words.
+        # Returns the typed words matched to nothing (counted ignored unless
+        # carry: the caller spreads them over kept words). With carry, typed
+        # words that come before a restored word ride on it ("truly
+        # interesting" on a restored "interesting"), so the order typed holds;
+        # only the words after the last restored one are returned.
         nonlocal ignored
         lo = kept[at - 1][1] if at > 0 else -1
         hi = kept[at][1] if at < len(kept) else 1 << 30
-        gone = db.execute(f"SELECT id, text FROM words WHERE source = ? AND kept = 0 AND i > ? AND i < ?{only} "
+        gone = db.execute(f"SELECT id, text, shown FROM words WHERE source = ? AND kept = 0 AND i > ? AND i < ?{only} "
                           "ORDER BY i", (source, lo, hi, *scope)).fetchall()
         m = difflib.SequenceMatcher(None, [word_key(g[1]) for g in gone], [word_key(t) for t in typed], autojunk=False)
-        matched = 0
+        matched, pending, tail = set(), [], 0
         for blk in m.get_matching_blocks():
+            if not blk.size:
+                continue
             changes["restored"] += [g[0] for g in gone[blk.a:blk.a + blk.size]]
-            matched += blk.size
-        ignored += len(typed) - matched
+            matched.update(range(blk.b, blk.b + blk.size))
+            if carry:
+                before = [t for k, t in enumerate(typed) if tail <= k < blk.b and k not in matched]
+                if before:
+                    gid, gtext, gshown = gone[blk.a]
+                    pending.append([gid, gshown, " ".join(before + [gshown or gtext])])
+                tail = blk.b + blk.size
+        left = [t for k, t in enumerate(typed) if k >= tail and k not in matched] if carry else \
+            [t for k, t in enumerate(typed) if k not in matched]
+        if carry:
+            changes["corrected"] += pending
+        else:
+            ignored += len(left)
+        return left
 
     # A paragraph (what the editor sends) is aligned by edit distance
     # (align_words); the whole transcript, too long for that, by difflib.
@@ -2634,6 +2656,22 @@ def apply_text_edit(db, source, text, para=None):
 
     ops = align_words([written(w[2]) for w in kept], [written(w) for w in new]) if para is not None else \
         difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    # align_words never emits a replace of unequal counts: a stretch typed
+    # over a different number of words comes out as a replace run beside a
+    # delete or insert run. Any such run holding both kept and typed words
+    # is one replace, so its typed words are spread over its kept words.
+    merged, run = [], []
+    for o in list(ops) + [("equal", 0, 0, 0, 0)]:
+        if o[0] != "equal":
+            run.append(o)
+            continue
+        if len(run) > 1 and run[-1][2] > run[0][1] and run[-1][4] > run[0][3]:
+            merged.append(("replace", run[0][1], run[-1][2], run[0][3], run[-1][4]))
+        else:
+            merged += run
+        run = []
+        merged.append(o)
+    ops = merged[:-1]
     for op, i1, i2, j1, j2 in ops:
         if op == "equal":
             for k in range(i2 - i1):
@@ -2644,10 +2682,45 @@ def apply_text_edit(db, source, text, para=None):
             for k in range(i2 - i1):
                 correct(kept[i1 + k], new[j1 + k])
         elif op == "replace":
-            changes["cut"] += [w[0] for w in kept[i1:i2]]
-            restore(i1, new[j1:j2])
+            # Typed words that match earlier cuts come back; the rest are spread
+            # over the stretch's kept words (spread_correction): one for one,
+            # the last carrying extras, kept words past the last typed one cut
+            # as not spoken. With nothing left to spread, the stretch is cut.
+            left = restore(i1, new[j1:j2], carry=True)
+            ids = [w[0] for w in kept[i1:i2]]
+            if not left:
+                changes["cut"] += ids
+            else:
+                sp = spread_correction(db, source, ids, left)
+                if "error" in sp:
+                    changes["cut"] += ids
+                    ignored += len(left)
+                else:
+                    changes["cut"] += sp["cut"]
+                    changes["corrected"] += sp["corrected"]
+                    if sp["unsaid"]:
+                        changes.setdefault("unsaid", []).extend(sp["unsaid"])
         else:  # insert
-            restore(i1, new[j1:j2])
+            # Typed words that match earlier cuts come back; the rest ride on
+            # the kept word before them (the one after, at the start), as
+            # extra words of its correction, so nothing typed is lost while
+            # there is a word to carry it.
+            left = restore(i1, new[j1:j2], carry=True)
+            if not left:
+                continue
+            if not kept:
+                ignored += len(left)
+                continue
+            anchor = kept[i1 - 1] if i1 > 0 else kept[0]
+            # The anchor as this edit already corrected it (a respelling
+            # beside the insertion), else as it stands.
+            own = next((new_ or anchor[3] for wid, _, new_ in changes["corrected"] if wid == anchor[0]), anchor[2])
+            words = [own] + left if i1 > 0 else left + [own]
+            sp = spread_correction(db, source, [anchor[0]], words)
+            if "error" in sp:
+                ignored += len(left)
+            else:
+                changes["corrected"] += sp["corrected"]
     record_text_change(db, source, changes)
     return {"cut": len(changes["cut"]), "restored": len(changes["restored"]),
             "corrected": len(changes["corrected"]), "ignored": ignored}
