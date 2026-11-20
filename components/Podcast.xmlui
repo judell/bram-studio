@@ -721,14 +721,14 @@
               <HStack verticalAlignment="start">
                 <Text width="50px" variant="secondary" value="{stamp($item.t1 - $item.t0)}" />
                 <Text when="{openCut !== $item.ids[0]}" width="*" maxLines="2"
-                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '') + ($item.reason.indexOf('unsaid') >= 0 ? '  (not spoken)' : '')}" />
+                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '') + ($item.reason.indexOf('unsaid') >= 0 ? '  (sound kept)' : '')}" />
                 <Text when="{openCut === $item.ids[0]}" width="*"
-                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '') + ($item.reason.indexOf('unsaid') >= 0 ? '  (not spoken)' : '')}" />
+                  value="{$item.text + ($item.reason.indexOf('tic') >= 0 ? '  (tic)' : '') + ($item.reason.indexOf('unsaid') >= 0 ? '  (sound kept)' : '')}" />
                 <Text when="{false &amp;&amp; $item.check &amp;&amp; $item.check.ok}" value="✓" tooltip="The last check heard this join as the text reads" />
                 <!-- Not spoken: out of the text, its sound left in (whisper wrote words nobody said). -->
                 <Button size="xs" variant="ghost"
-                  label="{$item.reason.indexOf('unsaid') < 0 ? 'Not spoken' : 'Spoken'}"
-                  tooltip="Whisper wrote these words but nobody said them: leave the sound in"
+                  label="{$item.reason.indexOf('unsaid') < 0 ? 'Keep the sound' : 'Cut the sound'}"
+                  tooltip="{$item.reason.indexOf('unsaid') < 0 ? 'Whisper wrote these words but nobody said them: keep their sound in' : 'Remove this stretch from the sound too'}"
                   onClick="paraTics('/transcripts/unsaid', { source, ids: $item.ids, unsaid: $item.reason.indexOf('unsaid') < 0 })" />
                 <!-- A long cut (more than two lines' worth) can be read whole. -->
                 <Button when="{$item.text.length > 120}" size="xs" variant="ghost"
