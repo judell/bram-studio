@@ -70,7 +70,8 @@ engine hear the source once, in the background ({"opinion": source, engine,
 done, done_s, duration_s} on /events); GET /transcripts/opinions?source= lists
 where the engines heard so far disagree with the text ({engines, at, rows, paras,
 available}), and POST
-/transcripts/correct {source, ids, words} takes its reading for kept words, one
+/transcripts/opinion/stop {source} stops the engine hearing it and empties
+what is queued behind it, and POST /transcripts/correct {source, ids, words} takes its reading for kept words, one
 for one, as one Undo step. The engines are the large whisper models on disk and
 Parakeet (NVIDIA's, hear_parakeet.py under sherpa-onnx), which is not whisper-derived,
 and, on macOS 26, Apple's on-device SpeechAnalyzer (hear_apple.swift, compiled on first use).
@@ -4204,6 +4205,17 @@ def opinion_stem(model):
     return stem[5:] if stem.startswith("ggml-") else stem
 
 
+def note_proc(source, proc):
+    # A runner's process, kept where a stop (POST /transcripts/opinion/stop)
+    # can reach it; a stop that came before the process existed ends it now.
+    with TRANSCRIBE_LOCK:
+        state = opining.get(source)
+        if state is not None:
+            state["proc"] = proc
+            if state.get("stopped"):
+                proc.terminate()
+
+
 def whisper_opinion(model):
     # An OPINION_ENGINES entry for one whisper model file: whisper-cli hears
     # the 16 kHz audio (its segment lines are the progress), -ojf to a raw
@@ -4221,6 +4233,7 @@ def whisper_opinion(model):
                                      "-f", os.path.join(folder, "audio-16k.wav"), "-l", "en", "-t", "8", "-ojf",
                                      "-of", raw, "--prompt", f"{DISFLUENT_PROMPT} {prompt or ''}".strip()],
                                     stdout=subprocess.PIPE, stderr=log, text=True)
+            note_proc(source, proc)
             for line in proc.stdout:
                 m = SEGMENT_LINE.match(line)
                 if m:
@@ -4255,6 +4268,7 @@ def parakeet_run(source, folder, prompt, duration, progress):
     proc = subprocess.Popen([SPEECH_PYTHON, "-I", os.path.join(HERE, "hear_parakeet.py"),
                              os.path.join(folder, "audio-16k.wav"), os.path.join(folder, "opinion-parakeet.json")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    note_proc(source, proc)
     for line in proc.stderr:
         last = line.strip() or last
         if line.startswith("done_s="):
@@ -4294,6 +4308,7 @@ def apple_run(source, folder, prompt, duration, progress):
     proc = subprocess.Popen([apple_hear_binary(), os.path.join(folder, "audio-16k.wav"),
                              os.path.join(folder, "opinion-apple.json")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    note_proc(source, proc)
     for line in proc.stderr:
         last = line.strip() or last
         if line.startswith("done_s="):
@@ -4346,9 +4361,22 @@ def run_opinion(source, engine, prompt, duration):
         OPINION_FAILED.get(source, {}).pop(engine, None)
         return None
     except Exception as e:
+        if state.get("stopped"):
+            # A stop is not a failure: no record, and no half-written file.
+            for n in os.listdir(folder):
+                if n.startswith(".opinion-") and n.endswith(".tmp") or n == f"raw-{opinion_stem(engine)}.json":
+                    try:
+                        os.remove(os.path.join(folder, n))
+                    except OSError:
+                        pass
+            print(f"opinion stopped source={source} engine={engine}", flush=True)
+            return "stopped"
         print(f"opinion failed source={source} engine={engine} error={e}", flush=True)
         OPINION_FAILED.setdefault(source, {})[engine] = str(e)
         return str(e)
+    finally:
+        with TRANSCRIBE_LOCK:
+            state.pop("proc", None)
 
 
 def run_opinion_queue(source, prompt, duration):
@@ -5093,6 +5121,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.start_check()
         if self.path == "/transcripts/opinion":
             return self.start_opinion()
+        if self.path == "/transcripts/opinion/stop":
+            return self.stop_opinion()
         if self.path == "/words/speaker":
             return self.tag_words()
         if self.path == "/speakers/propagate":
@@ -5167,6 +5197,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(200, {"engines": engines, "at": at, "rows": rows, "available": available, **live,
                              "paras": dict(collections.Counter(str(r["para"]) for r in rows))})
 
+    def stop_opinion(self):
+        # {source}: stop the engine hearing source and drop what is queued
+        # behind it; the engine's button returns (a stop is not recorded as a
+        # failure). 404 when nothing is hearing it.
+        source = self.json_body().get("source") or ""
+        with TRANSCRIBE_LOCK:
+            state = opining.get(source)
+            if not state:
+                return self.send_json(404, {"error": f"nothing is hearing {source}"})
+            state["stopped"] = True
+            state["queued"].clear()
+            proc = state.get("proc")
+            engine = state["engine"]
+            if proc:
+                proc.terminate()
+        self.send_json(200, {"stopped": engine})
+
     def start_opinion(self):
         # {source, engine}: an engine hears the source (run_opinion), in the
         # background, one whisper at a time (409 when busy). A whisper model
@@ -5190,7 +5237,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # whisper is busy with something else.
         with TRANSCRIBE_LOCK:
             if (transcribing or checking or opining) and source not in opining:
-                return self.send_json(409, {"error": "whisper is busy (transcribing, checking or hearing); try again when it's done"})
+                return self.send_json(409, {"error": f"{self.busy() or 'whisper is busy'}; try again when it's done"})
         added = queue_opinions(source, [engine] if engine else None)
         self.send_json(200, {"source": source, "engine": engine, "queued": added, "opinion": True})
 
@@ -5680,7 +5727,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
         with TRANSCRIBE_LOCK:
             if transcribing or checking or opining:
-                return self.send_json(409, {"error": "whisper is busy (transcribing or checking); try again when it's done"})
+                return self.send_json(409, {"error": f"{self.busy() or 'whisper is busy'}; try again when it's done"})
             checking[source] = {"started": datetime_now()}
         lo, hi = float(body.get("t0") or 0), float(body.get("t1") or 0)
         print(f"check start source={source} range={lo:.0f}-{hi or 0:.0f}", flush=True)
@@ -7559,6 +7606,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return "a narration is being recorded"
         if dictation["current"]:
             return dictating_where()
+        if opining and not (transcribing or checking):
+            src, st = next(iter(opining.items()))
+            return f"{st['engine']} is hearing {src}; stop it from the Workspace"
         if transcribing or checking or opining:
             return f"{next(iter(transcribing or checking or opining))} is being transcribed or checked"
         if testing.locked() or exporting.locked() or overlaying.locked() or POSTS["n"] > 1:

@@ -381,6 +381,13 @@
         toast.error(e.message);
       }
     }
+    function stopOpinion() {
+      try {
+        post('/transcripts/opinion/stop', { source });
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
     // What is hearing now: the live push, else what the server says (a page
     // opened or reloaded mid-run).
     function hearNow() {
@@ -611,6 +618,7 @@
                 <Text variant="secondary"
                   value="{'Transcribed by ' + transcript.value[0].model.replace(/^ggml-/, '').replace(/\.bin$/, '') + (opinionList.value ? ' · ' + hearLine() : '')}" />
                 <Spinner when="{!!hearNow()}" />
+                <Button size="xs" variant="ghost" label="Stop" when="{!!hearNow()}" onClick="stopOpinion()" />
                 <Items data="{hearable()}">
                   <Button size="xs" variant="outlined" label="{'Hear with ' + $item.label}"
                     enabled="{!checkBusy &amp;&amp; !progress}"
