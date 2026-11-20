@@ -2704,7 +2704,12 @@ def apply_text_edit(db, source, text, para=None):
                 else:
                     changes["cut"] += sp["cut"]
                     changes["corrected"] += sp["corrected"]
-                    if sp["unsaid"]:
+                    # The line is drawn at one leftover word: a re-hearing
+                    # differs by a word (so it goes out not spoken, sound
+                    # kept); a shortening drops a clause (so it is cut with
+                    # its sound). The Cuts fold's Spoken / Not spoken toggles
+                    # turn either into the other.
+                    if sp["unsaid"] and len(sp["cut"]) <= 1:
                         changes.setdefault("unsaid", []).extend(sp["unsaid"])
         else:  # insert
             # Typed words that match earlier cuts come back; the rest ride on
