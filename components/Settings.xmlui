@@ -83,7 +83,7 @@
                                              vpWindowS: vpWindowBox.value, vpStepS: vpStepBox.value,
                                              vpMinTurnS: vpTurnBox.value, vpMinTaggedS: vpTaggedBox.value,
                                              vpEdgeS: vpEdgeBox.value,
-                                             transcribeModel: modelBox.value || '',
+                                             transcribeModel: modelBox.value === 'auto' ? '' : (modelBox.value || ''),
                                              opinionsOnTranscribe: opinionsBox.value ? '1' : '0' } } });
         toast.success('Podcast editing settings saved.');
       } catch (e) {
@@ -175,10 +175,11 @@
           </HStack>
           <HStack verticalAlignment="center">
             <Text value="Transcription model" width="250px" />
-            <Select id="modelBox" width="420px" initialValue="{settings.value.podcast.transcribeModel}"
-              data="{[{ value: '', label: 'first installed (large-v3-turbo if present)' }].concat((settings.value.transcribeModels || []).map((m) => ({ value: m.name, label: m.label + (m.note ? ', ' + m.note : '') })))}" />
+            <Select id="modelBox" width="420px" initialValue="{settings.value.podcast.transcribeModel || 'auto'}"
+              data="{[{ value: 'auto', label: 'first installed (large-v3-turbo if present)' }].concat((settings.value.transcribeModels || []).map((m) => ({ value: m.name, label: m.label + (m.note ? ', ' + m.note : '') })))}" />
             <Text variant="secondary" value="{'in use: ' + settings.value.transcribeModelInUse}" />
           </HStack>
+          <Text variant="secondary" value="whisper only: the first pass keeps the ums and stutters the editor cuts; Apple and Parakeet hear the recording as second opinions" />
           <HStack verticalAlignment="center">
             <Text value="" width="250px" />
             <Switch id="opinionsBox" label="Hear the recording with the other engines after transcribing"
