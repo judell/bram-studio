@@ -71,7 +71,8 @@ done, done_s, duration_s} on /events); GET /transcripts/opinions?source= lists
 where the engines heard so far disagree with the text ({engines, at, rows, paras,
 available}), and POST
 /transcripts/correct {source, ids, words} takes its reading for kept words, one
-for one, as one Undo step.
+for one, as one Undo step. The engines are the large whisper models on disk and
+Parakeet (NVIDIA's, hear_parakeet.py under sherpa-onnx), which is not whisper-derived.
 """
 import collections
 import hashlib
@@ -2174,6 +2175,8 @@ opining = {}  # source -> {"engine", "done_s", "duration_s"} while a second opin
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
 SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
     "~/.local/share/speech-models/nemo_en_titanet_small.onnx"))
+PARAKEET_MODEL = os.environ.get("PARAKEET_MODEL", os.path.expanduser(
+    "~/.local/share/speech-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"))  # hear_parakeet.py's model
 PROGRESS_LINE = re.compile(r"progress (\d+) (\d+)")
 
 
@@ -4165,7 +4168,25 @@ def write_opinion(folder, engine, words, secs):
 # prompt, duration, progress) that writes opinion-<name>.json (write_opinion);
 # progress(done_s) is called as it hears}. Whisper models are found on disk
 # each time (opinion_engines); another engine is one more entry here.
-OPINION_ENGINES = {}
+def parakeet_run(source, folder, prompt, duration, progress):
+    # hear_parakeet.py under the speech-tools venv: it writes opinion-parakeet.json
+    # itself and prints done_s=<seconds> to stderr after each stretch.
+    last = ""
+    proc = subprocess.Popen([SPEECH_PYTHON, "-I", os.path.join(HERE, "hear_parakeet.py"),
+                             os.path.join(folder, "audio-16k.wav"), os.path.join(folder, "opinion-parakeet.json")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    for line in proc.stderr:
+        last = line.strip() or last
+        if line.startswith("done_s="):
+            progress(float(line[7:]))
+    if proc.wait():
+        raise RuntimeError(f"hear_parakeet.py exited {proc.returncode}: {last}")
+
+
+OPINION_ENGINES = {"parakeet": {
+    "label": "Parakeet",
+    "available": lambda have: os.path.isfile(SPEECH_PYTHON) and os.path.isdir(PARAKEET_MODEL),
+    "run": parakeet_run}}
 
 
 def opinion_engines():

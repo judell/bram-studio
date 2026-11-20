@@ -119,6 +119,16 @@ For podcasts, `ggml-large-v3-turbo.bin` (about 1.6 GB, same folder, same
 source) transcribes more accurately; Studio uses it when it's there. Offer
 it when the user starts a podcast, not before.
 
+The Parakeet model (NVIDIA's, about 700 MB) gives a second opinion on the
+words, from an engine that isn't whisper-derived. Fetch and unpack it:
+
+```sh
+curl -L -o /tmp/parakeet.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2
+tar xjf /tmp/parakeet.tar.bz2 -C ~/.local/share/speech-models/
+```
+
+Offer it when the user starts a podcast, like the whisper one.
+
 ## 3. Offer installs, confirm first
 
 Assume the user is not a developer. Many won't know what a terminal,

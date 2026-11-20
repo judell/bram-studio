@@ -66,6 +66,11 @@ if [ -d "$SPEECH/sherpa-onnx-nemo-ctc-en-conformer-small" ] && [ "$clt" = 1 ] \
 else
   opt "cut-edge alignment" "cuts land in the quiet between words; without it, whisper's word times"
 fi
+if [ -d "$SPEECH/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" ]; then
+  ok "Parakeet model"
+else
+  opt "Parakeet model" "second opinions from NVIDIA Parakeet (about 700 MB; docs/get-me-going.md)"
+fi
 if [ -f "$SPEECH/nemo_en_titanet_small.onnx" ]; then
   ok "speaker matching model"
 else
