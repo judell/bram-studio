@@ -2902,6 +2902,10 @@ def elide_tics(db, source, dry=False, para=None):
 def silences(source):
     # Quiet stretches in the transcript's 16 kHz audio, [start, end] seconds,
     # measured once (ffmpeg silencedetect) and kept beside the transcript.
+    # This is the coarse fallback, used only when align.py can't run: it is
+    # broadband -35 dB alone, so a word-final fricative (the S of "AWS.",
+    # -44 to -50 dB above 3 kHz) reads as quiet. align.py's two-band test
+    # (QUIET and QUIET_HIGH) is the real one.
     folder = transcript_folder(source)
     cache = os.path.join(folder, "silences.json")
     wav = os.path.join(folder, "audio-16k.wav")

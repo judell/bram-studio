@@ -54,6 +54,14 @@ WINDOW = 4.0  # seconds of audio on each side of whisper's boundary (its times c
 TOKEN = 0.15  # how long a word lasts after its last token's timestamp, without quiet to go by
 LEAD = 0.06  # how long before its first token's timestamp a word starts, likewise
 QUIET = 10 ** (-35 / 20)  # silencedetect's threshold, as an RMS level
+# A word-final fricative is quiet broadband but not silent above 3 kHz: the S
+# of "AWS." (123.90-124.10 s of ioh.mp4) measured -44 to -50 dB there in 50 ms
+# windows, while true pauses between ioh.mp4's words measured -55 dB or lower
+# (median -74; 45 broadband-quiet edge windows, only 2 above -50). A frame is
+# quiet only when it is under both thresholds.
+QUIET_HIGH = 10 ** (-50 / 20)
+HIGH_HZ = 3000  # the high band is what a one-pole high-pass at this frequency passes
+SNAP = 0.15  # how far a placed-in-the-gap edge may move to reach a pause (seconds)
 # Quiet must last this long to count as a pause: shorter dips happen inside
 # words (the stop in "be-tween" put a word's end at its middle, 2026-11-13).
 # The Settings page's "pause between words" (pauseMs, default 80 ms, which is
@@ -70,7 +78,7 @@ def key(text):
 def heard_words(rec, audio, sr, a, b):
     # The model's words in audio[a:b], each [key, start, last token time].
     s = rec.create_stream()
-    s.accept_waveform(sr, audio[int(a * sr):int(b * sr)])
+    s.accept_waveform(sr, audio[0, int(a * sr):int(b * sr)])
     rec.decode_stream(s)
     words = []
     for tok, ts in zip(s.result.tokens, s.result.timestamps):
@@ -87,40 +95,58 @@ def quietest(audio, sr, lo, hi):
     if hi - lo < 2 * FRAME:
         return (lo + hi) / 2
     n = int(FRAME * sr)
-    seg = audio[int(lo * sr):int(hi * sr)]
-    frames = len(seg) // n
+    seg = audio[:, int(lo * sr):int(hi * sr)]
+    frames = seg.shape[1] // n
     if frames < 1:
         return (lo + hi) / 2
-    rms = np.sqrt(np.mean(seg[:frames * n].reshape(frames, n) ** 2, axis=1))
+    rms = np.sum(frame_levels(seg, frames, n), axis=0)
     return lo + (int(np.argmin(rms)) + 0.5) * FRAME
 
 
+def frame_levels(seg, frames, n):
+    # [broadband RMS, high-band RMS] per FRAME of seg (2 rows: raw, high-passed).
+    return np.sqrt(np.mean(seg[:, :frames * n].reshape(2, frames, n) ** 2, axis=2))
+
+
+def split_bands(audio, sr):
+    # audio as 2 rows: the samples, and the samples through a one-pole
+    # high-pass at HIGH_HZ (y[n] = a * (y[n-1] + x[n] - x[n-1])), so the
+    # frame levels can see fricative energy that broadband RMS buries.
+    # Applied as its frequency response (an FFT over the whole file: a loop
+    # over ~3M samples took 4 s per run); the response dies in a few ms, so
+    # the wrap-around at the end is nothing.
+    a = np.exp(-2 * np.pi * HIGH_HZ / sr)
+    n = 1 << (len(audio) - 1).bit_length()  # a power of two: any other length can take a minute
+    z = np.exp(-2j * np.pi * np.fft.rfftfreq(n))
+    y = np.fft.irfft(np.fft.rfft(audio.astype(np.float64), n) * a * (1 - z) / (1 - a * z), n)[:len(audio)]
+    return np.stack([audio, y.astype(np.float32)])
+
+
 def voiced(audio, sr, lo, hi):
-    # The first and last FRAME in [lo, hi] louder than -35 dB (silencedetect's
-    # threshold), or None when it is all quiet.
-    n = int(FRAME * sr)
-    seg = audio[int(lo * sr):int(hi * sr)]
-    frames = len(seg) // n
-    if frames < 1:
-        return None
-    rms = np.sqrt(np.mean(seg[:frames * n].reshape(frames, n) ** 2, axis=1))
-    loud = np.nonzero(rms > 10 ** (-35 / 20))[0]
+    # The first and last FRAME in [lo, hi] that is not quiet (over -35 dB
+    # broadband or over QUIET_HIGH above 3 kHz), or None when it is all quiet.
+    rms = frame_rms(audio, sr, lo, hi)
+    loud = np.nonzero(~rms)[0]
     if not len(loud):
         return None
     return lo + loud[0] * FRAME, lo + (loud[-1] + 1) * FRAME
 
 
 def frame_rms(audio, sr, lo, hi):
+    # Per FRAME in [lo, hi]: True when quiet in both bands.
     n = int(FRAME * sr)
-    seg = audio[int(lo * sr):int(hi * sr)]
-    frames = len(seg) // n
-    return np.sqrt(np.mean(seg[:frames * n].reshape(frames, n) ** 2, axis=1)) if frames else np.array([])
+    seg = audio[:, int(lo * sr):int(hi * sr)]
+    frames = seg.shape[1] // n
+    if not frames:
+        return np.array([], dtype=bool)
+    lv = frame_levels(seg, frames, n)
+    return (lv[0] < QUIET) & (lv[1] < QUIET_HIGH)
 
 
-def pauses(rms):
+def pauses(quiet_frames):
     # [(first frame, end frame)] of runs of at least PAUSE quiet frames.
     runs, start = [], None
-    for k, quiet in enumerate(list(rms < QUIET) + [False]):
+    for k, quiet in enumerate(list(quiet_frames) + [False]):
         if quiet and start is None:
             start = k
         elif not quiet and start is not None:
@@ -128,6 +154,26 @@ def pauses(rms):
                 runs.append((start, k))
             start = None
     return runs
+
+
+def to_pause(audio, sr, t, dur):
+    # A "ctc-gap" edge is a word's share of the voiced gap, so it can fall
+    # inside sound ("AWS." / "I've": 123.937, with the S running to 124.04 and
+    # the pause after it). When t is not in a quiet frame, move it to the
+    # quietest frame of the nearest pause within SNAP seconds; else keep it.
+    lo, hi = max(0.0, t - SNAP - PAUSE * FRAME), min(dur, t + SNAP + PAUSE * FRAME)
+    q = frame_rms(audio, sr, lo, hi)
+    k = int((t - lo) / FRAME)
+    if len(q) and 0 <= k < len(q) and q[k]:
+        return t
+    best = None
+    for a, b in pauses(q):
+        d = 0.0 if a <= k < b else min(abs(a - k), abs(b - 1 - k))
+        if d * FRAME <= SNAP and (best is None or d < best[0]):
+            best = (d, a, b)
+    if best is None:
+        return t
+    return quietest(audio, sr, lo + best[1] * FRAME, lo + best[2] * FRAME)
 
 
 def quiet_after(audio, sr, t, cap):
@@ -182,6 +228,7 @@ def main():
     sr = w.getframerate()
     audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
     dur = len(audio) / sr
+    audio = split_bands(audio, sr)
     db = sqlite3.connect(db_path)
     words = db.execute("SELECT i, t0, t1, text FROM words WHERE source = ? ORDER BY i", (source,)).fetchall()
     by_i = {r[0]: n for n, r in enumerate(words)}
@@ -215,6 +262,8 @@ def main():
         if hi < lo:  # words run together: cut where one ends and the next begins
             lo = hi = (lo + hi) / 2
         t = quietest(audio, sr, max(0.0, lo), min(dur, hi))
+        if method == "ctc-gap":
+            t = to_pause(audio, sr, t, dur)
         print(json.dumps({"i": i, "t": round(t, 3), "method": method, "before": prev[3], "after": nxt[3]}),
               flush=True)
 
