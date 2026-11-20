@@ -739,6 +739,7 @@ PODCAST_SETTINGS = {
 PODCAST_WORD_SETTINGS = {
     "fillers": "um, umm, uh, uhm, er, ah, hmm, mm",  # cut wherever they're kept (elide_tics)
     "repeatsToKeep": "yeah, no, very, blah, bye",  # said twice on purpose: not cut as stutters
+    "transcribeModel": "",  # a ggml-*.bin in WHISPER_MODELS; "" = the first of TRANSCRIBE_MODELS installed
 }
 
 
@@ -2043,11 +2044,34 @@ def align_soon(source):
 def transcribe_model():
     if os.environ.get("WHISPER_MODEL"):
         return os.environ["WHISPER_MODEL"]
+    chosen = os.path.basename(str(podcast_settings().get("transcribeModel") or ""))
+    if chosen.startswith("ggml-") and chosen.endswith(".bin") and os.path.isfile(os.path.join(WHISPER_MODELS, chosen)):
+        return os.path.join(WHISPER_MODELS, chosen)  # a stale name falls through to the order
     for name in TRANSCRIBE_MODELS:
         path = os.path.join(WHISPER_MODELS, name)
         if os.path.isfile(path):
             return path
     return None
+
+
+TRANSCRIBE_NOTES = {
+    "ggml-large-v3-turbo.bin": "fast, the default (about 2 minutes for 48)",
+    "ggml-large-v3.bin": "about 4\u00d7 slower; on a 3-minute trial not more accurate, hears some things differently",
+    "ggml-small.en.bin": "small and quick; the fallback",
+}
+
+
+def transcribe_model_info():
+    # What Settings shows: the installed whisper models and the one in use.
+    models = []
+    if os.path.isdir(WHISPER_MODELS):
+        for n in sorted(os.listdir(WHISPER_MODELS)):
+            if n.startswith("ggml-") and n.endswith(".bin") and "-vad" not in n:
+                size = os.path.getsize(os.path.join(WHISPER_MODELS, n)) // (1024 * 1024)
+                models.append({"name": n, "label": n[len("ggml-"):-len(".bin")],
+                               "note": TRANSCRIBE_NOTES.get(n, ""), "sizeMb": size})
+    used = transcribe_model()
+    return {"transcribeModels": models, "transcribeModelInUse": os.path.basename(used) if used else None}
 
 
 def run_transcript(source, path, prompt, model):
@@ -4731,7 +4755,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(200, {"on": trace_on()})
         if self.path == "/settings":
             return self.send_json(200, {**read_settings(), "podcast": podcast_settings(),
-                                        "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS}})
+                                        "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS},
+                                        **transcribe_model_info()})
         if self.path == "/identity":
             # Whose server is this? The page compares bramPort (the Bram
             # instance recorded in this checkout's .bram/.bram-port.json)
@@ -7586,7 +7611,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             print(f"paragraphs reassigned pause={after['paragraphPauseS']} words={after['paragraphWords']}", flush=True)
             notify("words")
         self.send_json(200, {**settings, "podcast": after,
-                             "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS}})
+                             "podcastDefaults": {**{k: v[0] for k, v in PODCAST_SETTINGS.items()}, **PODCAST_WORD_SETTINGS},
+                                        **transcribe_model_info()})
 
     def set_safekeeping(self):
         # {slug, location, create}: where this project's safekeeping copies

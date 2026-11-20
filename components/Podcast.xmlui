@@ -26,6 +26,7 @@
   var.videoPara="{null}" var.parasSeen="{null}" var.videoPlaying="{false}" var.videoCmd="{null}" var.stopAt="{null}" var.stopFrom="{null}"
   var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
 
+  <DataSource id="settingsDoc" url="{window.STUDIO_API + '/settings'}" />
   <DataSource id="transcript" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
     body="{{ sql: 'SELECT status, model, prompt, duration_s, finished_at FROM transcripts WHERE source = ?', params: [source] }}" />
   <DataSource id="segments" url="{window.STUDIO_API + '/query?p=' + encodeURIComponent(project || '')}" method="POST" dataType="sql"
@@ -487,7 +488,8 @@
          while editing. -->
     <HStack verticalAlignment="center"
       when="{!!source &amp;&amp; !progress &amp;&amp; transcript.loaded &amp;&amp; !(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}">
-      <Button size="sm" variant="outlined" label="Transcribe" onClick="transcribe()" />
+      <Button size="sm" variant="outlined" label="Transcribe" onClick="transcribe()"
+        tooltip="{'whisper ' + ((settingsDoc.value &amp;&amp; settingsDoc.value.transcribeModelInUse) || '').replace(/^ggml-/, '').replace(/\.bin$/, '') + '; change it in Settings'}" />
     </HStack>
     <HStack verticalAlignment="center" when="{!!progress}">
       <Spinner />
@@ -581,6 +583,8 @@
         <!-- Which view, from the page (Main.xmlui's nav): Workspace is
              Edit text, Raw transcript is Transcript. -->
             <VStack when="{view === 'Edit text' &amp;&amp; transcribed()}" gap="$space-2">
+              <Text variant="secondary" when="{!!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].model)}"
+                value="{'Transcribed by ' + transcript.value[0].model.replace(/^ggml-/, '').replace(/\.bin$/, '')}" />
               <VStack gap="$space-2">
                 <HStack verticalAlignment="center">
                   <Button size="sm" variant="outlined" label="Undo"

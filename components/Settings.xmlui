@@ -82,7 +82,8 @@
                                              fillers: fillersBox.value, repeatsToKeep: keepBox.value,
                                              vpWindowS: vpWindowBox.value, vpStepS: vpStepBox.value,
                                              vpMinTurnS: vpTurnBox.value, vpMinTaggedS: vpTaggedBox.value,
-                                             vpEdgeS: vpEdgeBox.value } } });
+                                             vpEdgeS: vpEdgeBox.value,
+                                             transcribeModel: modelBox.value || '' } } });
         toast.success('Podcast editing settings saved.');
       } catch (e) {
         toast.error(e.message);
@@ -170,6 +171,12 @@
         <VStack gap="$space-3">
           <HStack>
             <Button icon="info" size="xs" variant="ghost" label="About podcast editing" onClick="podcastInfo.open()" />
+          </HStack>
+          <HStack verticalAlignment="center">
+            <Text value="Transcription model" width="250px" />
+            <Select id="modelBox" width="420px" initialValue="{settings.value.podcast.transcribeModel}"
+              data="{[{ value: '', label: 'first installed (large-v3-turbo if present)' }].concat((settings.value.transcribeModels || []).map((m) => ({ value: m.name, label: m.label + (m.note ? ', ' + m.note : '') })))}" />
+            <Text variant="secondary" value="{'in use: ' + settings.value.transcribeModelInUse}" />
           </HStack>
           <HStack verticalAlignment="center">
             <Text value="Pause between words (ms)" width="250px" />
