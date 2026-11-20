@@ -65,7 +65,12 @@ quiet and the kept intervals on the edited timeline. Each change announces
 model under sherpa-onnx), cached in word_edges. POST /transcripts/check
 {source, t0, t1} renders the edit, transcribes it and flags joins where the
 words heard differ from the words kept ({"checking": source, done} on
-/events).
+/events). A second opinion: POST /transcripts/opinion {source, model} has another
+whisper model hear the source once, in the background ({"opinion": source, model,
+done, done_s, duration_s} on /events); GET /transcripts/opinions?source= lists
+where it disagrees with the text ({model, at, rows, paras}), and POST
+/transcripts/correct {source, ids, words} takes its reading for kept words, one
+for one, as one Undo step.
 """
 import collections
 import hashlib
@@ -2164,6 +2169,7 @@ NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   provisional INTEGER NOT NULL DEFAULT 0
 )"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
+opining = {}  # source -> {"model", "done_s", "duration_s"} while a second opinion is heard (run_opinion)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
 SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
     "~/.local/share/speech-models/nemo_en_titanet_small.onnx"))
@@ -2505,6 +2511,8 @@ def describe_step(db, source, ch):
         what = f"mark {n(len(flipped), 'word', 'words')} " + ("not spoken" if flipped[0][2] == "unsaid" else "spoken")
     elif ch.get("reason") == "tic":
         what = "elide " + n(len(cut), "tic", "tics")
+    elif ch.get("reason") == "correct":
+        what = f"use another reading ({n(len(fixed) + len(cut), 'word', 'words')})"
     elif ch.get("reason") == "replace":
         what = f"replace {ch.get('before')} with {ch.get('after')} ({n(len(fixed), 'word', 'words')})"
     elif back and not cut and not fixed:
@@ -2679,6 +2687,28 @@ def replace_words(db, source, before, after):
     return {"replaced": len(corrected), "paragraphs": len(paras)}
 
 
+def spread_correction(db, source, ids, words):
+    # Kept words `ids` read as `words`, however many: kept word k takes typed
+    # word k; typed words past the last kept one ride on it ("about" read as
+    # "you both" is one shown); kept words past the last typed one go out of
+    # the text as not spoken (cut_reason 'unsaid'), their sound kept. Every
+    # kept word keeps its time. The change for record_text_change, or {"error"}.
+    have = {r[0]: r[1:] for r in db.execute(
+        f"SELECT id, coalesce(shown, text), text, kept FROM words WHERE source = ? "
+        f"AND id IN ({','.join('?' * len(ids))})", [source, *ids])}
+    if len(have) != len(set(ids)) or not all(have[i][2] for i in ids):
+        return {"error": "ids must be kept words of this source"}
+    words = [w.strip() for w in words]
+    n = min(len(ids), len(words))
+    typed = words[:n - 1] + [" ".join(words[n - 1:])] if len(words) > n else words
+    corrected = []
+    for i, w in zip(ids[:n], typed):
+        if w != have[i][0]:
+            corrected.append([i, have[i][0] if have[i][0] != have[i][1] else None, None if w == have[i][1] else w])
+    cut = ids[n:]
+    return {"cut": cut, "restored": [], "corrected": corrected, "unsaid": [[i, "edit", "unsaid"] for i in cut]}
+
+
 def record_text_change(db, source, changes, reason="edit"):
     # Apply {cut, restored, corrected: [[id, old shown, new shown]], unsaid:
     # [[id, was, now]] (cut_reason)} and keep
@@ -2705,12 +2735,14 @@ def undo_text_edit(db, source):
     if not row:
         return None
     ch = json.loads(row[1])
+    # The not-spoken flip first: a word this step cut and flipped is restored
+    # below with cut_reason NULL.
+    db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(was_, i) for i, was_, _ in ch.get("unsaid", [])])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["cut"]])
     was = ch.get("restoredWas", {})
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
                    [(was.get(str(i), "edit"), i) for i in ch["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(old, i) for i, old, _ in ch["corrected"]])
-    db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(was_, i) for i, was_, _ in ch.get("unsaid", [])])
     # A tag step: each word's speaker as it was before (another speaker's
     # tag, a match, or none), so Undo is exact.
     db.executemany("UPDATE words SET speaker_id = ?, speaker_how = ?, speaker_unsure = ? WHERE id = ?",
@@ -2994,7 +3026,9 @@ def audio_versions(db, source):
     h, kept = {}, set()
     for para, wid, k, reason in db.execute("SELECT para, id, kept, cut_reason FROM words WHERE source = ? ORDER BY i",
                                            (source,)):
-        h.setdefault(para, hashlib.sha1()).update(f"{wid}:{'u' if not k and reason == 'unsaid' else k};".encode())
+        # A not-spoken word sounds like a kept one, so it hashes as kept: a
+        # kept word going not spoken needs no render; a cut going not spoken does.
+        h.setdefault(para, hashlib.sha1()).update(f"{wid}:{1 if k or reason == 'unsaid' else 0};".encode())
         if k:
             kept.add(para)
     return {p: x.hexdigest()[:10] for p, x in h.items() if p in kept}
@@ -3987,8 +4021,9 @@ CHECK_WINDOW = 1.5  # seconds of the edit either side of a join where a mismatch
 RECHECK = 12.0  # seconds of the edit around a suspect join that whisper hears again on its own
 
 
-def heard_words(path):
-    # whisper's words in a transcript.json-style file: [key, start, end].
+def heard_words(path, raw=False):
+    # whisper's words in a transcript.json-style file: [key, start, end]; with
+    # raw, [key, start, end, the word as written].
     words = []
     for seg in json.load(open(path))["transcription"]:
         for tok in seg.get("tokens", []):
@@ -4001,7 +4036,115 @@ def heard_words(path):
                 words[-1][2] = t1
             else:
                 words.append([text.strip(), t0, t1])
+    if raw:
+        return [[word_key(w), a, b, w] for w, a, b in words if word_key(w)]
     return [[word_key(w), a, b] for w, a, b in words if word_key(w)]
+
+
+def run_opinion(source, model, prompt, duration):
+    # The background half of POST /transcripts/opinion: another model hears
+    # the source's 16 kHz audio once, into opinion-<model stem>.json beside the
+    # transcript. Progress as {"opinion": source, model, done: false, done_s,
+    # duration_s} every 2 s, as a transcription's; then done: true.
+    t_start = time.time()
+    folder = transcript_folder(source)
+    stem = opinion_stem(model)
+    state = opining[source]
+    try:
+        with open(os.path.join(folder, f"opinion-{stem}.log"), "w") as log:
+            proc = subprocess.Popen(["whisper-cli", "-m", os.path.join(WHISPER_MODELS, model),
+                                     "-f", os.path.join(folder, "audio-16k.wav"), "-l", "en", "-t", "8", "-ojf",
+                                     "-of", os.path.join(folder, f"opinion-{stem}"), "--prompt",
+                                     f"{DISFLUENT_PROMPT} {prompt or ''}".strip()],
+                                    stdout=subprocess.PIPE, stderr=log, text=True)
+            last_push = 0
+            for line in proc.stdout:
+                m = SEGMENT_LINE.match(line)
+                if m:
+                    state["done_s"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    if time.time() - last_push > 2:
+                        last_push = time.time()
+                        push({"opinion": source, "model": model, "done": False,
+                              "done_s": state["done_s"], "duration_s": state["duration_s"]})
+            if proc.wait():
+                raise RuntimeError(f"whisper-cli exited {proc.returncode} (see {folder}/opinion-{stem}.log)")
+        print(f"opinion done source={source} model={model} secs={time.time() - t_start:.1f}", flush=True)
+    except Exception as e:
+        print(f"opinion failed source={source} model={model} error={e}", flush=True)
+    finally:
+        with TRANSCRIBE_LOCK:
+            opining.pop(source, None)
+        push({"opinion": source, "model": model, "done": True})
+        notify("words")
+
+
+def opinion_stem(model):
+    # "ggml-large-v3.bin" -> "large-v3"
+    stem = os.path.splitext(os.path.basename(model))[0]
+    return stem[5:] if stem.startswith("ggml-") else stem
+
+
+OPINION_CACHE = {}  # path -> (mtime, words)
+
+
+def opinion_file(source):
+    # The newest opinion-*.json beside the transcript, or None.
+    import glob
+    found = glob.glob(os.path.join(transcript_folder(source), "opinion-*.json"))
+    return max(found, key=os.path.getmtime) if found else None
+
+
+def opinion_rows(db, source):
+    # Where the second opinion (opinion_file) disagrees with the text: its
+    # words aligned by difflib against every word of the transcript, keyed by
+    # word_key(shown or text), single-word fillers dropped from both sides
+    # first. Each non-equal stretch is a row {ids, para, text, heard, t0, t1,
+    # swap}: text the transcript's, heard the opinion's as written; swap when
+    # none of ours is cut (Use this reads them as heard, however many:
+    # spread_correction). A stretch of only cut words is left out, and so is one of only
+    # corrected words: a correction is the editor's settled word, and the
+    # opinion arguing with it ("Jon" heard as "John", twenty times) is noise.
+    # Computed live, so a row goes once the text reads the same. Returns
+    # (rows, model, at) or None.
+    import difflib
+    path = opinion_file(source)
+    if not path:
+        return None
+    mtime = os.path.getmtime(path)
+    if OPINION_CACHE.get(path, (None,))[0] != mtime:
+        OPINION_CACHE[path] = (mtime, heard_words(path, raw=True))
+    heard = OPINION_CACHE[path][1]
+    fillers = {word_key(f.strip()) for f in podcast_settings()["fillers"].split(",") if " " not in f.strip()}
+    fillers.discard("")
+    mine = [w for w in db.execute("SELECT id, para, t0, t1, coalesce(shown, text), kept, shown IS NOT NULL "
+                                  "FROM words WHERE source = ? ORDER BY i", (source,)) if word_key(w[4]) not in fillers]
+    heard = [h for h in heard if h[0] not in fillers]
+    rows = []
+    # Stretches only one agreeing word apart are one: "you ask me" heard as
+    # "I ask you" is a swap, not an insertion and a deletion.
+    stretches = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, [word_key(w[4]) for w in mine], [h[0] for h in heard], autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if stretches and i1 - stretches[-1][1] <= 1 and stretches[-1][1] > 0:
+            stretches[-1][1], stretches[-1][3] = i2, j2
+        else:
+            stretches.append([i1, i2, j1, j2])
+    for i1, i2, j1, j2 in stretches:
+        ours, theirs = mine[i1:i2], heard[j1:j2]
+        if ours and (not any(w[5] for w in ours) or all(w[6] for w in ours)):
+            continue
+        if ours:
+            t0, t1, para = ours[0][2], ours[-1][3], ours[0][1]
+        else:  # pure insertion: where the heard words are, in the paragraph of the word before
+            t0, t1 = theirs[0][1], theirs[-1][2]
+            para = mine[i1 - 1][1] if i1 else (mine[0][1] if mine else 0)
+        rows.append({"ids": [w[0] for w in ours], "para": para, "text": " ".join(w[4] for w in ours),
+                     "heard": " ".join(h[3] for h in theirs), "t0": t0, "t1": t1,
+                     "swap": bool(ours) and all(w[5] for w in ours)})
+    model = os.path.basename(path)[len("opinion-"):-len(".json")]
+    return rows, model, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
 
 
 def check_text(source, lo, hi):
@@ -4375,6 +4518,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.transcript_cuts()
         if self.path.startswith("/transcripts/paras"):
             return self.transcript_paras()
+        if self.path.startswith("/transcripts/opinions"):
+            return self.transcript_opinions()
         if self.path.startswith("/speakers/sample-audio"):
             return self.sample_audio_route()
         if self.path.startswith("/speakers/samples"):
@@ -4576,10 +4721,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/segments/speaker":
             return self.label_segments()
         if self.path in ("/transcripts/edit", "/transcripts/undo", "/transcripts/redo", "/transcripts/restore",
-                         "/transcripts/elide", "/transcripts/replace", "/transcripts/unsaid"):
+                         "/transcripts/elide", "/transcripts/replace", "/transcripts/unsaid", "/transcripts/correct"):
             return self.edit_text(self.path.rsplit("/", 1)[1])
         if self.path == "/transcripts/check":
             return self.start_check()
+        if self.path == "/transcripts/opinion":
+            return self.start_opinion()
         if self.path == "/words/speaker":
             return self.tag_words()
         if self.path == "/speakers/propagate":
@@ -4621,9 +4768,57 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 flagged = []
             marks = {r[0] for r in db.execute(
                 f"SELECT para FROM words WHERE id IN ({','.join('?' * len(flagged))})", flagged)} if flagged else set()
+            op = opinion_rows(db, source)
+            other = collections.Counter(r["para"] for r in op[0]) if op else {}
             for p in paras:
                 p["suspect"] = p["para"] in marks
+                p["other"] = other.get(p["para"], 0)
             self.send_json(200, paras)
+
+    def transcript_opinions(self):
+        # GET /transcripts/opinions?source=: {model, at, rows, paras: {para:
+        # count}} (opinion_rows), or {rows: [], models: [...]} (the models
+        # that could be asked) before any has been heard.
+        source = self.query_source()
+        db = sqlite3.connect(DB)
+        with TEXT_LOCK:
+            if not ensure_words(db, source):
+                return self.send_json(404, {"error": f"no transcript of {source!r}"})
+            op = opinion_rows(db, source)
+            if not op:
+                have = (db.execute("SELECT model FROM transcripts WHERE source = ?", (source,)).fetchone() or [""])[0]
+                models = sorted(n for n in os.listdir(WHISPER_MODELS) if n.endswith(".bin") and n != have
+                                and "-vad" not in n) if os.path.isdir(WHISPER_MODELS) else []
+                return self.send_json(200, {"rows": [], "models": models})
+        rows, model, at = op
+        self.send_json(200, {"model": model, "at": at, "rows": rows,
+                             "paras": dict(collections.Counter(str(r["para"]) for r in rows))})
+
+    def start_opinion(self):
+        # {source, model}: another model hears the source (run_opinion), in
+        # the background, one whisper at a time (409 when busy).
+        body = self.json_body()
+        source = body.get("source") or ""
+        model = os.path.basename(body.get("model") or "ggml-large-v3.bin")
+        db = sqlite3.connect(DB)
+        row = db.execute("SELECT model, prompt, duration_s FROM transcripts WHERE source = ? AND status = 'done'",
+                         (source,)).fetchone()
+        if not row:
+            return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
+        if not os.path.isfile(os.path.join(WHISPER_MODELS, model)):
+            return self.send_json(404, {"error": f"no model {model!r} in {WHISPER_MODELS}"})
+        if model == row[0]:
+            return self.send_json(400, {"error": f"{model} made the transcript; ask another model"})
+        if not os.path.isfile(os.path.join(transcript_folder(source), "audio-16k.wav")):
+            return self.send_json(404, {"error": f"no audio for {source!r}; transcribe it again"})
+        with TRANSCRIBE_LOCK:
+            if transcribing or checking or opining:
+                return self.send_json(409, {"error": "whisper is busy (transcribing, checking or hearing); try again when it's done"})
+            opining[source] = {"model": model, "done_s": 0, "duration_s": row[2] or 0}
+        print(f"opinion start source={source} model={model}", flush=True)
+        threading.Thread(target=run_opinion, args=(source, model, row[1], row[2] or 0), daemon=True).start()
+        push({"opinion": source, "model": model, "done": False, "done_s": 0, "duration_s": row[2] or 0})
+        self.send_json(200, {"source": source, "model": model, "opinion": True})
 
     def play_para(self):
         # GET /transcripts/play?source=&para=&v=: a paragraph's edited audio
@@ -5110,7 +5305,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not db.execute("SELECT 1 FROM transcripts WHERE source = ? AND status = 'done'", (source,)).fetchone():
             return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
         with TRANSCRIBE_LOCK:
-            if transcribing or checking:
+            if transcribing or checking or opining:
                 return self.send_json(409, {"error": "whisper is busy (transcribing or checking); try again when it's done"})
             checking[source] = {"started": datetime_now()}
         lo, hi = float(body.get("t0") or 0), float(body.get("t1") or 0)
@@ -5155,6 +5350,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 result = replace_words(db, source, body["before"].strip(), body["after"].strip())
                 if "error" in result:
                     return self.send_json(400, result)
+            elif op == "correct":
+                # {ids, words}: kept words read as words, however many (an
+                # opinion row's Use this; spread_correction), times kept.
+                ids, words = body.get("ids"), body.get("words")
+                if not (isinstance(ids, list) and isinstance(words, list) and ids and words
+                        and all(isinstance(w, str) and w.strip() for w in words)):
+                    return self.send_json(400, {"error": "expected {source, ids, words}"})
+                changes = spread_correction(db, source, [int(i) for i in ids], words)
+                if "error" in changes:
+                    return self.send_json(400, changes)
+                record_text_change(db, source, changes, reason="correct")
+                result = {"corrected": len(changes["corrected"]), "cut": len(changes["cut"])}
             elif op == "unsaid":
                 # {ids, unsaid}: cut words only. true marks them not spoken
                 # (their sound stays in); false makes them an ordinary cut.
@@ -5225,8 +5432,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_json(409, {"edited": edited,
                                         "error": f"{edited} words are cut or corrected; transcribing again loses that editing"})
         with TRANSCRIBE_LOCK:
-            if transcribing or checking:
-                return self.send_json(409, {"error": f"whisper is busy with {next(iter(transcribing or checking))}"})
+            if transcribing or checking or opining:
+                return self.send_json(409, {"error": f"whisper is busy with {next(iter(transcribing or checking or opining))}"})
             duration = float(probe(path, "format=duration") or 0)
             transcribing[source] = {"done_s": 0, "duration_s": duration}
         # No names given (the page has no box for them now): whisper gets the
@@ -6978,8 +7185,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return "a narration is being recorded"
         if dictation["current"]:
             return dictating_where()
-        if transcribing or checking:
-            return f"{next(iter(transcribing or checking))} is being transcribed or checked"
+        if transcribing or checking or opining:
+            return f"{next(iter(transcribing or checking or opining))} is being transcribed or checked"
         if testing.locked() or exporting.locked() or overlaying.locked() or POSTS["n"] > 1:
             return "Studio is busy (rendering, exporting or saving an edit)"
         return None

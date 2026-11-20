@@ -21,7 +21,7 @@
      scroll-to-follow and on-page labeling were tried and taken out until
      there's a use for them.) -->
 <Component name="Podcast"
-  var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}"
+  var.source="{($props.sources || [])[0] || ''}" var.currentId="{null}" var.progress="{null}" var.checkBusy="{false}" var.checkProgress="{null}" var.opinionBusy="{false}" var.opinionProgress="{null}" var.openOther="{null}"
   var.tagMode="{false}" var.project="{$props.project || ''}" var.openCut="{null}" var.openSample="{null}" var.jumped="{false}" var.view="{$props.view || 'Edit text'}" var.currentPara="{null}" var.videoSeek="{null}" var.rawPlace="{null}" var.samplesHold="{null}"
   var.videoPara="{null}" var.parasSeen="{null}" var.videoPlaying="{false}" var.videoCmd="{null}" var.stopAt="{null}" var.stopFrom="{null}"
   var.findText="{''}" var.findNeedle="{''}" var.findCursor="{0}">
@@ -67,13 +67,18 @@
   <DataSource id="cutList" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
     url="{window.STUDIO_API + '/transcripts/cuts?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
 
+  <!-- The second opinion's disagreements with the text (/transcripts/opinions). -->
+  <DataSource id="opinionList" when="{!!source &amp;&amp; !!(transcript.value &amp;&amp; transcript.value[0] &amp;&amp; transcript.value[0].status === 'done')}"
+    url="{window.STUDIO_API + '/transcripts/opinions?source=' + encodeURIComponent(source) + (project ? '&amp;p=' + encodeURIComponent(project) : '')}" />
+
   <EventSource url="{window.STUDIO_API}/events"
     onMessage="(m) => {
       if (m.transcribing) { if (m.transcribing === source) progress = m; }
       else if (m.changed === 'transcripts') { progress = null; transcript.refetch(); segments.refetch(); textDoc.refetch(); cutList.refetch(); }
       else if (m.changed === 'speakers') { segments.refetch(); speakerStats.refetch(); paras.refetch(); }
-      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); if (tagMode) samples.refetch(); }
+      else if (m.changed === 'words') { textDoc.refetch(); cutList.refetch(); paras.refetch(); speakerStats.refetch(); opinionList.refetch(); if (tagMode) samples.refetch(); }
       else if (m.samplesChecked) { if (m.samplesChecked === source &amp;&amp; tagMode) samples.refetch(); }
+      else if (m.opinion) { if (m.opinion === source) { opinionBusy = !m.done; opinionProgress = m.done ? null : m; } }
       else if (m.checking) { if (m.checking === source) { checkBusy = !m.done; checkProgress = m.done ? null : m; } }
     }" />
 
@@ -361,6 +366,40 @@
         + '. Edits since then aren’t checked.');
       if (c.unaligned) parts.push(c.unaligned + ' cuts placed without alignment (marked ⚠).');
       return parts.join(' ');
+    }
+    // The second opinion (/transcripts/opinion): another model hears the
+    // whole recording in the background; its disagreements with the text are
+    // listed under Other readings, for the selected card when there is one.
+    function startOpinion() {
+      try {
+        post('/transcripts/opinion', { source });
+        opinionBusy = true;
+        opinionProgress = null;
+      } catch (e) {
+        toast.error(e.message);
+      }
+    }
+    function otherRows() {
+      const o = opinionList.value;
+      const rows = (o && o.rows) || [];
+      return currentPara === null ? rows : rows.filter((r) => r.para === currentPara);
+    }
+    function otherSummary() {
+      const o = opinionList.value;
+      if (opinionBusy) return 'Other readings: hearing…'
+        + (opinionProgress && opinionProgress.duration_s ? ' ' + stamp(opinionProgress.done_s) + ' of ' + stamp(opinionProgress.duration_s) : '');
+      if (!o || !o.model) return 'Other readings';
+      return (currentPara === null ? 'Other readings (' + o.model + '): ' : 'Other readings in this paragraph (' + o.model + '): ') + otherRows().length;
+    }
+    // A paragraph's opening words, to place a row when no card is selected.
+    function paraOpening(p) {
+      const x = (paras.value || []).find((q) => q.para === p);
+      return x ? x.text.split(' ').slice(0, 6).join(' ') + '…' : '';
+    }
+    // A row's Use this: its words, one for one, with everything passed in
+    // (#3940: no component variables from inside a list).
+    function useReading(src, ids, words) {
+      textChange('/transcripts/correct', { source: src, ids, words: words.split(' ') });
     }
     function playFrom(t) {
       speakerPlayer.seek(t);
@@ -696,6 +735,41 @@
             </VStack>
           </Items>
         </ExpandableItem>
+        <!-- Other readings: where another model (serve_media.py's
+             /transcripts/opinion, large-v3 by default) heard the recording
+             differently, for the selected card or, with none selected, all.
+             Play is the source stretch, half a second either side, through
+             the Samples view's audio player; Use this corrects the words one
+             for one (/transcripts/correct), Undo takes it back. -->
+        <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
+          summary="{otherSummary()}">
+          <VStack gap="$space-1">
+            <HStack when="{!(opinionList.value &amp;&amp; opinionList.value.model)}" verticalAlignment="center" gap="$space-2">
+              <Button size="sm" variant="outlined" label="Hear it again (large-v3)"
+                enabled="{!opinionBusy &amp;&amp; !checkBusy &amp;&amp; !progress}"
+                tooltip="Have the full large-v3 model hear the recording once (about 8 minutes for 48) and list where it disagrees with the text"
+                onClick="startOpinion()" />
+              <Spinner when="{opinionBusy}" />
+            </HStack>
+            <Items data="{otherRows()}">
+              <VStack gap="0" paddingBottom="$space-2">
+                <HStack verticalAlignment="center" gap="$space-2" wrapContent="true">
+                  <Text width="50px" variant="secondary" value="{stamp($item.t0)}" />
+                  <Button size="xs" variant="ghost" label="{openOther === $item.t0 + '-' + $item.heard ? 'Close' : 'Play'}"
+                    onClick="openOther = openOther === $item.t0 + '-' + $item.heard ? null : $item.t0 + '-' + $item.heard" />
+                  <Button when="{$item.swap}" size="xs" variant="ghost" label="Use this"
+                    tooltip="Change the text to this reading (Undo takes it back)"
+                    onClick="useReading(source, $item.ids, $item.heard)" />
+                </HStack>
+                <Text when="{currentPara === null}" variant="secondary" value="{'In “' + paraOpening($item.para) + '”'}" />
+                <Text value="{'Text: ' + ($item.text || '(nothing)')}" />
+                <Text value="{'Heard: ' + $item.heard}" />
+                <MediaPlayer when="{openOther === $item.t0 + '-' + $item.heard}" kind="audio" autoPlay="true" width="100%"
+                  src="{sampleAudio(Math.max(0, $item.t0 - 0.5), $item.t1 + 0.5)}" />
+              </VStack>
+            </Items>
+          </VStack>
+        </ExpandableItem>
       </VStack>
       <!-- A click in the right pane outside every card (between cards,
            below the last) deselects: currentPara null, so the tint goes,
@@ -1005,6 +1079,8 @@
             </HStack>
             <HStack verticalAlignment="center" gap="$space-2">
               <Text variant="secondary" when="{$item.cut > 0}" value="{$item.cut + ' words cut'}" />
+              <Text variant="secondary" when="{$item.other > 0}"
+                value="{$item.other + ($item.other === 1 ? ' other reading' : ' other readings')}" />
               <Text variant="secondary" when="{$item.ticsCut > 0}"
                 value="{'(' + $item.ticsCut + (($item.ticsCut === 1) ? ' tic' : ' tics') + ')'}" />
               <Button size="xs" variant="ghost" when="{$item.ticsCut > 0}" label="Restore tics"

@@ -129,6 +129,11 @@ podcast.
   `~/.local/share/whisper-models/`, else `small.en`). whisper is asked to keep "um", "uh"
   and repeats, so they can be cut, and is given the project's speakers' names, if any yet,
   so they're spelled right. **Raw transcript** shows whisper's segments with their times.
+- **Other readings:** a second model (the full `ggml-large-v3`, when it's in the same
+  folder) can hear the recording once, in the background (about 8 minutes for 48), under
+  **Other readings** in the Workspace (**Hear it again**). It lists where it disagrees with
+  the text, for the selected card or all of them: **Play** the stretch, or **Use this** to
+  take its reading word for word (**Undo** takes it back).
 - **Editing (Workspace):** the transcript as plain text with no time codes, a paragraph per
   card. Delete what you want gone; the paragraph saves when you click outside it. Deleted
   words are cut, a word changed in place is a correction (its time stays), and cut words
