@@ -65,10 +65,11 @@ quiet and the kept intervals on the edited timeline. Each change announces
 model under sherpa-onnx), cached in word_edges. POST /transcripts/check
 {source, t0, t1} renders the edit, transcribes it and flags joins where the
 words heard differ from the words kept ({"checking": source, done} on
-/events). A second opinion: POST /transcripts/opinion {source, model} has another
-whisper model hear the source once, in the background ({"opinion": source, model,
+/events). A second opinion: POST /transcripts/opinion {source, engine} has another
+engine hear the source once, in the background ({"opinion": source, engine,
 done, done_s, duration_s} on /events); GET /transcripts/opinions?source= lists
-where it disagrees with the text ({model, at, rows, paras}), and POST
+where the engines heard so far disagree with the text ({engines, at, rows, paras,
+available}), and POST
 /transcripts/correct {source, ids, words} takes its reading for kept words, one
 for one, as one Undo step.
 """
@@ -2169,7 +2170,7 @@ NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   provisional INTEGER NOT NULL DEFAULT 0
 )"""
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
-opining = {}  # source -> {"model", "done_s", "duration_s"} while a second opinion is heard (run_opinion)
+opining = {}  # source -> {"engine", "done_s", "duration_s"} while a second opinion is heard (run_opinion)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
 SPEAKER_MODEL = os.environ.get("SPEAKER_MODEL", os.path.expanduser(
     "~/.local/share/speech-models/nemo_en_titanet_small.onnx"))
@@ -4114,61 +4115,117 @@ def heard_words(path, raw=False):
     return [[word_key(w), a, b] for w, a, b in words if word_key(w)]
 
 
-def run_opinion(source, model, prompt, duration):
-    # The background half of POST /transcripts/opinion: another model hears
-    # the source's 16 kHz audio once, into opinion-<model stem>.json beside the
-    # transcript. Progress as {"opinion": source, model, done: false, done_s,
-    # duration_s} every 2 s, as a transcription's; then done: true.
-    t_start = time.time()
-    folder = transcript_folder(source)
-    stem = opinion_stem(model)
-    state = opining[source]
-    try:
-        with open(os.path.join(folder, f"opinion-{stem}.log"), "w") as log:
-            proc = subprocess.Popen(["whisper-cli", "-m", os.path.join(WHISPER_MODELS, model),
-                                     "-f", os.path.join(folder, "audio-16k.wav"), "-l", "en", "-t", "8", "-ojf",
-                                     "-of", os.path.join(folder, f"opinion-{stem}"), "--prompt",
-                                     f"{DISFLUENT_PROMPT} {prompt or ''}".strip()],
-                                    stdout=subprocess.PIPE, stderr=log, text=True)
-            last_push = 0
-            for line in proc.stdout:
-                m = SEGMENT_LINE.match(line)
-                if m:
-                    state["done_s"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-                    if time.time() - last_push > 2:
-                        last_push = time.time()
-                        push({"opinion": source, "model": model, "done": False,
-                              "done_s": state["done_s"], "duration_s": state["duration_s"]})
-            if proc.wait():
-                raise RuntimeError(f"whisper-cli exited {proc.returncode} (see {folder}/opinion-{stem}.log)")
-        print(f"opinion done source={source} model={model} secs={time.time() - t_start:.1f}", flush=True)
-    except Exception as e:
-        print(f"opinion failed source={source} model={model} error={e}", flush=True)
-    finally:
-        with TRANSCRIBE_LOCK:
-            opining.pop(source, None)
-        push({"opinion": source, "model": model, "done": True})
-        notify("words")
-
-
 def opinion_stem(model):
     # "ggml-large-v3.bin" -> "large-v3"
     stem = os.path.splitext(os.path.basename(model))[0]
     return stem[5:] if stem.startswith("ggml-") else stem
 
 
+def whisper_opinion(model):
+    # An OPINION_ENGINES entry for one whisper model file: whisper-cli hears
+    # the 16 kHz audio (its segment lines are the progress), -ojf to a raw
+    # file that is converted to the neutral form and removed.
+    stem = opinion_stem(model)
+
+    def available(have):
+        return os.path.isfile(os.path.join(WHISPER_MODELS, model)) and os.path.basename(have or "") != model
+
+    def run(source, folder, prompt, duration, progress):
+        raw = os.path.join(folder, f"raw-{stem}")
+        t_start = time.time()
+        with open(os.path.join(folder, f"opinion-{stem}.log"), "w") as log:
+            proc = subprocess.Popen(["whisper-cli", "-m", os.path.join(WHISPER_MODELS, model),
+                                     "-f", os.path.join(folder, "audio-16k.wav"), "-l", "en", "-t", "8", "-ojf",
+                                     "-of", raw, "--prompt", f"{DISFLUENT_PROMPT} {prompt or ''}".strip()],
+                                    stdout=subprocess.PIPE, stderr=log, text=True)
+            for line in proc.stdout:
+                m = SEGMENT_LINE.match(line)
+                if m:
+                    progress(int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)))
+            if proc.wait():
+                raise RuntimeError(f"whisper-cli exited {proc.returncode} (see {folder}/opinion-{stem}.log)")
+        words = [[w, a, b] for _, a, b, w in heard_words(raw + ".json", raw=True)]
+        write_opinion(folder, stem, words, time.time() - t_start)
+        os.remove(raw + ".json")
+    return {"label": stem, "available": available, "run": run}
+
+
+def write_opinion(folder, engine, words, secs):
+    # opinion-<engine>.json in the neutral form every engine writes:
+    # {"engine", "at", "secs", "words": [[text as written, t0, t1], ...]}.
+    tmp = os.path.join(folder, f".opinion-{engine}.tmp")
+    with open(tmp, "w") as f:
+        json.dump({"engine": engine, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "secs": round(secs, 1),
+                   "words": words}, f)
+    os.replace(tmp, os.path.join(folder, f"opinion-{engine}.json"))
+
+
+# Engines that can give an opinion: name -> {"label", "available": callable(
+# transcript's model file name) -> bool, "run": callable(source, folder,
+# prompt, duration, progress) that writes opinion-<name>.json (write_opinion);
+# progress(done_s) is called as it hears}. Whisper models are found on disk
+# each time (opinion_engines); another engine is one more entry here.
+OPINION_ENGINES = {}
+
+
+def opinion_engines():
+    # The large whisper models only: a small one's disagreements are noise.
+    found = {}
+    if os.path.isdir(WHISPER_MODELS):
+        for n in sorted(os.listdir(WHISPER_MODELS)):
+            if n.startswith("ggml-large") and n.endswith(".bin") and "-vad" not in n:
+                found[opinion_stem(n)] = whisper_opinion(n)
+    return {**found, **OPINION_ENGINES}
+
+
+def run_opinion(source, engine, prompt, duration):
+    # The background half of POST /transcripts/opinion: an engine hears the
+    # source once, into opinion-<engine>.json beside the transcript. Progress
+    # as {"opinion": source, engine, done: false, done_s, duration_s} at most
+    # every 2 s, as a transcription's; then done: true.
+    t_start = time.time()
+    folder = transcript_folder(source)
+    state = opining[source]
+    last_push = [0]
+
+    def progress(done_s):
+        state["done_s"] = done_s
+        if time.time() - last_push[0] > 2:
+            last_push[0] = time.time()
+            push({"opinion": source, "engine": engine, "done": False,
+                  "done_s": done_s, "duration_s": state["duration_s"]})
+    try:
+        opinion_engines()[engine]["run"](source, folder, prompt, duration, progress)
+        print(f"opinion done source={source} engine={engine} secs={time.time() - t_start:.1f}", flush=True)
+    except Exception as e:
+        print(f"opinion failed source={source} engine={engine} error={e}", flush=True)
+    finally:
+        with TRANSCRIBE_LOCK:
+            opining.pop(source, None)
+        push({"opinion": source, "engine": engine, "done": True})
+        notify("words")
+
+
 OPINION_CACHE = {}  # path -> (mtime, words)
 
 
-def opinion_file(source):
-    # The newest opinion-*.json beside the transcript, or None.
+def opinion_words(path):
+    # [key, t0, t1, text as written] of one opinion file: the neutral form, or
+    # whisper's own -ojf (the file already on disk).
+    d = json.load(open(path))
+    if "words" in d:
+        return [[word_key(w), a, b, w] for w, a, b in d["words"] if word_key(w)]
+    return heard_words(path, raw=True)
+
+
+def opinion_files(source):
+    # Every opinion-*.json beside the transcript, by name.
     import glob
-    found = glob.glob(os.path.join(transcript_folder(source), "opinion-*.json"))
-    return max(found, key=os.path.getmtime) if found else None
+    return sorted(glob.glob(os.path.join(transcript_folder(source), "opinion-*.json")))
 
 
 def opinion_rows(db, source):
-    # Where the second opinion (opinion_file) disagrees with the text: its
+    # Where the opinions (opinion_files) disagree with the text: each one's
     # words aligned by difflib against every word of the transcript, keyed by
     # word_key(shown or text), single-word fillers dropped from both sides
     # first. Each non-equal stretch is a row {ids, para, text, heard, t0, t1,
@@ -4177,21 +4234,41 @@ def opinion_rows(db, source):
     # spread_correction). A stretch of only cut words is left out, and so is one of only
     # corrected words: a correction is the editor's settled word, and the
     # opinion arguing with it ("Jon" heard as "John", twenty times) is noise.
-    # Computed live, so a row goes once the text reads the same. Returns
-    # (rows, model, at) or None.
-    import difflib
-    path = opinion_file(source)
-    if not path:
+    # Computed live, so a row goes once the text reads the same. Rows of
+    # several engines on the same ids and the same reading (word_key) are one
+    # row with engines [names] and agreed their count; different readings stay
+    # separate rows. In time order, the agreed first at one t0. Returns
+    # (rows, engines heard, at of the newest) or None.
+    paths = opinion_files(source)
+    if not paths:
         return None
-    mtime = os.path.getmtime(path)
-    if OPINION_CACHE.get(path, (None,))[0] != mtime:
-        OPINION_CACHE[path] = (mtime, heard_words(path, raw=True))
-    heard = OPINION_CACHE[path][1]
     fillers = {word_key(f.strip()) for f in podcast_settings()["fillers"].split(",") if " " not in f.strip()}
     fillers.discard("")
     mine = [w for w in db.execute("SELECT id, para, t0, t1, coalesce(shown, text), kept, shown IS NOT NULL "
                                   "FROM words WHERE source = ? ORDER BY i", (source,)) if word_key(w[4]) not in fillers]
-    heard = [h for h in heard if h[0] not in fillers]
+    merged, engines, latest = {}, [], 0
+    for path in paths:
+        mtime = os.path.getmtime(path)
+        latest = max(latest, mtime)
+        engine = os.path.basename(path)[len("opinion-"):-len(".json")]
+        engines.append(engine)
+        if OPINION_CACHE.get(path, (None,))[0] != mtime:
+            OPINION_CACHE[path] = (mtime, opinion_words(path))
+        for row in opinion_rows_of(mine, [h for h in OPINION_CACHE[path][1] if h[0] not in fillers]):
+            key = (tuple(row["ids"]), row.pop("key")) if row["ids"] else (row["para"], round(row["t0"], 1), row.pop("key"))
+            if key in merged:
+                merged[key]["engines"].append(engine)
+                merged[key]["agreed"] += 1
+            else:
+                merged[key] = {**row, "engines": [engine], "agreed": 1}
+    rows = sorted(merged.values(), key=lambda r: (r["t0"], -r["agreed"]))
+    return rows, engines, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest))
+
+
+def opinion_rows_of(mine, heard):
+    # One opinion's rows against the text's words (opinion_rows), each with a
+    # "key" of what was heard, for merging.
+    import difflib
     rows = []
     # Stretches only one agreeing word apart are one: "you ask me" heard as
     # "I ask you" is a swap, not an insertion and a deletion.
@@ -4214,10 +4291,9 @@ def opinion_rows(db, source):
             t0, t1 = theirs[0][1], theirs[-1][2]
             para = mine[i1 - 1][1] if i1 else (mine[0][1] if mine else 0)
         rows.append({"ids": [w[0] for w in ours], "para": para, "text": " ".join(w[4] for w in ours),
-                     "heard": " ".join(h[3] for h in theirs), "t0": t0, "t1": t1,
+                     "heard": " ".join(h[3] for h in theirs), "key": " ".join(h[0] for h in theirs), "t0": t0, "t1": t1,
                      "swap": bool(ours) and all(w[5] for w in ours)})
-    model = os.path.basename(path)[len("opinion-"):-len(".json")]
-    return rows, model, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+    return rows
 
 
 def check_text(source, lo, hi):
@@ -4849,49 +4925,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, paras)
 
     def transcript_opinions(self):
-        # GET /transcripts/opinions?source=: {model, at, rows, paras: {para:
-        # count}} (opinion_rows), or {rows: [], models: [...]} (the models
-        # that could be asked) before any has been heard.
+        # GET /transcripts/opinions?source=: {engines: [heard], at, rows, paras:
+        # {para: count}, available: [{name, label}]} (opinion_rows); the
+        # available are the engines that could still be asked. Before any has
+        # been heard, {rows: [], engines: [], available}.
         source = self.query_source()
         db = sqlite3.connect(DB)
         with TEXT_LOCK:
             if not ensure_words(db, source):
                 return self.send_json(404, {"error": f"no transcript of {source!r}"})
             op = opinion_rows(db, source)
-            if not op:
-                have = (db.execute("SELECT model FROM transcripts WHERE source = ?", (source,)).fetchone() or [""])[0]
-                models = sorted(n for n in os.listdir(WHISPER_MODELS) if n.endswith(".bin") and n != have
-                                and "-vad" not in n) if os.path.isdir(WHISPER_MODELS) else []
-                return self.send_json(200, {"rows": [], "models": models})
-        rows, model, at = op
-        self.send_json(200, {"model": model, "at": at, "rows": rows,
+            have = (db.execute("SELECT model FROM transcripts WHERE source = ?", (source,)).fetchone() or [""])[0]
+        heard = op[1] if op else []
+        available = [{"name": n, "label": e["label"]} for n, e in opinion_engines().items()
+                     if n not in heard and e["available"](have)]
+        if not op:
+            return self.send_json(200, {"rows": [], "engines": [], "available": available})
+        rows, engines, at = op
+        self.send_json(200, {"engines": engines, "at": at, "rows": rows, "available": available,
                              "paras": dict(collections.Counter(str(r["para"]) for r in rows))})
 
     def start_opinion(self):
-        # {source, model}: another model hears the source (run_opinion), in
-        # the background, one whisper at a time (409 when busy).
+        # {source, engine}: an engine hears the source (run_opinion), in the
+        # background, one whisper at a time (409 when busy). A whisper model
+        # file name as "model" still names its engine.
         body = self.json_body()
         source = body.get("source") or ""
-        model = os.path.basename(body.get("model") or "ggml-large-v3.bin")
+        engine = body.get("engine") or opinion_stem(body.get("model") or "ggml-large-v3.bin")
         db = sqlite3.connect(DB)
         row = db.execute("SELECT model, prompt, duration_s FROM transcripts WHERE source = ? AND status = 'done'",
                          (source,)).fetchone()
         if not row:
             return self.send_json(404, {"error": f"no finished transcript of {source!r}"})
-        if not os.path.isfile(os.path.join(WHISPER_MODELS, model)):
-            return self.send_json(404, {"error": f"no model {model!r} in {WHISPER_MODELS}"})
-        if model == row[0]:
-            return self.send_json(400, {"error": f"{model} made the transcript; ask another model"})
+        entry = opinion_engines().get(engine)
+        if not entry or not entry["available"](row[0]):
+            return self.send_json(404, {"error": f"no engine {engine!r} available for {source!r}"})
         if not os.path.isfile(os.path.join(transcript_folder(source), "audio-16k.wav")):
             return self.send_json(404, {"error": f"no audio for {source!r}; transcribe it again"})
         with TRANSCRIBE_LOCK:
             if transcribing or checking or opining:
                 return self.send_json(409, {"error": "whisper is busy (transcribing, checking or hearing); try again when it's done"})
-            opining[source] = {"model": model, "done_s": 0, "duration_s": row[2] or 0}
-        print(f"opinion start source={source} model={model}", flush=True)
-        threading.Thread(target=run_opinion, args=(source, model, row[1], row[2] or 0), daemon=True).start()
-        push({"opinion": source, "model": model, "done": False, "done_s": 0, "duration_s": row[2] or 0})
-        self.send_json(200, {"source": source, "model": model, "opinion": True})
+            opining[source] = {"engine": engine, "done_s": 0, "duration_s": row[2] or 0}
+        print(f"opinion start source={source} engine={engine}", flush=True)
+        threading.Thread(target=run_opinion, args=(source, engine, row[1], row[2] or 0), daemon=True).start()
+        push({"opinion": source, "engine": engine, "done": False, "done_s": 0, "duration_s": row[2] or 0})
+        self.send_json(200, {"source": source, "engine": engine, "opinion": True})
 
     def play_para(self):
         # GET /transcripts/play?source=&para=&v=: a paragraph's edited audio

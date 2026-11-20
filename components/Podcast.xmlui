@@ -370,9 +370,9 @@
     // The second opinion (/transcripts/opinion): another model hears the
     // whole recording in the background; its disagreements with the text are
     // listed under Other readings, for the selected card when there is one.
-    function startOpinion() {
+    function startOpinion(engine) {
       try {
-        post('/transcripts/opinion', { source });
+        post('/transcripts/opinion', { source, engine });
         opinionBusy = true;
         opinionProgress = null;
       } catch (e) {
@@ -386,10 +386,17 @@
     }
     function otherSummary() {
       const o = opinionList.value;
-      if (opinionBusy) return 'Other readings: hearing…'
+      if (opinionBusy) return 'Other readings: hearing'
+        + (opinionProgress && opinionProgress.engine ? ' ' + opinionProgress.engine : '') + '…'
         + (opinionProgress && opinionProgress.duration_s ? ' ' + stamp(opinionProgress.done_s) + ' of ' + stamp(opinionProgress.duration_s) : '');
-      if (!o || !o.model) return 'Other readings';
-      return (currentPara === null ? 'Other readings (' + o.model + '): ' : 'Other readings in this paragraph (' + o.model + '): ') + otherRows().length;
+      if (!o || !o.engines || o.engines.length === 0) return 'Other readings';
+      const names = o.engines.join(', ');
+      return (currentPara === null ? 'Other readings (' + names + '): ' : 'Other readings in this paragraph (' + names + '): ') + otherRows().length;
+    }
+    // Who heard a row: "large-v3", or "2 of 3" when engines agree.
+    function heardBy(r) {
+      const o = opinionList.value;
+      return r.agreed > 1 ? r.agreed + ' of ' + ((o && o.engines) || []).length : r.engines.join(', ');
     }
     // A paragraph's opening words, to place a row when no card is selected.
     function paraOpening(p) {
@@ -744,11 +751,13 @@
         <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
           summary="{otherSummary()}">
           <VStack gap="$space-1">
-            <HStack when="{!(opinionList.value &amp;&amp; opinionList.value.model)}" verticalAlignment="center" gap="$space-2">
-              <Button size="sm" variant="outlined" label="Hear it again (large-v3)"
-                enabled="{!opinionBusy &amp;&amp; !checkBusy &amp;&amp; !progress}"
-                tooltip="Have the full large-v3 model hear the recording once (about 8 minutes for 48) and list where it disagrees with the text"
-                onClick="startOpinion()" />
+            <HStack when="{opinionBusy || (opinionList.value &amp;&amp; opinionList.value.available &amp;&amp; opinionList.value.available.length > 0)}" verticalAlignment="center" gap="$space-2" wrapContent="true">
+              <Items data="{(opinionList.value &amp;&amp; opinionList.value.available) || []}">
+                <Button size="sm" variant="outlined" label="{'Hear it again: ' + $item.label}"
+                  enabled="{!opinionBusy &amp;&amp; !checkBusy &amp;&amp; !progress}"
+                  tooltip="Have this engine hear the recording once and list where it disagrees with the text (the full whisper models take about 8 minutes for 48)"
+                  onClick="startOpinion($item.name)" />
+              </Items>
               <Spinner when="{opinionBusy}" />
             </HStack>
             <Items data="{otherRows()}">
@@ -763,7 +772,8 @@
                 </HStack>
                 <Text when="{currentPara === null}" variant="secondary" value="{'In “' + paraOpening($item.para) + '”'}" />
                 <Text value="{'Text: ' + ($item.text || '(nothing)')}" />
-                <Text value="{'Heard: ' + $item.heard}" />
+                <Text when="{$item.agreed > 1}" variant="strong" value="{'Heard (' + heardBy($item) + '): ' + $item.heard}" />
+                <Text when="{!($item.agreed > 1)}" value="{'Heard (' + heardBy($item) + '): ' + $item.heard}" />
                 <MediaPlayer when="{openOther === $item.t0 + '-' + $item.heard}" kind="audio" autoPlay="true" width="100%"
                   src="{sampleAudio(Math.max(0, $item.t0 - 0.5), $item.t1 + 0.5)}" />
               </VStack>
