@@ -72,7 +72,8 @@ where the engines heard so far disagree with the text ({engines, at, rows, paras
 available}), and POST
 /transcripts/correct {source, ids, words} takes its reading for kept words, one
 for one, as one Undo step. The engines are the large whisper models on disk and
-Parakeet (NVIDIA's, hear_parakeet.py under sherpa-onnx), which is not whisper-derived.
+Parakeet (NVIDIA's, hear_parakeet.py under sherpa-onnx), which is not whisper-derived,
+and, on macOS 26, Apple's on-device SpeechAnalyzer (hear_apple.swift, compiled on first use).
 """
 import collections
 import hashlib
@@ -83,6 +84,7 @@ import http.server
 import json
 import mimetypes
 import os
+import platform
 import queue
 import re
 import shutil
@@ -4183,10 +4185,50 @@ def parakeet_run(source, folder, prompt, duration, progress):
         raise RuntimeError(f"hear_parakeet.py exited {proc.returncode}: {last}")
 
 
+APPLE_SRC = os.path.join(HERE, "hear_apple.swift")
+APPLE_BIN = os.path.expanduser("~/.cache/bram-studio/hear_apple")
+
+
+def apple_hear_binary():
+    # hear_apple.swift compiled once, again when the source is newer.
+    if os.path.isfile(APPLE_BIN) and os.path.getmtime(APPLE_BIN) >= os.path.getmtime(APPLE_SRC):
+        return APPLE_BIN
+    os.makedirs(os.path.dirname(APPLE_BIN), exist_ok=True)
+    r = subprocess.run(["swiftc", "-O", "-parse-as-library", "-o", APPLE_BIN, APPLE_SRC],
+                       capture_output=True, text=True)
+    if r.returncode:
+        lines = r.stderr.strip().splitlines()
+        raise RuntimeError(f"couldn't build hear_apple.swift: {lines[-1] if lines else r.returncode}")
+    return APPLE_BIN
+
+
+def apple_available(have):
+    try:
+        major = int(platform.mac_ver()[0].split(".")[0] or 0)
+    except ValueError:
+        major = 0
+    return major >= 26 and shutil.which("swiftc") is not None
+
+
+def apple_run(source, folder, prompt, duration, progress):
+    # hear_apple writes opinion-apple.json itself and prints done_s=<seconds> to stderr.
+    last = ""
+    proc = subprocess.Popen([apple_hear_binary(), os.path.join(folder, "audio-16k.wav"),
+                             os.path.join(folder, "opinion-apple.json")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    for line in proc.stderr:
+        last = line.strip() or last
+        if line.startswith("done_s="):
+            progress(float(line[7:]))
+    if proc.wait():
+        raise RuntimeError(f"hear_apple exited {proc.returncode}: {last}")
+
+
 OPINION_ENGINES = {"parakeet": {
     "label": "Parakeet",
     "available": lambda have: os.path.isfile(SPEECH_PYTHON) and os.path.isdir(PARAKEET_MODEL),
-    "run": parakeet_run}}
+    "run": parakeet_run},
+    "apple": {"label": "Apple", "available": apple_available, "run": apple_run}}
 
 
 def opinion_engines():
@@ -4313,7 +4355,7 @@ def opinion_rows_of(mine, heard):
             para = mine[i1 - 1][1] if i1 else (mine[0][1] if mine else 0)
         rows.append({"ids": [w[0] for w in ours], "para": para, "text": " ".join(w[4] for w in ours),
                      "heard": " ".join(h[3] for h in theirs), "key": " ".join(h[0] for h in theirs), "t0": t0, "t1": t1,
-                     "swap": bool(ours) and all(w[5] for w in ours)})
+                     "swap": bool(ours) and bool(theirs) and all(w[5] for w in ours)})
     return rows
 
 
