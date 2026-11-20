@@ -4339,6 +4339,12 @@ def run_opinion(source, engine, prompt, duration):
 
 
 OPINION_CACHE = {}  # path -> (mtime, words)
+# source -> (key, result of opinion_rows). The key covers what the rows depend
+# on: the opinion files (path, mtime), the fillers setting, and transcript_edits'
+# (max id, count, sum undone), which stands in for the words' state since every
+# text change, Undo and Redo moves one of them (a tag step moves it too, which
+# only costs a recompute). Callers only read the rows.
+OPINION_ROWS_CACHE = {}
 
 
 def opinion_words(path):
@@ -4374,6 +4380,11 @@ def opinion_rows(db, source):
     paths = opinion_files(source)
     if not paths:
         return None
+    state = (tuple((p, os.path.getmtime(p)) for p in paths),
+           db.execute("SELECT max(id), count(*), sum(undone) FROM transcript_edits WHERE source = ?",
+                      (source,)).fetchone(), podcast_settings()["fillers"])
+    if OPINION_ROWS_CACHE.get(source, (None,))[0] == state:
+        return OPINION_ROWS_CACHE[source][1]
     fillers = {word_key(f.strip()) for f in podcast_settings()["fillers"].split(",") if " " not in f.strip()}
     fillers.discard("")
     mine = [w for w in db.execute("SELECT id, para, t0, t1, coalesce(shown, text), kept, shown IS NOT NULL "
@@ -4394,7 +4405,9 @@ def opinion_rows(db, source):
             else:
                 merged[key] = {**row, "engines": [engine], "agreed": 1}
     rows = sorted(merged.values(), key=lambda r: (r["t0"], -r["agreed"]))
-    return rows, engines, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest))
+    result = rows, engines, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest))
+    OPINION_ROWS_CACHE[source] = (state, result)
+    return result
 
 
 def opinion_rows_of(mine, heard):
