@@ -3106,19 +3106,55 @@ def para_marks(db, source, para, duration):
 def audio_versions(db, source):
     # Each paragraph's sound version: a hash of which of its words are kept,
     # and which cut words are not spoken (their sound stays in: text_cuts),
-    # all its render depends on besides the settings in its file name. Not
-    # paragraphs()' version, which also covers corrections and speakers, so
-    # that tagging or matching voices neither re-renders a paragraph nor makes
-    # the final video look out of date. {para: version}, paragraphs with any
-    # word kept only.
+    # and of the cached edges its sound depends on (word_edges: its first
+    # word's, the one after its last, and those at the cuts inside it), all
+    # its render depends on besides the settings in its file name. An edge
+    # moving after a re-alignment, a deleted cache, or a late align_soon
+    # would otherwise leave a stale clip under the same name. An edge not yet
+    # aligned hashes as absent. Not paragraphs()' version, which also covers
+    # corrections and speakers, so that tagging or matching voices neither
+    # re-renders a paragraph nor makes the final video look out of date.
+    # {para: version}, paragraphs with any word kept only.
+    edge_t = {i: t for i, t in db.execute("SELECT i, t FROM word_edges WHERE source = ?", (source,))}
+    rows = db.execute("SELECT para, id, i, kept, cut_reason FROM words WHERE source = ? ORDER BY i",
+                      (source,)).fetchall()
     h, kept = {}, set()
-    for para, wid, k, reason in db.execute("SELECT para, id, kept, cut_reason FROM words WHERE source = ? ORDER BY i",
-                                           (source,)):
+    for para, wid, i, k, reason in rows:
         # A not-spoken word sounds like a kept one, so it hashes as kept: a
         # kept word going not spoken needs no render; a cut going not spoken does.
         h.setdefault(para, hashlib.sha1()).update(f"{wid}:{1 if k or reason == 'unsaid' else 0};".encode())
         if k:
             kept.add(para)
+    # Paragraph boundary edges: first i and last i + 1 only.
+    first, last = {}, {}
+    for para, wid, i, k, reason in rows:
+        first.setdefault(para, i)
+        last[para] = i
+    need = {p: {first[p], last[p] + 1} for p in first}
+    # Cut runs (text_cuts): edges at the first said word's i and the i after the
+    # last said word; an all-unsaid run has none. Credit them to the run's paragraphs.
+    n, N = 0, len(rows)
+    while n < N:
+        if rows[n][3]:
+            n += 1
+            continue
+        m = n
+        while m + 1 < N and not rows[m + 1][3]:
+            m += 1
+        said = [x for x in range(n, m + 1) if rows[x][4] != "unsaid"]
+        if said:
+            ids = []
+            if said[0] > 0:
+                ids.append(rows[said[0]][2])
+            if said[-1] + 1 < N:
+                ids.append(rows[said[-1] + 1][2])
+            for x in range(n, m + 1):
+                need[rows[x][0]].update(ids)
+        n = m + 1
+    for p, ids in need.items():
+        for i in sorted(ids):
+            t = edge_t.get(i)
+            h[p].update((f"e{i}:{round(t, 3)};" if t is not None else f"e{i}:-;").encode())
     return {p: x.hexdigest()[:10] for p, x in h.items() if p in kept}
 
 
