@@ -136,7 +136,8 @@ podcast.
   shows which is hearing; **Hear with** buttons there run one again or all. They appear under
   **Other readings** in the Workspace list where they disagree with
   the text, for the selected card or all of them: **Play** the stretch, or **Use this** to
-  take its reading word for word (**Undo** takes it back).
+  take its reading word for word, or to add its words where the text has nothing (**Undo**
+  takes it back).
 - **Editing (Workspace):** the transcript as plain text with no time codes, a paragraph per
   card. Delete what you want gone; the paragraph saves when you click outside it. Deleted
   words are cut, a word changed in place is a correction (its time stays), and cut words

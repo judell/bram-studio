@@ -72,7 +72,8 @@ where the engines heard so far disagree with the text ({engines, at, rows, paras
 available}), and POST
 /transcripts/opinion/stop {source} stops the engine hearing it and empties
 what is queued behind it, and POST /transcripts/correct {source, ids, words} takes its reading for kept words, one
-for one, as one Undo step. The engines are the large whisper models on disk and
+for one, as one Undo step; with no ids, {source, words, times, after} adds words the text lacks at the engine's
+times, after word `after`. The engines are the large whisper models on disk and
 Parakeet (NVIDIA's, hear_parakeet.py under sherpa-onnx), which is not whisper-derived,
 and, on macOS 26, Apple's on-device SpeechAnalyzer (hear_apple.swift, compiled on first use).
 """
@@ -2525,12 +2526,14 @@ def describe_step(db, source, ch):
     # the paragraph named by its opening words (the page doesn't number
     # them). Returns (text, the first paragraph it touched).
     cut, back, fixed = ch.get("cut", []), ch.get("restored", []), ch.get("corrected", [])
-    tagged, flipped = ch.get("tagged", []), ch.get("unsaid", [])
+    tagged, flipped, added = ch.get("tagged", []), ch.get("unsaid", []), ch.get("inserted", [])
     ids = cut + back + [c[0] for c in fixed] + [t["id"] for t in tagged] + [u[0] for u in flipped]
-    if not ids:
+    if not ids and not added:
         return "", None
-    paras = sorted({r[0] for r in db.execute(
-        f"SELECT para FROM words WHERE id IN ({','.join('?' * len(ids))})", ids)})
+    # Added words carry their paragraph: after Undo they are not in words.
+    paras = sorted(({r[0] for r in db.execute(
+        f"SELECT para FROM words WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else set())
+                   | {r["para"] for r in added})
     first = paras[0]
     # The paragraph's opening as its box shows it (kept words, corrected);
     # a paragraph that's all cut, by its original words.
@@ -2551,6 +2554,8 @@ def describe_step(db, source, ch):
         what = f"mark {n(len(flipped), 'word', 'words')} " + ("not spoken" if flipped[0][2] == "unsaid" else "spoken")
     elif ch.get("reason") == "tic":
         what = "elide " + n(len(cut), "tic", "tics")
+    elif ch.get("reason") == "correct" and added:
+        what = f"add another reading ({n(len(added), 'word', 'words')})"
     elif ch.get("reason") == "correct":
         what = f"use another reading ({n(len(fixed) + len(cut), 'word', 'words')})"
     elif ch.get("reason") == "replace":
@@ -2827,9 +2832,72 @@ def spread_correction(db, source, ids, words):
     return {"cut": cut, "restored": [], "corrected": corrected, "unsaid": [[i, "edit", "unsaid"] for i in cut]}
 
 
+def add_words(db, source, words, times, after):
+    # Words the text lacks where an engine heard them (an opinion row with no
+    # text: its Use this): new kept words at the engine's times, [t0, t1]
+    # each, right after word `after` (its id; None: at the start), in its
+    # paragraph and with its speaker (at the start: the first paragraph, no
+    # speaker). After the word the alignment put them after, not the last
+    # word that starts before them: whisper's times beside a sentence it
+    # missed are shifted into the gap ("Phase" at 779.71, the missed
+    # sentence from 779.8). Their sound is already in, since no cut runs
+    # there. The change for record_text_change ("inserted": the rows), or
+    # {"error"}.
+    words = [w.strip() for w in words]
+    try:
+        times = [[float(a), float(b)] for a, b in times]
+    except (TypeError, ValueError):
+        times = None
+    if not words or times is None or len(words) != len(times) or not all(word_key(w) for w in words):
+        return {"error": "expected words with a [t0, t1] each"}
+    if any(b < a for a, b in times) or any(times[k + 1][0] < times[k][0] for k in range(len(times) - 1)):
+        return {"error": "times must be in order"}
+    if after is None:
+        first = db.execute("SELECT para FROM words WHERE source = ? ORDER BY i LIMIT 1", (source,)).fetchone()
+        at, para, speaker = 0, first[0] if first else 0, [None, None, None]
+    else:
+        before = db.execute("SELECT i, para, speaker_id, speaker_how, speaker_unsure FROM words "
+                            "WHERE source = ? AND id = ?", (source, after)).fetchone()
+        if before is None:
+            return {"error": "after must be a word of this source"}
+        at, para, speaker = before[0] + 1, before[1], list(before[2:])
+    return {"cut": [], "restored": [], "corrected": [],
+            "inserted": [{"i": at + k, "t0": a, "t1": b, "text": w, "para": para, "speaker": speaker}
+                         for k, (w, (a, b)) in enumerate(zip(words, times))]}
+
+
+def insert_rows(db, source, rows):
+    # Put inserted rows (add_words) into words at their i, moving the words
+    # from there on up by their count, and the cached edges (word_edges, keyed
+    # by the i after each boundary) with them; the edge at the insertion
+    # point goes, to be aligned again on either side of the new words. A row
+    # with an id (Redo) keeps it; the others get theirs here.
+    n, at = len(rows), rows[0]["i"]
+    db.execute("UPDATE words SET i = i + ? WHERE source = ? AND i >= ?", (n, source, at))
+    db.execute("DELETE FROM word_edges WHERE source = ? AND i = ?", (source, at))
+    db.execute("UPDATE word_edges SET i = -(i + ?) WHERE source = ? AND i > ?", (n, source, at))
+    db.execute("UPDATE word_edges SET i = -i WHERE source = ? AND i < 0", (source,))
+    for r in rows:
+        cur = db.execute("INSERT INTO words (id, source, i, t0, t1, text, kept, para, speaker_id, speaker_how, "
+                         "speaker_unsure) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                         (r.get("id"), source, r["i"], r["t0"], r["t1"], r["text"], r["para"], *r["speaker"]))
+        r["id"] = cur.lastrowid
+
+
+def remove_rows(db, source, rows):
+    # Undo of insert_rows: the rows out, the words after them back down, and
+    # the cached edges beside them gone (the ones after move back down).
+    n, at = len(rows), rows[0]["i"]
+    db.executemany("DELETE FROM words WHERE id = ?", [(r["id"],) for r in rows])
+    db.execute("UPDATE words SET i = i - ? WHERE source = ? AND i >= ?", (n, source, at + n))
+    db.execute("DELETE FROM word_edges WHERE source = ? AND i >= ? AND i <= ?", (source, at, at + n))
+    db.execute("UPDATE word_edges SET i = -(i - ?) WHERE source = ? AND i > ?", (n, source, at + n))
+    db.execute("UPDATE word_edges SET i = -i WHERE source = ? AND i < 0", (source,))
+
+
 def record_text_change(db, source, changes, reason="edit"):
     # Apply {cut, restored, corrected: [[id, old shown, new shown]], unsaid:
-    # [[id, was, now]] (cut_reason)} and keep
+    # [[id, was, now]] (cut_reason), inserted: [rows] (add_words)} and keep
     # it as one Undo step. Nothing to do records nothing.
     if not any(changes.values()):
         return False
@@ -2841,6 +2909,8 @@ def record_text_change(db, source, changes, reason="edit"):
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in changes["restored"]])
     db.executemany("UPDATE words SET shown = ? WHERE id = ?", [(new, i) for i, _, new in changes["corrected"]])
     db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(now, i) for i, _, now in changes.get("unsaid", [])])
+    if changes.get("inserted"):
+        insert_rows(db, source, changes["inserted"])
     db.execute("DELETE FROM transcript_edits WHERE source = ? AND undone = 1", (source,))
     db.execute("INSERT INTO transcript_edits (source, created_at, changes) VALUES (?, ?, ?)",
                (source, datetime_now(), json.dumps({**changes, "reason": reason})))
@@ -2853,6 +2923,8 @@ def undo_text_edit(db, source):
     if not row:
         return None
     ch = json.loads(row[1])
+    if ch.get("inserted"):
+        remove_rows(db, source, ch["inserted"])
     # The not-spoken flip first: a word this step cut and flipped is restored
     # below with cut_reason NULL.
     db.executemany("UPDATE words SET cut_reason = ? WHERE id = ?", [(was_, i) for i, was_, _ in ch.get("unsaid", [])])
@@ -2876,6 +2948,8 @@ def redo_text_edit(db, source):
     if not row:
         return None
     ch = json.loads(row[1])
+    if ch.get("inserted"):
+        insert_rows(db, source, ch["inserted"])
     db.executemany("UPDATE words SET kept = 0, cut_reason = ? WHERE id = ?",
                    [(ch.get("reason", "edit"), i) for i in ch["cut"]])
     db.executemany("UPDATE words SET kept = 1, cut_reason = NULL WHERE id = ?", [(i,) for i in ch["restored"]])
@@ -3012,7 +3086,7 @@ def text_cuts(db, source, duration):
     # times and the span is marked unaligned. Then what is kept, as source
     # intervals with where each starts on the edited timeline, and the last
     # round-trip check's verdict on each span (check_text).
-    rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), kept, cut_reason FROM words "
+    rows = db.execute("SELECT id, i, t0, t1, coalesce(shown, text), kept, cut_reason, para FROM words "
                       "WHERE source = ? ORDER BY i", (source,)).fetchall()
     runs, k = [], 0
     while k < len(rows):
@@ -3040,6 +3114,23 @@ def text_cuts(db, source, duration):
         verdicts = json.load(open(os.path.join(transcript_folder(source), "check.json")))["spans"]
     except (OSError, ValueError, KeyError):
         verdicts = {}
+    # A run is unheard when the engines heard none of its words where whisper
+    # put them (its words' times, half a second either side): from each
+    # opinion's own words, not the rows, since a stretch of only cut words
+    # has no row. Each engine's words are in time order, so a window is a
+    # bisect. No engine heard yet: nothing is unheard.
+    import bisect
+    engines = []
+    for path in opinion_files(source):
+        ws = opinion_words_cached(path)
+        engines.append((ws, [h[1] for h in ws]))
+
+    def heard_any(keys, w0, w1):
+        for ws, ts in engines:
+            lo, hi = bisect.bisect_left(ts, w0), bisect.bisect_right(ts, w1)
+            if keys & {h[0] for h in ws[lo:hi]}:
+                return True
+        return False
     spans = []
     for (k, j), (ea, eb), quiet_run in zip(runs, eff, silent):
         unaligned = False
@@ -3060,7 +3151,12 @@ def text_cuts(db, source, duration):
             quiet = quiet if quiet is not None else silences(source)
             b, unaligned = snap(rows[eb][3], quiet, rows[eb][3], rows[eb + 1][2]), True
         reasons = sorted({r[6] or "edit" for r in rows[k:j + 1]})
-        spans.append({"ids": [r[0] for r in rows[k:j + 1]], "text": " ".join(r[4] for r in rows[k:j + 1]),
+        mine = {word_key(r[4]) for r in rows[k:j + 1]} - {""}
+        said_n = [r for r in rows[k:j + 1] if r[6] != "unsaid"]
+        spans.append({"para": rows[k][7],
+                      "unheard": bool(engines) and bool(mine) and not heard_any(mine, rows[k][2] - 0.5, rows[j][3] + 0.5),
+                      "crammed": bool(said_n) and sum(r[3] - r[2] for r in said_n) / len(said_n) < 0.15,
+                      "ids": [r[0] for r in rows[k:j + 1]], "text": " ".join(r[4] for r in rows[k:j + 1]),
                       "t0": round(a, 3), "t1": round(a if quiet_run else max(a, b), 3), "reason": "+".join(reasons),
                       "unaligned": unaligned, "check": verdicts.get(str(rows[k][0]))})
     kept, at, out = [], 0.0, 0.0
@@ -4455,6 +4551,14 @@ def opinion_words(path):
     return heard_words(path, raw=True)
 
 
+def opinion_words_cached(path):
+    # An opinion file's words, cached by mtime (OPINION_CACHE).
+    mtime = os.path.getmtime(path)
+    if OPINION_CACHE.get(path, (None,))[0] != mtime:
+        OPINION_CACHE[path] = (mtime, opinion_words(path))
+    return OPINION_CACHE[path][1]
+
+
 def opinion_files(source):
     # Every opinion-*.json beside the transcript, by name.
     import glob
@@ -4468,7 +4572,11 @@ def opinion_rows(db, source):
     # first. Each non-equal stretch is a row {ids, para, text, heard, t0, t1,
     # swap}: text the transcript's, heard the opinion's as written; swap when
     # none of ours is cut (Use this reads them as heard, however many:
-    # spread_correction). A stretch of only cut words is left out, and so is one of only
+    # spread_correction), or when the text has nothing there and the opinion
+    # does (times, and after, the id of the word before: Use this adds its
+    # words there at the engine's times, add_words; a sentence whisper
+    # passed over in silence, 2026-11-20). A stretch of
+    # only cut words is left out, and so is one of only
     # corrected words: a correction is the editor's settled word, and the
     # opinion arguing with it ("Jon" heard as "John", twenty times) is noise.
     # Computed live, so a row goes once the text reads the same. Rows of
@@ -4534,9 +4642,13 @@ def opinion_rows_of(mine, heard):
         else:  # pure insertion: where the heard words are, in the paragraph of the word before
             t0, t1 = theirs[0][1], theirs[-1][2]
             para = mine[i1 - 1][1] if i1 else (mine[0][1] if mine else 0)
-        rows.append({"ids": [w[0] for w in ours], "para": para, "text": " ".join(w[4] for w in ours),
-                     "heard": " ".join(h[3] for h in theirs), "key": " ".join(h[0] for h in theirs), "t0": t0, "t1": t1,
-                     "swap": bool(ours) and bool(theirs) and all(w[5] for w in ours)})
+        row = {"ids": [w[0] for w in ours], "para": para, "text": " ".join(w[4] for w in ours),
+               "heard": " ".join(h[3] for h in theirs), "key": " ".join(h[0] for h in theirs), "t0": t0, "t1": t1,
+               "swap": bool(theirs) and (not ours or all(w[5] for w in ours))}
+        if not ours:  # Use this adds the words at the engine's times, after the word before (add_words)
+            row["times"] = [[round(h[1], 3), round(h[2], 3)] for h in theirs]
+            row["after"] = mine[i1 - 1][0] if i1 else None
+        rows.append(row)
     return rows
 
 
@@ -5166,9 +5278,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 f"SELECT para FROM words WHERE id IN ({','.join('?' * len(flagged))})", flagged)} if flagged else set()
             op = opinion_rows(db, source)
             other = collections.Counter(r["para"] for r in op[0]) if op else {}
+            # The newest plain cut of each paragraph (the highest first id
+            # among its plain-cut spans), for the card's Keep the sound.
+            last = {}
+            dur = db.execute("SELECT duration_s FROM transcripts WHERE source = ?", (source,)).fetchone()
+            for s in text_cuts(db, source, (dur[0] if dur else 0) or 0)["spans"]:
+                parts = s["reason"].split("+")
+                if "unsaid" in parts or parts == ["tic"]:
+                    continue
+                if s["para"] not in last or s["ids"][0] > last[s["para"]]["ids"][0]:
+                    last[s["para"]] = s
             for p in paras:
                 p["suspect"] = p["para"] in marks
                 p["other"] = other.get(p["para"], 0)
+                if p["para"] in last:
+                    c = last[p["para"]]
+                    p["lastCut"] = {k: c[k] for k in ("ids", "text", "unheard", "crammed")}
             self.send_json(200, paras)
 
     def transcript_opinions(self):
@@ -5773,16 +5898,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return self.send_json(400, result)
             elif op == "correct":
                 # {ids, words}: kept words read as words, however many (an
-                # opinion row's Use this; spread_correction), times kept.
-                ids, words = body.get("ids"), body.get("words")
-                if not (isinstance(ids, list) and isinstance(words, list) and ids and words
-                        and all(isinstance(w, str) and w.strip() for w in words)):
-                    return self.send_json(400, {"error": "expected {source, ids, words}"})
-                changes = spread_correction(db, source, [int(i) for i in ids], words)
+                # opinion row's Use this; spread_correction), times kept. With
+                # no ids, {words, times, after}: words the text lacks, added
+                # at those times after word `after` (add_words).
+                ids, words, times = body.get("ids") or [], body.get("words"), body.get("times")
+                after = body.get("after")
+                if not (isinstance(ids, list) and isinstance(words, list) and words
+                        and all(isinstance(w, str) and w.strip() for w in words)
+                        and (ids or (isinstance(times, list) and (after is None or isinstance(after, int))))):
+                    return self.send_json(400, {"error": "expected {source, ids, words} or {source, words, times, after}"})
+                changes = (spread_correction(db, source, [int(i) for i in ids], words) if ids
+                           else add_words(db, source, words, times, after))
                 if "error" in changes:
                     return self.send_json(400, changes)
                 record_text_change(db, source, changes, reason="correct")
-                result = {"corrected": len(changes["corrected"]), "cut": len(changes["cut"])}
+                result = {"corrected": len(changes["corrected"]), "cut": len(changes["cut"]),
+                          "added": len(changes.get("inserted", []))}
+                print(f"correct source={source} ids={len(ids)} words={len(words)} corrected={result['corrected']} "
+                      f"cut={result['cut']} added={result['added']}", flush=True)
             elif op == "unsaid":
                 # {ids, unsaid}: cut words only. true marks them not spoken
                 # (their sound stays in); false makes them an ordinary cut.

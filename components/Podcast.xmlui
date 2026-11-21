@@ -436,9 +436,11 @@
       return x ? x.text.split(' ').slice(0, 6).join(' ') + '…' : '';
     }
     // A row's Use this: its words, one for one, with everything passed in
-    // (#3940: no component variables from inside a list).
-    function useReading(src, ids, words) {
-      textChange('/transcripts/correct', { source: src, ids, words: words.split(' ') });
+    // (#3940: no component variables from inside a list). A row with no
+    // text has times for its words instead, and the word they follow: they
+    // are added there.
+    function useReading(src, ids, words, times, after) {
+      textChange('/transcripts/correct', { source: src, ids, words: words.split(' '), times, after });
     }
     function playFrom(t) {
       speakerPlayer.seek(t);
@@ -761,7 +763,7 @@
              (2026-11-14: "not super valuable, but slightly interesting").
              No Restore here: typing words back, Undo, or a paragraph's
              Restore tics bring cuts back. A long cut has More / Less. -->
-        <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
+        <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{cutList.value ? cutList.value.spans.some(s => s.reason.indexOf('unsaid') >= 0 || s.unheard || s.crammed) : false}" iconPosition="start" fullWidthSummary="true"
           summary="{'Cuts: ' + (cutList.value ? cutList.value.spans.length : 0) + ', ' + stamp(cutList.value ? cutList.value.cutSecs : 0)}">
           <Items data="{cutList.value ? cutList.value.spans : []}">
             <VStack gap="0">
@@ -794,7 +796,8 @@
              differently, for the selected card or, with none selected, all.
              Play is the source stretch, half a second either side, through
              the Samples view's audio player; Use this corrects the words one
-             for one (/transcripts/correct), Undo takes it back. -->
+             for one (/transcripts/correct), or adds them where the text has
+             nothing, Undo takes it back. -->
         <ExpandableItem when="{view === 'Edit text' &amp;&amp; transcribed()}" initiallyExpanded="{false}" iconPosition="start" fullWidthSummary="true"
           summary="{otherSummary()}">
           <VStack gap="$space-1">
@@ -807,8 +810,8 @@
                   <Button size="xs" variant="ghost" label="{openOther === $item.t0 + '-' + $item.heard ? 'Close' : 'Play'}"
                     onClick="openOther = openOther === $item.t0 + '-' + $item.heard ? null : $item.t0 + '-' + $item.heard" />
                   <Button when="{$item.swap}" size="xs" variant="ghost" label="Use this"
-                    tooltip="Change the text to this reading (Undo takes it back)"
-                    onClick="useReading(source, $item.ids, $item.heard)" />
+                    tooltip="{$item.ids.length ? 'Change the text to this reading (Undo takes it back)' : 'Add these words to the text, at the engine\'s times (Undo takes it back)'}"
+                    onClick="useReading(source, $item.ids, $item.heard, $item.times, $item.after)" />
                 </HStack>
                 <Text when="{currentPara === null}" variant="secondary" value="{'In “' + paraOpening($item.para) + '”'}" />
                 <Text value="{'Text: ' + ($item.text || '(nothing)')}" />
@@ -1140,6 +1143,11 @@
                 label="{'Elide ' + $item.ticsKept + (($item.ticsKept === 1) ? ' tic' : ' tics')}"
                 tooltip="Cut this paragraph's fillers and stutters, as one step Undo can take back"
                 onClick="paraTics('/transcripts/elide', { source, para: $item.para })" />
+              <Text variant="secondary" when="{$item.lastCut}"
+                value="{'cut “' + ($item.lastCut ? $item.lastCut.text : '') + '”' + ($item.lastCut &amp;&amp; $item.lastCut.unheard ? ': the engines never heard these words' : ($item.lastCut &amp;&amp; $item.lastCut.crammed ? ': whisper crammed these words' : ''))}" />
+              <Button size="xs" variant="outlined" when="{$item.lastCut}" label="Keep the sound"
+                tooltip="Take the words out of the text but leave their sound in (for words whisper made up)"
+                onClick="paraTics('/transcripts/unsaid', { source, ids: $item.lastCut.ids, unsaid: true })" />
             </HStack>
             <Text variant="secondary" when="{false &amp;&amp; $item.suspect}"
               value="⚠ Check joins flagged a join here: listen" />
