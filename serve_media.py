@@ -3821,7 +3821,7 @@ def save_transcript_version(db, source, made_at=None):
 
 TRANSCRIPT_HTML_STYLE = """
 :root { --bg: #fff; --fg: #1d1f23; --muted: #5d6470; --rule: #e3e6ea; --link: #2a62c9;
-  --grip: #c9ced6; --left: 45%; --now: #eef3fc; --said: #cfe0fb; }
+  --grip: #c9ced6; --left: 60%; --now: #eef3fc; --said: #cfe0fb; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #16181c; --fg: #e8eaed; --muted: #9aa1ac; --rule: #2c3036; --link: #8ab4f8;
     --grip: #3a3f47; --now: #1f2a3a; --said: #2d4466; }
