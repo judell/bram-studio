@@ -656,10 +656,12 @@ def project_meta(info):
     # each a string, '' when unset: what an export says the recording is
     # (final-transcript-html-export).
     # showTranscript: whether the HTML transcript opens with its transcript
-    # shown (false, the default: just the video and the heading).
+    # shown. Shown is the default (html-export-shows-transcript-by-default,
+    # 2026-11-20); only a saved false hides it, leaving the video and the
+    # heading.
     meta = (info or {}).get("meta") or {}
     return {**{k: meta.get(k) if isinstance(meta.get(k), str) else "" for k in META_FIELDS},
-            "showTranscript": meta.get("showTranscript") is True}
+            "showTranscript": meta.get("showTranscript") is not False}
 
 
 def write_project(folder, info):
@@ -5318,13 +5320,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # metadata, saved in its project.json (project_meta).
             body = self.json_body()
             if any(not isinstance(body.get(k, ""), str) for k in META_FIELDS) \
-                    or not isinstance(body.get("showTranscript", False), bool):
+                    or not isinstance(body.get("showTranscript", True), bool):
                 return self.send_json(400, {"error": "expected strings title, date, summary and a boolean showTranscript"})
             info = read_project(studio_paths.PROJECT)
             if info is None:
                 return self.send_json(404, {"error": "no open project"})
+            # A body without showTranscript saves the default, shown (project_meta).
             info["meta"] = {**{k: body.get(k, "").strip() for k in META_FIELDS},
-                            "showTranscript": body.get("showTranscript", False)}
+                            "showTranscript": body.get("showTranscript", True)}
             write_project(studio_paths.PROJECT, info)
             print("project meta " + " ".join(f"{k}={len(info['meta'][k])}" for k in META_FIELDS)
                   + f" showTranscript={info['meta']['showTranscript']}", flush=True)
