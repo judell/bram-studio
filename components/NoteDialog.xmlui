@@ -57,13 +57,26 @@
         toast.error('Deleting the note: ' + e.message);
       }
     }
+    // The title is the note's words without the punctuation whisper attaches
+    // to them ("Schwartz," is one word of the transcript, so a selection
+    // can't leave the comma out); the words themselves stay as saved, since
+    // anchoring matches them against the transcript.
+    function title() {
+      const n = cur();
+      return n ? n.words.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '') : 'Note';
+    }
     function refineData() {
       const n = cur();
       return n ? { source: $props.source, version: $props.version, id: n.id, from: n.from, to: n.to, words: n.words } : null;
     }
   </script>
-  <ModalDialog id="dlg" title="{cur() ? cur().words : 'Note'}" maxWidth="640px">
+  <ModalDialog id="dlg" title="{title()}" maxWidth="640px">
     <Badge when="{!!cur() &amp;&amp; !!cur().provisional}" value="Provisional" />
+    <!-- A note moved by Transcribe (notes-re-anchor-by-text): placed on
+         words that read differently (was), or found by a fuzzy match, says
+         so, so a wrong landing is one look away rather than silent. -->
+    <Text when="{!!cur() &amp;&amp; (!!cur().was || cur().how === 'fuzzy')}" variant="secondary"
+      value="{'Placed by its words after transcribing again' + (cur().was ? ' (was “' + cur().was + '”)' : '') + '; check it.'}" />
     <Markdown when="{!!cur() &amp;&amp; !editing}" openLinkInNewTab="{true}" content="{cur() ? cur().markdown : ''}" />
     <TextArea when="{editing}" initialValue="{draft}" minRows="6" autoSize="true"
       onDidChange="(v) => draft = v" />

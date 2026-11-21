@@ -2120,11 +2120,17 @@ def run_transcript(source, path, prompt, model):
         rows = [(source, s["offsets"]["from"] / 1000, s["offsets"]["to"] / 1000, s["text"].strip())
                 for s in json.load(open(out + ".json"))["transcription"] if s["text"].strip()]
         with sqlite3.connect(DB) as db:
+            # The old words, so the notes can follow their words into the
+            # new ones (reanchor_notes).
+            old = db.execute("SELECT id, text FROM words WHERE source = ? ORDER BY i", (source,)).fetchall()
             db.execute("DELETE FROM segments WHERE source = ?", (source,))
             db.executemany("INSERT INTO segments (source, t0, t1, text) VALUES (?, ?, ?, ?)", rows)
             n_words = build_words(db, source)
+            anchored = reanchor_notes(db, source, old)
         print(f"transcribe done source={source} segments={len(rows)} words={n_words} "
               f"secs={time.time() - t_start:.1f}", flush=True)
+        if anchored["found"] or anchored["stale"]:
+            push({"notes": source})
         finish("done")
     except Exception as e:
         print(f"transcribe failed source={source} error={e}", flush=True)
@@ -2195,7 +2201,11 @@ WORD_EDGES_SQL = """CREATE TABLE IF NOT EXISTS word_edges (
 # Notes on the final transcript's words (docs/annotation.md): the words they
 # cover as word ids from..to, the words' text when saved (to spot a stale
 # note), and the note's Markdown. Called "notes" because "annotations"
-# already names the video callouts' routes.
+# already names the video callouts' routes. The context columns
+# (notes-re-anchor-by-text) let a note find its words again after
+# Transcribe renumbers them: whisper's raw text of the words, the kept
+# words either side, the source seconds, how it was last placed and the
+# words it sat on before.
 NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY,
   source TEXT NOT NULL,
@@ -2205,8 +2215,17 @@ NOTES_SQL = """CREATE TABLE IF NOT EXISTS notes (
   markdown TEXT NOT NULL,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
-  provisional INTEGER NOT NULL DEFAULT 0
+  provisional INTEGER NOT NULL DEFAULT 0,
+  raw TEXT,
+  prefix TEXT,
+  suffix TEXT,
+  t0 REAL,
+  t1 REAL,
+  anchored TEXT,
+  was TEXT
 )"""
+NOTE_CONTEXT_COLS = (("raw", "TEXT"), ("prefix", "TEXT"), ("suffix", "TEXT"), ("t0", "REAL"), ("t1", "REAL"),
+                     ("anchored", "TEXT"), ("was", "TEXT"))
 checking = {}  # source -> {"started"} while a round-trip check runs (check_text)
 opining = {}  # source -> {"engine", "queued": [...], "done_s", "duration_s"} while a second opinion is heard (run_opinion)
 matching = {}  # source -> {"done", "total"} while voiceprint.py runs (match_speakers)
@@ -4014,23 +4033,207 @@ NOTE_SCRIPT = """
 """
 
 
+def note_holds(have, words, raw):
+    # Whether the words at a note's ids (their keys, in order) hold its text:
+    # each one is the saved shown word or the saved raw word, so a correction
+    # typed over a noted word, or taken back, leaves the note placed.
+    want = [word_key(w) for w in words.split()]
+    if have == want:
+        return True
+    rk = [word_key(w) for w in (raw or "").split()]
+    return len(have) == len(want) == len(rk) and all(h in (w, r) for h, w, r in zip(have, want, rk))
+
+
 def placed_notes(db, source, snap):
     # The source's notes, each marked placed when the snapshot still has its
-    # words at its ids (word_key compares them); a stale note is never put
-    # on other words. Shared by GET /notes and the HTML export. Provisional
-    # notes are proposals Jon hasn't accepted yet.
+    # words at its ids (note_holds); a stale note is never put on other
+    # words. Shared by GET /notes and the HTML export. Provisional notes are
+    # proposals Jon hasn't accepted yet. `how` is how the note was last
+    # placed after a Transcribe (None if never moved) and `was` the words it
+    # sat on before that, when they read differently.
     at = {w[0]: i for i, w in enumerate(snap["words"])} if snap else {}
     out = []
-    for id_, a, b, words, md, created, updated, prov in db.execute(
-            "SELECT id, w_from, w_to, words, markdown, created_at, updated_at, provisional FROM notes "
-            "WHERE source = ? ORDER BY w_from, id", (source,)):
+    for id_, a, b, words, md, created, updated, prov, raw, how, was in db.execute(
+            "SELECT id, w_from, w_to, words, markdown, created_at, updated_at, provisional, raw, anchored, was "
+            "FROM notes WHERE source = ? ORDER BY w_from, id", (source,)):
         placed = False
         if a in at and b in at and at[a] <= at[b]:
-            have = [word_key(w[1]) for w in snap["words"][at[a]:at[b] + 1]]
-            placed = have == [word_key(w) for w in words.split()]
+            placed = note_holds([word_key(w[1]) for w in snap["words"][at[a]:at[b] + 1]], words, raw)
         out.append({"id": id_, "from": a, "to": b, "words": words, "markdown": md, "created": created,
-                    "updated": updated, "placed": placed, "provisional": bool(prov)})
+                    "updated": updated, "placed": placed, "provisional": bool(prov), "how": how, "was": was})
     return out
+
+
+# A note's context (notes-re-anchor-by-text): this many kept words either
+# side, and the search after Transcribe: windows starting within NOTE_NEAR_S
+# of the saved time first, NOTE_FAR_S if none fit; a window fits at a
+# character ratio of NOTE_RATIO or more, with the neighbours agreeing or no
+# rival elsewhere within NOTE_RIVAL of it. Measured on aiw vs aiw-2 (the same
+# hour transcribed with and without a speaker prompt): word times drift
+# 0.00 s median, 90% within 0.7 s, one stretch 2-3 s; the respelled names
+# score 0.85-0.95 against their corrected spelling.
+NOTE_CONTEXT = 5
+NOTE_NEAR_S, NOTE_FAR_S = 5.0, 60.0
+NOTE_RATIO, NOTE_RIVAL, NOTE_CONTEXT_RATIO = 0.8, 0.05, 0.6
+
+
+def kept_rows(db, source):
+    # The source's kept words in order: (id, t0, t1, raw text, shown text).
+    return db.execute("SELECT id, t0, t1, text, coalesce(shown, text) FROM words WHERE source = ? AND kept = 1 "
+                      "ORDER BY i", (source,)).fetchall()
+
+
+def note_context(rows, at, a, b):
+    # The context of a note on kept words a..b of `rows` (kept_rows, with
+    # `at` their positions by id): {raw, prefix, suffix, t0, t1}, or None
+    # when the ids aren't kept words in order.
+    if a not in at or b not in at or at[a] > at[b]:
+        return None
+    ka, kb = at[a], at[b]
+    return {"raw": " ".join(r[3] for r in rows[ka:kb + 1]),
+            "prefix": " ".join(r[4] for r in rows[max(0, ka - NOTE_CONTEXT):ka]),
+            "suffix": " ".join(r[4] for r in rows[kb + 1:kb + 1 + NOTE_CONTEXT]),
+            "t0": rows[ka][1], "t1": rows[kb][2]}
+
+
+def fill_note_context(db):
+    # Notes made before the context columns, still placed on the current
+    # words, get their context from them, so the next Transcribe has
+    # something to go on. Once, at startup; a note already stale stays as
+    # it is.
+    todo = db.execute("SELECT DISTINCT source FROM notes WHERE raw IS NULL").fetchall()
+    for (source,) in todo:
+        rows = kept_rows(db, source)
+        at = {r[0]: k for k, r in enumerate(rows)}
+        filled = 0
+        for id_, a, b, words in db.execute("SELECT id, w_from, w_to, words FROM notes WHERE source = ? AND raw IS NULL",
+                                           (source,)).fetchall():
+            ctx = note_context(rows, at, a, b)
+            if ctx and note_holds([word_key(r[4]) for r in rows[at[a]:at[b] + 1]], words, ctx["raw"]):
+                db.execute("UPDATE notes SET raw = ?, prefix = ?, suffix = ?, t0 = ?, t1 = ? WHERE id = ?",
+                           (ctx["raw"], ctx["prefix"], ctx["suffix"], ctx["t0"], ctx["t1"], id_))
+                filled += 1
+        db.commit()
+        print(f"notes context filled source={source} n={filled}", flush=True)
+
+
+def map_words(old, new):
+    # Old word ids to new ones, by aligning the two raw texts (difflib over
+    # word keys, as correct_text aligns a whole transcript): a word in an
+    # equal run, or in a replace run of the same length (a respelling), maps
+    # to its counterpart; the rest don't map. The mechanism notes follow
+    # after Transcribe; nothing else reads it yet.
+    import difflib
+    sm = difflib.SequenceMatcher(None, [word_key(w[1]) for w in old], [word_key(w[1]) for w in new], autojunk=False)
+    out = {}
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal" or (tag == "replace" and i2 - i1 == j2 - j1):
+            for k in range(i2 - i1):
+                out[old[i1 + k][0]] = new[j1 + k][0]
+    return out
+
+
+def anchor_note(note, rows, id_map=None):
+    # Where a note's words are among `rows` (kept_rows): (from id, to id,
+    # how). By its ids when they still hold the words ('ids'); else through
+    # id_map when both ends map to kept words in order spanning the note's
+    # word count, give or take one ('aligned'); else a search by text near
+    # the saved time: windows of that word count, give or take one, scored
+    # by the better character ratio of the window's keys against the saved
+    # shown keys and the saved raw keys ('exact' at 1.0, else 'fuzzy'); ties
+    # go to the nearest time. None when nothing fits.
+    import difflib
+    at = {r[0]: k for k, r in enumerate(rows)}
+    a, b, words, raw = note["w_from"], note["w_to"], note["words"], note.get("raw")
+    n = len(words.split())
+    if a in at and b in at and at[a] <= at[b] and note_holds([word_key(r[4]) for r in rows[at[a]:at[b] + 1]], words, raw):
+        return a, b, "ids"
+    if id_map:
+        a2, b2 = id_map.get(a), id_map.get(b)
+        if a2 in at and b2 in at and at[a2] <= at[b2] and abs(at[b2] - at[a2] + 1 - n) <= 1:
+            return a2, b2, "aligned"
+    q_shown, q_raw = "".join(word_key(w) for w in words.split()), "".join(word_key(w) for w in (raw or "").split())
+    keys = [word_key(r[4]) for r in rows]
+    t0 = note.get("t0")
+
+    def ratio(x, y):
+        return difflib.SequenceMatcher(None, x, y).ratio() if x and y else 0.0
+
+    def score(ka, L):
+        cand = "".join(keys[ka:ka + L])
+        return max(ratio(q_shown, cand), ratio(q_raw, cand))
+
+    def context_ok(ka, L):
+        # The saved neighbours against the window's, each side a ratio of the
+        # joined keys; a side with nothing saved is left out. No context saved
+        # at all counts as agreeing.
+        sides = []
+        for saved, have in ((note.get("prefix"), keys[max(0, ka - NOTE_CONTEXT):ka]),
+                            (note.get("suffix"), keys[ka + L:ka + L + NOTE_CONTEXT])):
+            if saved:
+                sides.append(ratio("".join(word_key(w) for w in saved.split()), "".join(have)))
+        return not sides or sum(sides) / len(sides) >= NOTE_CONTEXT_RATIO
+
+    for near in ((NOTE_NEAR_S, NOTE_FAR_S) if t0 is not None else (None,)):
+        cands = []
+        for L in (n - 1, n, n + 1):
+            if L < 1:
+                continue
+            for ka in range(len(rows) - L + 1):
+                dt = abs(rows[ka][1] - t0) if t0 is not None else 0.0
+                if near is not None and dt > near:
+                    continue
+                cands.append((score(ka, L), -dt, ka, L))
+        if not cands:
+            continue
+        best = max(cands)
+        s, _, ka, L = best
+        if s < NOTE_RATIO:
+            continue
+        rivals = [c for c in cands if c[0] >= s - NOTE_RIVAL and (c[2] + c[3] <= ka or c[2] >= ka + L)]
+        if rivals and not context_ok(ka, L):
+            continue
+        return rows[ka][0], rows[ka + L - 1][0], ("exact" if s >= 1.0 else "fuzzy")
+    return None
+
+
+def reanchor_notes(db, source, old):
+    # After Transcribe rebuilt the source's words: every note placed again
+    # (anchor_note) against the new kept words, through the id map from the
+    # old words (`old`: (id, raw text) in order) first. A found note gets its
+    # new ids and context; when the words it landed on read differently from
+    # its words, `was` keeps the old ones and `words` takes the new, so
+    # placed_notes finds it placed. A note not found keeps its ids and is
+    # stale, as before. One log line per note, then the counts.
+    notes = db.execute("SELECT id, w_from, w_to, words, raw, prefix, suffix, t0 FROM notes WHERE source = ? "
+                       "ORDER BY id", (source,)).fetchall()
+    if not notes:
+        return {"found": 0, "stale": 0}
+    rows = kept_rows(db, source)
+    at = {r[0]: k for k, r in enumerate(rows)}
+    id_map = map_words(old, db.execute("SELECT id, text FROM words WHERE source = ? ORDER BY i", (source,)).fetchall())
+    found = stale = 0
+    for id_, a, b, words, raw, prefix, suffix, t0 in notes:
+        note = {"w_from": a, "w_to": b, "words": words, "raw": raw, "prefix": prefix, "suffix": suffix, "t0": t0}
+        hit = anchor_note(note, rows, id_map)
+        if not hit:
+            stale += 1
+            db.execute("UPDATE notes SET anchored = NULL WHERE id = ?", (id_,))
+            print(f"notes anchor source={source} id={id_} how=none from={a} to={b} t0={t0} words={words!r}", flush=True)
+            continue
+        a2, b2, how = hit
+        ctx = note_context(rows, at, a2, b2)
+        landed = " ".join(r[4] for r in rows[at[a2]:at[b2] + 1])
+        moved = [word_key(w) for w in landed.split()] != [word_key(w) for w in words.split()]
+        db.execute("UPDATE notes SET w_from = ?, w_to = ?, anchored = ?, raw = ?, prefix = ?, suffix = ?, t0 = ?, t1 = ?, "
+                   "words = ?, was = ? WHERE id = ?",
+                   (a2, b2, how, ctx["raw"], ctx["prefix"], ctx["suffix"], ctx["t0"], ctx["t1"],
+                    landed if moved else words, words if moved else None, id_))
+        found += 1
+        print(f"notes anchor source={source} id={id_} how={how} from={a2} to={b2} t0={ctx['t0']:.2f} "
+              f"words={landed!r}" + (f" was={words!r}" if moved else ""), flush=True)
+    print(f"notes anchored source={source} found={found} stale={stale} mapped={len(id_map)} of={len(old)}", flush=True)
+    return {"found": found, "stale": stale}
 
 
 def note_html(md):
@@ -5767,9 +5970,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not isinstance(prov, bool):
                 return self.send_json(400, {"error": "provisional must be true or false"})
             now = time.time()
+            # The note's context (raw words, neighbours, time), so it can
+            # find its words again after Transcribe (reanchor_notes).
+            rows = kept_rows(db, source)
+            ctx = note_context(rows, {r[0]: k for k, r in enumerate(rows)}, a, b) or {}
             with db:
-                id_ = db.execute("INSERT INTO notes (source, w_from, w_to, words, markdown, created_at, updated_at, provisional) "
-                                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (source, a, b, words, md, now, now, int(prov))).lastrowid
+                id_ = db.execute("INSERT INTO notes (source, w_from, w_to, words, markdown, created_at, updated_at, "
+                                 "provisional, raw, prefix, suffix, t0, t1) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                 (source, a, b, words, md, now, now, int(prov), ctx.get("raw"), ctx.get("prefix"),
+                                  ctx.get("suffix"), ctx.get("t0"), ctx.get("t1"))).lastrowid
             print(f"notes add source={source} id={id_} from={a} to={b} chars={len(md)} provisional={prov}", flush=True)
         else:
             id_ = body.get("id")
@@ -8257,6 +8466,12 @@ with sqlite3.connect(DB) as _db:
             _db.execute(f"ALTER TABLE words ADD COLUMN {col} {kind}")
     if "undone" not in [r[1] for r in _db.execute("PRAGMA table_info(transcript_edits)")]:
         _db.execute("ALTER TABLE transcript_edits ADD COLUMN undone INTEGER NOT NULL DEFAULT 0")
+    # The notes' context columns arrived later (notes-re-anchor-by-text); a
+    # note made before them gets its context from the words it still sits on.
+    for col, kind in NOTE_CONTEXT_COLS:
+        if col not in [r[1] for r in _db.execute("PRAGMA table_info(notes)")]:
+            _db.execute(f"ALTER TABLE notes ADD COLUMN {col} {kind}")
+    fill_note_context(_db)
     # A transcript still 'running' was cut off by the server stopping.
     _db.execute("UPDATE transcripts SET status = 'failed: the server stopped while it ran' WHERE status = 'running'")
 backfill_studio_files()
