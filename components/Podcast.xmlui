@@ -868,7 +868,11 @@
           }
           paraList.scrollToIndex(p.activeRow);
         }" />
-      <VStack height="*" overflowY="auto"
+      <!-- This box only bounds the card list; the List owns its scroll
+           (height="*"), so it virtualizes. With overflowY="auto" here the
+           List deferred to the box and mounted every card
+           (transcript-lists-own-their-scroll). -->
+      <VStack height="*"
         onClick="(e) => {
           if (view !== 'Edit text') return;
           const t = e &amp;&amp; e.target;
@@ -904,7 +908,7 @@
              (samples-hold-until-settled).
              Right after a jump the cards above are only estimated, which is
              when a timed restore used to lose it. -->
-        <List id="paraList" data="{paras}" idKey="key" dataRefreshMode="preserve-state"
+        <List id="paraList" height="*" data="{paras}" idKey="key" dataRefreshMode="preserve-state"
           onVisibleRangeDidChange="(r) => {
             if (samplesHold === null) return;
             const h = samplesHold;

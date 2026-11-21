@@ -424,13 +424,16 @@
          xmlui-org/xmlui#3961 (scrollToIndex align: "start"), retired by
          reminder-retire-dom-scroll-workarounds. Not in range yet: scroll to it
          again (at most twice). Each check logs final-transcript-view. -->
-    <!-- The lists scroll inside this box, the rest of the page doesn't, so
-         the header rows and the find bar stay in view (find-in-long-views;
-         2026-11-15: "findbar does not stick to top in final transcript"). A
-         List with height="*" here let the whole page scroll instead; the
-         Workspace's right pane is built the same way. -->
-    <VStack height="*" overflowY="auto">
-    <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" data="{ft.value ? ft.value.turns : []}"
+    <!-- The lists own their scroll (height="*" under the fixed-height root),
+         so the header rows and the find bar above stay in view
+         (find-in-long-views) and the List virtualizes. This box only bounds
+         them: with overflowY="auto" on it (2026-11-15 to 2026-11-20) the List
+         handed its scroll to the box and mounted every turn, so each Accept
+         re-rendered 8,000 components eight times over
+         (transcript-lists-own-their-scroll; XMLUI's how-to "Pin a toolbar
+         above a bounded scroll region"). -->
+    <VStack height="*">
+    <List id="turnsList" when="{!!shown() &amp;&amp; !comparing}" height="*" data="{ft.value ? ft.value.turns : []}"
       onVisibleRangeDidChange="(r) => {
         if (landing === null) return;
         const l = landing;
@@ -510,7 +513,7 @@
          It reads the page's notes, so changes show while it's open. -->
     <NoteDialog id="noteDialog" notes="{(notesDs.value &amp;&amp; notesDs.value.notes) || []}"
       source="{source}" version="{shown() ? shown().n : null}" />
-    <List when="{comparing}" data="{cmp.value ? cmp.value.changes : []}">
+    <List when="{comparing}" height="*" data="{cmp.value ? cmp.value.changes : []}">
       <HStack verticalAlignment="start" gap="$space-4" paddingBottom="$space-4">
         <Text width="70px" variant="secondary" value="{stamp($item.at)}" />
         <Text width="240px" variant="strong" value="{$item.from + ' → ' + $item.to}" />
