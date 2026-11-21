@@ -16,7 +16,11 @@
      Props: prompt (the prompt's name), label (the button's, default "Ask the
      agent"), text (an optional sentence before the button), context
      (optional page data, for a prompt declared "context": true), fallback
-     (the prompt's words, for the clipboard). -->
+     (the prompt's words, for the clipboard), enabled (default true; the
+     button is also disabled while staging). Event: sent, once the request
+     has gone (Bram came forward, or the fallback copied it), with the
+     outcome; the batch line uses it to dim Annotate until the chips change
+     (batch-annotate-sent-dims-button). -->
 <Component name="AskAgent" var.staging="{false}" var.failed="{false}" var.copied="{''}" var.manual="{''}">
   <script>
     function fallbackText() {
@@ -40,7 +44,7 @@
   <VStack gap="$space-1">
   <HStack verticalAlignment="center" wrapContent="true">
     <Text when="{!!$props.text}" variant="secondary" value="{$props.text}" />
-    <Button size="sm" variant="outlined" label="{$props.label || 'Ask the agent'}" enabled="{!staging}"
+    <Button size="sm" variant="outlined" label="{$props.label || 'Ask the agent'}" enabled="{!staging &amp;&amp; $props.enabled !== false}"
       onClick="failed = false; copied = ''; manual = ''; window.studioDoorway($props.prompt, $props.context); staging = true;" />
   </HStack>
   <Timer interval="300" enabled="{staging}"
@@ -50,6 +54,7 @@
       staging = false;
       failed = o !== 'ok';
       if (failed) copyFallback();
+      emitEvent('sent', o);
       Actions.callApi({ url: window.STUDIO_API + '/podcast/log', method: 'post', invalidates: [],
                         body: { ev: 'ask-agent', prompt: $props.prompt, outcome: o, reason: window.__doorwayReason || '',
                                 context: $props.context === undefined ? null : $props.context, copied } });
